@@ -46,8 +46,23 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   with all 8 settings (wait days + "always require a manual decision" per jump type) always visible
   and editable, whichever profile was picked -- a profile only pre-fills starting values, it never
   hides anything. Changing options reloads the entry so the new rules take effect immediately.
+- `coordinator.py`: the ready/waiting/blocked refresh logic that used to live directly in the sensor
+  moved into a shared `UpdateManagerCoordinator`, so it has exactly one owner instead of being
+  duplicated once the future panel needs to read it too. The sensor is now a thin, read-only view on
+  top of it -- and deliberately stays that way, see below.
+- `install_log.py`: records every completed update (entity, old version, new version, when, release
+  notes link) to its own `Store` file (`.storage/`), regardless of what triggered the install --
+  Update Manager doesn't call `update.install` itself yet, so this is purely observational. Genuinely
+  new data, unlike the ready/waiting/blocked status, which is always recomputed and never stored.
+- `websocket_api.py`: two read-only commands, `update_manager/updates` and `update_manager/install_log`,
+  exposing the coordinator's cache and the install log. This -- not the summary sensor's attributes --
+  is meant to be what Phase 2's future panel actually reads from.
 
 ### Changed
+- The summary sensor is a cheap debug view (Developer Tools -> States), not the source of truth or
+  the foundation for Phase 2's panel -- that distinction wasn't explicit before this refactor. See
+  FUTURE.md's "Entities zijn niet de fundering voor Fase 2's paneel" note for the reasoning. No
+  behavior change for the sensor itself.
 - Found via live testing: the options flow's wording read as if these settings triggered some
   automatic action ("wait before it counts as ready", "always require a manual decision"), which
   doesn't exist -- Update Manager doesn't call `update.install` or take any action on an update
