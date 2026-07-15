@@ -5,8 +5,9 @@ All notable changes to this project are documented here. Format loosely follows 
 ## [Unreleased]
 
 Initial project scaffold, plus the first real piece of Phase 0: every `update.*` entity now gets a
-matching sensor classifying its pending version jump (patch/minor/major/unknown). No staging,
-wait-time, or auto-install behavior yet -- this only shows the classification.
+matching sensor showing whether it's ready, still waiting out its cooldown, or blocked pending a
+manual decision -- based on the version-jump classification (patch/minor/major/unknown) and how
+long the update has been available. No auto-install or rollout-pacing behavior yet.
 
 ### Added
 - Bare custom_component skeleton (`manifest.json`, `const.py`, `__init__.py`, a single-instance
@@ -16,5 +17,11 @@ wait-time, or auto-install behavior yet -- this only shows the classification.
   guessing) on anything that isn't strict semver, and treating Home Assistant Core's own calendar
   versioning (e.g. `2026.7.1`) as its own excluded category rather than misreading it as a major
   bump. First test suite (`tests/test_semver.py`).
-- `sensor.py`: auto-discovers every `update.*` entity and creates a "version jump" sensor for it,
-  using `semver.py` against that entity's `installed_version`/`latest_version` attributes.
+- `staging.py`: given a version-jump classification and how long the update has existed, decides
+  ready/waiting/blocked (patch ready immediately, minor after a configurable wait, major/unknown
+  always blocked pending a manual decision). Also pure and independently tested
+  (`tests/test_staging.py`).
+- `sensor.py`: auto-discovers every `update.*` entity and creates a matching sensor combining both
+  of the above. "How long has this update existed" comes from a best-effort recorder history
+  lookup (same 30-day-lookback pattern already used by previous-state-tracker), falling back to
+  "just now" (the conservative choice) when that history isn't available.
