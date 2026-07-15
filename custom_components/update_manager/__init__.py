@@ -23,7 +23,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _on_install(entity_id: str, old_version: str, new_version: str, new_state: State) -> None:
         hass.async_create_task(
             install_log.async_log_install(
-                entity_id, old_version, new_version, release_url=new_state.attributes.get("release_url")
+                entity_id,
+                old_version,
+                new_version,
+                release_url=new_state.attributes.get("release_url"),
+                release_summary=new_state.attributes.get("release_summary"),
+                supported_features=new_state.attributes.get("supported_features", 0),
             )
         )
 

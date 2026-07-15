@@ -64,6 +64,11 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   attribute): when the recorder lookup thinks the current `latest_version` first appeared. Previously
   only usable indirectly (through `status`/`remaining_seconds`); exposing it directly makes the
   recorder lookup itself something you can actually check by eye.
+- `release_summary` and full `release_notes` in each install log entry, alongside `release_url` --
+  found via live testing that `release_url` alone is often `null` even when an entity's more-info
+  dialog does show notes: the full text isn't a plain state attribute, it's fetched on demand via
+  the update entity's own `async_release_notes()` (the same thing HA's own more-info dialog and its
+  `update/release_notes` websocket command call), so the install log now does the same, best-effort.
 
 ### Changed
 - The summary sensor is a cheap debug view (Developer Tools -> States), not the source of truth or
