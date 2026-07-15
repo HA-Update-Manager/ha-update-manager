@@ -4,11 +4,46 @@
         "step": {
             "user": {
                 "title": "Set up Update Manager",
-                "description": "Update Manager applies local, semver-aware staging rules to your Home Assistant updates. There's nothing to configure yet in this early version."
+                "description": "Update Manager applies local, semver-aware staging rules to your Home Assistant updates. Configure the details afterwards via Configure."
             }
         },
         "abort": {
             "single_instance_allowed": "Update Manager is already set up. Only one instance is needed."
+        }
+    },
+    "options": {
+        "step": {
+            "init": {
+                "title": "Choose a starting profile",
+                "description": "A profile only fills in the settings on the next screen -- you can still change every value by hand afterwards, whichever profile you pick.",
+                "data": {
+                    "profile": "Profile"
+                }
+            },
+            "details": {
+                "title": "Staging rules",
+                "description": "How long to wait before a patch/minor/major update counts as \"ready\", per type of version jump. \"Always require a manual decision\" means it never becomes ready on its own, no matter how long it's been waiting.",
+                "data": {
+                    "patch_wait_days": "Patch: wait (days)",
+                    "patch_blocked": "Patch: always require a manual decision",
+                    "minor_wait_days": "Minor: wait (days)",
+                    "minor_blocked": "Minor: always require a manual decision",
+                    "major_wait_days": "Major: wait (days)",
+                    "major_blocked": "Major: always require a manual decision",
+                    "unknown_wait_days": "Unrecognized version: wait (days)",
+                    "unknown_blocked": "Unrecognized version: always require a manual decision"
+                }
+            }
+        }
+    },
+    "selector": {
+        "profile": {
+            "options": {
+                "conservative": "Conservative",
+                "balanced": "Balanced",
+                "free": "Free",
+                "custom": "Custom (keep current values)"
+            }
         }
     }
 }

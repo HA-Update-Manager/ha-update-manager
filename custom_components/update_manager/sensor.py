@@ -23,9 +23,39 @@ from homeassistant.helpers.event import EventStateChangedData
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import (
+    CONF_MAJOR_BLOCKED,
+    CONF_MAJOR_WAIT_DAYS,
+    CONF_MINOR_BLOCKED,
+    CONF_MINOR_WAIT_DAYS,
+    CONF_PATCH_BLOCKED,
+    CONF_PATCH_WAIT_DAYS,
+    CONF_UNKNOWN_BLOCKED,
+    CONF_UNKNOWN_WAIT_DAYS,
+    DOMAIN,
+)
 from .semver import classify_version_jump
-from .staging import DEFAULT_RULES, evaluate_staging
+from .staging import DEFAULT_RULES, StagingRules, evaluate_staging
+
+
+def _rules_from_options(options: dict) -> StagingRules:
+    """Builds a StagingRules from the options flow's stored values, falling
+    back to staging.DEFAULT_RULES for anything not set yet (e.g. before the
+    options flow has ever been completed)."""
+
+    def _wait(days_key: str, blocked_key: str, default: timedelta | None) -> timedelta | None:
+        if blocked_key not in options and days_key not in options:
+            return default
+        if options.get(blocked_key, False):
+            return None
+        return timedelta(days=options.get(days_key, 0))
+
+    return StagingRules(
+        patch_wait=_wait(CONF_PATCH_WAIT_DAYS, CONF_PATCH_BLOCKED, DEFAULT_RULES.patch_wait),
+        minor_wait=_wait(CONF_MINOR_WAIT_DAYS, CONF_MINOR_BLOCKED, DEFAULT_RULES.minor_wait),
+        major_wait=_wait(CONF_MAJOR_WAIT_DAYS, CONF_MAJOR_BLOCKED, DEFAULT_RULES.major_wait),
+        unknown_wait=_wait(CONF_UNKNOWN_WAIT_DAYS, CONF_UNKNOWN_BLOCKED, DEFAULT_RULES.unknown_wait),
+    )
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,7 +77,8 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    async_add_entities([UpdateManagerSummarySensor()])
+    rules = _rules_from_options(dict(config_entry.options))
+    async_add_entities([UpdateManagerSummarySensor(rules)])
 
 
 async def _async_available_since(hass: HomeAssistant, entity_id: str, current_latest_version: str) -> datetime:
@@ -105,7 +136,8 @@ class UpdateManagerSummarySensor(SensorEntity, RestoreEntity):
     _attr_name = "Update Manager"
     _attr_icon = "mdi:update"
 
-    def __init__(self) -> None:
+    def __init__(self, rules: StagingRules) -> None:
+        self._rules = rules
         # entity_id -> {"entity_id", "version_jump", "status", "remaining_seconds"}
         self._cache: dict[str, dict] = {}
         self._attr_native_value: int | None = None
@@ -190,16 +222,13 @@ class UpdateManagerSummarySensor(SensorEntity, RestoreEntity):
 
         jump = classify_version_jump(current, latest)
         now = dt_util.utcnow()
-        # No config/options flow yet, so this always uses staging's
-        # defaults -- which currently block major/unknown unconditionally
-        # (None wait), meaning available_since can't change the answer for
-        # those. Skip the recorder query whenever that's true, checked
-        # against the actual rule in use rather than hardcoding "major and
-        # unknown", since a future configurable rule could give either of
-        # those a real wait too (see FUTURE.md): if that ever changes here,
-        # this check keeps working without needing to be found and updated
-        # separately.
-        rules = DEFAULT_RULES
+        # Uses this entry's actual configured rules (options flow), not
+        # always the hardcoded defaults -- a user may have given major/
+        # unknown a real wait instead of "always blocked" (see FUTURE.md).
+        # Only skip the recorder query when the *configured* wait for this
+        # jump is None, since only then can available_since not change the
+        # answer.
+        rules = self._rules
         configured_wait = {
             "patch": rules.patch_wait,
             "minor": rules.minor_wait,

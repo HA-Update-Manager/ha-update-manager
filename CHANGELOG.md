@@ -42,6 +42,10 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   at all -- found via live testing. Doesn't change ready/waiting/blocked (still meaningful for "is
   this a sensible version to move to"), but must gate any future auto-install: never call
   `update.install` on an entity that doesn't support it.
+- Options flow: a "profile" screen (Conservative/Balanced/Free/Custom) followed by a details screen
+  with all 8 settings (wait days + "always require a manual decision" per jump type) always visible
+  and editable, whichever profile was picked -- a profile only pre-fills starting values, it never
+  hides anything. Changing options reloads the entry so the new rules take effect immediately.
 
 ### Fixed
 - Found via live testing on a real instance (194 update entities): every already-up-to-date entity
