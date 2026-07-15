@@ -57,6 +57,9 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
 - `websocket_api.py`: two read-only commands, `update_manager/updates` and `update_manager/install_log`,
   exposing the coordinator's cache and the install log. This -- not the summary sensor's attributes --
   is meant to be what Phase 2's future panel actually reads from.
+- `diagnostics.py`: the same two lists (updates + install log), reachable with a few clicks (Settings ->
+  Devices & Services -> Update Manager -> Download diagnostics) -- no browser console needed to check
+  that the install log or the status feed is actually working before Phase 2's panel exists.
 
 ### Changed
 - The summary sensor is a cheap debug view (Developer Tools -> States), not the source of truth or
