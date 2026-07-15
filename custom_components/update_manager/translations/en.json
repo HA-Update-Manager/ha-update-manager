@@ -22,16 +22,16 @@
             },
             "details": {
                 "title": "Staging rules",
-                "description": "How long to wait before a patch/minor/major update counts as \"ready\", per type of version jump. \"Always require a manual decision\" means it never becomes ready on its own, no matter how long it's been waiting.",
+                "description": "Update Manager doesn't install anything automatically yet -- these settings only control the status shown for each pending update (ready / waiting / needs review), so you know at a glance which ones are worth a look. \"Always needs review\" means it stays that way no matter how long the update has been available, until you decide by hand.",
                 "data": {
-                    "patch_wait_days": "Patch: wait (days)",
-                    "patch_blocked": "Patch: always require a manual decision",
-                    "minor_wait_days": "Minor: wait (days)",
-                    "minor_blocked": "Minor: always require a manual decision",
-                    "major_wait_days": "Major: wait (days)",
-                    "major_blocked": "Major: always require a manual decision",
-                    "unknown_wait_days": "Unrecognized version: wait (days)",
-                    "unknown_blocked": "Unrecognized version: always require a manual decision"
+                    "patch_wait_days": "Patch: days before shown as \"ready\"",
+                    "patch_blocked": "Patch: always needs review",
+                    "minor_wait_days": "Minor: days before shown as \"ready\"",
+                    "minor_blocked": "Minor: always needs review",
+                    "major_wait_days": "Major: days before shown as \"ready\"",
+                    "major_blocked": "Major: always needs review",
+                    "unknown_wait_days": "Unrecognized version: days before shown as \"ready\"",
+                    "unknown_blocked": "Unrecognized version: always needs review"
                 }
             }
         }
