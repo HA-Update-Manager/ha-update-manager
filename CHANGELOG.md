@@ -60,6 +60,10 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
 - `diagnostics.py`: the same two lists (updates + install log), reachable with a few clicks (Settings ->
   Devices & Services -> Update Manager -> Download diagnostics) -- no browser console needed to check
   that the install log or the status feed is actually working before Phase 2's panel exists.
+- `available_since` in each update's cache entry (visible via diagnostics/the sensor's `updates`
+  attribute): when the recorder lookup thinks the current `latest_version` first appeared. Previously
+  only usable indirectly (through `status`/`remaining_seconds`); exposing it directly makes the
+  recorder lookup itself something you can actually check by eye.
 
 ### Changed
 - The summary sensor is a cheap debug view (Developer Tools -> States), not the source of truth or

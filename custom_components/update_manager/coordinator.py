@@ -251,4 +251,8 @@ class UpdateManagerCoordinator:
                 round(result.remaining.total_seconds()) if result.remaining is not None else None
             ),
             "installable": installable,
+            # Exposed mainly so the recorder lookup above can actually be
+            # checked by hand (diagnostics download) instead of only being
+            # inferable from status/remaining_seconds.
+            "available_since": available_since.isoformat(),
         }
