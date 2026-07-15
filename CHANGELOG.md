@@ -47,6 +47,14 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   and editable, whichever profile was picked -- a profile only pre-fills starting values, it never
   hides anything. Changing options reloads the entry so the new rules take effect immediately.
 
+### Changed
+- Found via live testing: the options flow's wording read as if these settings triggered some
+  automatic action ("wait before it counts as ready", "always require a manual decision"), which
+  doesn't exist -- Update Manager doesn't call `update.install` or take any action on an update
+  yet, anywhere. Reworded to make clear these settings only change the ready/waiting/needs-review
+  label shown on the summary sensor; you still install updates yourself, the normal Home Assistant
+  way.
+
 ### Fixed
 - Found via live testing on a real instance (194 update entities): every already-up-to-date entity
   (the normal, steady-state case for nearly all of them) was being counted as "blocked", because

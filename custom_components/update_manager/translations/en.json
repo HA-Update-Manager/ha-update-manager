@@ -22,7 +22,7 @@
             },
             "details": {
                 "title": "Staging rules",
-                "description": "Update Manager doesn't install anything automatically yet -- these settings only control the status shown for each pending update (ready / waiting / needs review), so you know at a glance which ones are worth a look. \"Always needs review\" means it stays that way no matter how long the update has been available, until you decide by hand.",
+                "description": "These settings don't install, delay, or skip any update -- Update Manager doesn't take actions on your updates at all yet. All they do is change the label shown in the summary sensor's attributes for each pending update: \"ready\", \"waiting\", or \"needs review\". You still install updates the normal Home Assistant way, whenever you choose to. \"Always needs review\" means that label never switches to \"ready\" on its own, no matter how long the update has existed.",
                 "data": {
                     "patch_wait_days": "Patch: days before shown as \"ready\"",
                     "patch_blocked": "Patch: always needs review",
