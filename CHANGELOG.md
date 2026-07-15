@@ -18,8 +18,10 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   versioning (e.g. `2026.7.1`) as its own excluded category rather than misreading it as a major
   bump. First test suite (`tests/test_semver.py`).
 - `staging.py`: given a version-jump classification and how long the update has existed, decides
-  ready/waiting/blocked (patch ready immediately, minor after a configurable wait, major/unknown
-  always blocked pending a manual decision). Also pure and independently tested
+  ready/waiting/blocked. Every jump type -- including major/unknown -- has its own independently
+  configurable wait (or `None` for "always blocked"); the defaults are patch immediately, minor
+  after 7 days, major/unknown always blocked, but nothing is hardcoded: a user can give major or
+  unknown a real wait too if they explicitly choose to. Also pure and independently tested
   (`tests/test_staging.py`).
 - `sensor.py`: a single summary sensor covering every `update.*` entity, combining both of the
   above per update. "How long has this update existed" comes from a best-effort recorder history
@@ -34,7 +36,6 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   (`tests/test_rollout.py`) -- grouping devices by model and actually triggering installs isn't
   wired up yet.
 
-### Added (cont'd)
 - `installable` attribute per update: whether the entity's `supported_features` bitmask includes
   `UpdateEntityFeature.INSTALL` (value `1`). Some update entities (e.g. firmware that must be
   flashed manually) can only report that a newer version exists, with no install action available

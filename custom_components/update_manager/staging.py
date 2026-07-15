@@ -1,6 +1,6 @@
 """Patch/minor/major-aware staging: given a version-jump classification and
 how long the update has been available, decide whether it's ready, still
-waiting out its cooldown, or permanently blocked pending a manual decision.
+waiting out its cooldown, or blocked pending a manual decision.
 
 Kept free of any homeassistant import, same reasoning as semver.py -- see
 tests/test_staging.py.
@@ -21,18 +21,34 @@ StagingStatus = Literal["ready", "waiting", "blocked"]
 
 class StagingRules(NamedTuple):
     """Wait time before showing/installing is allowed, per jump type.
-    major/unknown have no wait concept -- they're always "blocked" instead,
-    requiring a conscious manual decision, never just a matter of time."""
+    Every jump type -- including major and unknown -- is independently
+    configurable: a wait of None means "always blocked", never resolving to
+    "ready" on its own no matter how long the update has existed, but that's
+    a choice encoded in the rules passed in, not something this module
+    enforces on anyone's behalf. Being conservative about major/unknown is
+    the *default* (see DEFAULT_RULES below), not a built-in floor a user
+    can't turn off -- same reasoning as Core/Supervisor/HAOS being a
+    default-manual category in FUTURE.md rather than a hardcoded one, except
+    here even that default is meant to be overridable."""
 
-    patch_wait: timedelta
-    minor_wait: timedelta
+    patch_wait: timedelta | None
+    minor_wait: timedelta | None
+    major_wait: timedelta | None
+    unknown_wait: timedelta | None
 
 
-# A reasonable starting default; expected to become a user-configurable
-# choice (the "Behoudend/Gebalanceerd/Vrij" presets from FUTURE.md) once
-# there's a config/options flow for it, not a decision this module should
-# hardcode an opinion about beyond providing *a* sensible default.
-DEFAULT_RULES = StagingRules(patch_wait=timedelta(0), minor_wait=timedelta(days=7))
+# A reasonable, conservative starting point; expected to become a
+# user-configurable choice (the "Behoudend/Gebalanceerd/Vrij" presets from
+# FUTURE.md) once there's a config/options flow for it, not a decision this
+# module should hardcode an opinion about beyond providing *a* sensible
+# default. major_wait/unknown_wait default to None (always blocked) but,
+# unlike the previous design, a caller can set them to a real timedelta.
+DEFAULT_RULES = StagingRules(
+    patch_wait=timedelta(0),
+    minor_wait=timedelta(days=7),
+    major_wait=None,
+    unknown_wait=None,
+)
 
 
 class StagingResult(NamedTuple):
@@ -52,10 +68,16 @@ def evaluate_staging(
     naive) datetimes in the same timezone -- callers are expected to pass
     HA's own dt_util.utcnow()-style values, this function doesn't normalize
     timezones itself."""
-    if jump in ("major", "unknown"):
+    wait = {
+        "patch": rules.patch_wait,
+        "minor": rules.minor_wait,
+        "major": rules.major_wait,
+        "unknown": rules.unknown_wait,
+    }[jump]
+
+    if wait is None:
         return StagingResult("blocked", None)
 
-    wait = rules.patch_wait if jump == "patch" else rules.minor_wait
     elapsed = now - available_since
     if elapsed >= wait:
         return StagingResult("ready", None)

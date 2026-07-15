@@ -25,7 +25,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .semver import classify_version_jump
-from .staging import evaluate_staging
+from .staging import DEFAULT_RULES, evaluate_staging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -190,16 +190,27 @@ class UpdateManagerSummarySensor(SensorEntity, RestoreEntity):
 
         jump = classify_version_jump(current, latest)
         now = dt_util.utcnow()
-        # staging.evaluate_staging ignores available_since entirely for
-        # major/unknown (always "blocked") -- skip the recorder query
-        # whenever it can't change the answer. A large instance can have
-        # 100+ update entities; many of those will be major/unknown, so
-        # this meaningfully cuts how many ever need a recorder lookup.
-        if jump in ("major", "unknown"):
+        # No config/options flow yet, so this always uses staging's
+        # defaults -- which currently block major/unknown unconditionally
+        # (None wait), meaning available_since can't change the answer for
+        # those. Skip the recorder query whenever that's true, checked
+        # against the actual rule in use rather than hardcoding "major and
+        # unknown", since a future configurable rule could give either of
+        # those a real wait too (see FUTURE.md): if that ever changes here,
+        # this check keeps working without needing to be found and updated
+        # separately.
+        rules = DEFAULT_RULES
+        configured_wait = {
+            "patch": rules.patch_wait,
+            "minor": rules.minor_wait,
+            "major": rules.major_wait,
+            "unknown": rules.unknown_wait,
+        }[jump]
+        if configured_wait is None:
             available_since = now
         else:
             available_since = await _async_available_since(self.hass, entity_id, latest)
-        result = evaluate_staging(jump, available_since, now)
+        result = evaluate_staging(jump, available_since, now, rules)
         # UpdateEntityFeature.INSTALL = 1 (homeassistant/components/update/const.py):
         # some update entities (e.g. firmware that must be flashed manually)
         # only ever report that a newer version exists, with no install
