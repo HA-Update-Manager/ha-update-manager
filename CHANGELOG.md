@@ -33,3 +33,12 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   minimum wait between each. Pure queue logic only so far and independently tested
   (`tests/test_rollout.py`) -- grouping devices by model and actually triggering installs isn't
   wired up yet.
+
+### Fixed
+- Found via live testing on a real instance (194 update entities): every already-up-to-date entity
+  (the normal, steady-state case for nearly all of them) was being counted as "blocked", because
+  `sensor.py` compared `installed_version`/`latest_version` itself instead of first checking the
+  update entity's own `state` ("on" = update available, "off" = up to date, always exactly one of
+  the two). Equal versions classified as "unknown" fed straight into "blocked", so on a real
+  instance almost everything showed up as blocked rather than just the entities with a genuine
+  pending update.

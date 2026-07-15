@@ -147,9 +147,9 @@ class UpdateManagerSummarySensor(SensorEntity, RestoreEntity):
         old_latest = old_state.attributes.get("latest_version") if old_state else None
         new_installed = new_state.attributes.get("installed_version") if new_state else None
         new_latest = new_state.attributes.get("latest_version") if new_state else None
-        if old_state is not None and new_state is not None and (
-            old_installed, old_latest
-        ) == (new_installed, new_latest):
+        old_key = (old_state.state, old_installed, old_latest) if old_state else None
+        new_key = (new_state.state, new_installed, new_latest) if new_state else None
+        if old_state is not None and new_state is not None and old_key == new_key:
             # Some other attribute changed (e.g. in_progress toggling
             # during an install) -- not something a fresh recorder lookup
             # would answer differently, skip it rather than re-querying.
@@ -166,6 +166,19 @@ class UpdateManagerSummarySensor(SensorEntity, RestoreEntity):
     async def _async_refresh_one(self, entity_id: str) -> None:
         state = self.hass.states.get(entity_id)
         if state is None:
+            self._cache.pop(entity_id, None)
+            return
+
+        # HA's own update entities are always exactly "on" (an update is
+        # available) or "off" (already up to date) -- that's the correct,
+        # authoritative check for "is there anything to report here at
+        # all", not comparing installed_version/latest_version ourselves.
+        # Skipping this meant every already-up-to-date entity (the normal,
+        # steady-state case for almost all of them) got its versions
+        # compared as equal, classified "unknown", and counted as
+        # "blocked" -- on a real instance, that's most or all entities,
+        # not a handful of genuine edge cases.
+        if state.state != "on":
             self._cache.pop(entity_id, None)
             return
 
