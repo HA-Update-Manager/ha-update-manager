@@ -1,0 +1,14 @@
+{
+    "title": "Update Manager",
+    "config": {
+        "step": {
+            "user": {
+                "title": "Set up Update Manager",
+                "description": "Update Manager applies local, semver-aware staging rules to your Home Assistant updates. There's nothing to configure yet in this early version."
+            }
+        },
+        "abort": {
+            "single_instance_allowed": "Update Manager is already set up. Only one instance is needed."
+        }
+    }
+}

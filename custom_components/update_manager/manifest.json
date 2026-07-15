@@ -1,0 +1,13 @@
+{
+    "domain": "update_manager",
+    "name": "Update Manager",
+    "codeowners": ["@klaptafel"],
+    "config_flow": true,
+    "dependencies": [],
+    "documentation": "https://github.com/HA-Update-Manager/ha-update-manager",
+    "integration_type": "service",
+    "iot_class": "calculated",
+    "issue_tracker": "https://github.com/HA-Update-Manager/ha-update-manager/issues",
+    "requirements": [],
+    "version": "0.1.0"
+}
