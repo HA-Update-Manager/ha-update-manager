@@ -1,6 +1,5 @@
 DOMAIN = "update_manager"
 
-CONF_PROFILE = "profile"
 CONF_PATCH_WAIT_DAYS = "patch_wait_days"
 CONF_PATCH_BLOCKED = "patch_blocked"
 CONF_MINOR_WAIT_DAYS = "minor_wait_days"

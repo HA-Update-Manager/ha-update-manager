@@ -6,6 +6,7 @@ from homeassistant.core import HomeAssistant, State, callback
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator, rules_from_options
 from .install_log import InstallLog
+from .panel import async_register_update_manager_panel
 from .websocket_api import async_setup_websocket_api
 
 PLATFORMS: list[str] = ["sensor"]
@@ -36,6 +37,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data[DOMAIN] = {"coordinator": coordinator, "install_log": install_log}
     async_setup_websocket_api(hass)
+    await async_register_update_manager_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(update_listener))

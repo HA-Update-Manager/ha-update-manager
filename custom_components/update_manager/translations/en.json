@@ -4,46 +4,11 @@
         "step": {
             "user": {
                 "title": "Set up Update Manager",
-                "description": "Update Manager applies local, semver-aware staging rules to your Home Assistant updates. Configure the details afterwards via Configure."
+                "description": "Update Manager applies local, semver-aware staging rules to your Home Assistant updates. Manage the staging rules afterwards on Update Manager's own \"Update Manager\" sidebar panel, under its Instellingen tab."
             }
         },
         "abort": {
             "single_instance_allowed": "Update Manager is already set up. Only one instance is needed."
-        }
-    },
-    "options": {
-        "step": {
-            "init": {
-                "title": "Choose a starting profile",
-                "description": "A profile only fills in the settings on the next screen -- you can still change every value by hand afterwards, whichever profile you pick.",
-                "data": {
-                    "profile": "Profile"
-                }
-            },
-            "details": {
-                "title": "Staging rules",
-                "description": "These settings don't install, delay, or skip any update -- Update Manager doesn't take actions on your updates at all yet. All they do is change the label shown in the summary sensor's attributes for each pending update: \"ready\", \"waiting\", or \"needs review\". You still install updates the normal Home Assistant way, whenever you choose to. \"Always needs review\" means that label never switches to \"ready\" on its own, no matter how long the update has existed.",
-                "data": {
-                    "patch_wait_days": "Patch: days before shown as \"ready\"",
-                    "patch_blocked": "Patch: always needs review",
-                    "minor_wait_days": "Minor: days before shown as \"ready\"",
-                    "minor_blocked": "Minor: always needs review",
-                    "major_wait_days": "Major: days before shown as \"ready\"",
-                    "major_blocked": "Major: always needs review",
-                    "unknown_wait_days": "Unrecognized version: days before shown as \"ready\"",
-                    "unknown_blocked": "Unrecognized version: always needs review"
-                }
-            }
-        }
-    },
-    "selector": {
-        "profile": {
-            "options": {
-                "conservative": "Conservative",
-                "balanced": "Balanced",
-                "free": "Free",
-                "custom": "Custom (keep current values)"
-            }
         }
     }
 }

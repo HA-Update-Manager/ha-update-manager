@@ -4,30 +4,38 @@
 # Update Manager: Home Assistant helper integration
 
 > [!NOTE]
-> Very early, pre-alpha stage. This is the initial project scaffold; the actual staging logic
-> described below isn't built yet.
+> Very early, pre-alpha stage. Phase 0 (below) mostly works and has been tested against a real
+> instance, but this repository isn't ready to be installed by end users yet -- no release has
+> been cut, and there's no auto-install or rollout-pacing (also below) at all yet.
 
-Update Manager helps you decide when a Home Assistant update is safe to install, and optionally
-automates that decision.
+Update Manager helps you decide when a Home Assistant update is worth installing. It never installs
+anything on its own: it only tells you, per pending update, whether it's worth a look right now.
 
 ## Planned scope
 
 This project is being built in phases, starting with the parts that need no external service at
 all:
 
-- **Phase 0 (in progress)**: local, semver-aware staging rules. Patch updates can show up (or
-  install) immediately; minor updates wait a bit first; major updates (and anything that isn't
-  clearly semver, which is common, not an edge case) always require a manual click. Device
-  firmware (Zigbee/Z-Wave/Bluetooth in particular) is rolled out one device at a time rather than
-  all at once. An install log keeps track of what was installed and when.
+- **Phase 0 (mostly done)**: local, semver-aware staging rules. Patch updates show up as "ready"
+  immediately; minor updates wait a bit first; major updates (and anything that isn't clearly
+  semver, which is common, not an edge case) always need a manual look. Every wait -- including for
+  major/unrecognized versions -- is fully configurable, not hardcoded. An install log keeps track of
+  what was installed and when, with release notes where available. Not yet built: pacing a group of
+  devices sharing the same firmware update one at a time (`rollout.py`'s queue logic exists and is
+  tested, but isn't wired to real devices yet -- it only makes sense once Update Manager can act on
+  an update at all, see Phase 3).
 - **Phase 1**: a community backend (plain git + GitHub Actions, no hosted server) where people can
   vote on whether a given release was problem-free.
-- **Phase 2**: a Home Assistant panel that shows that community verdict and lets you vote.
-- **Phase 3** (maybe never): feed the community verdict into Phase 0's local rules, as an optional,
-  strictly additional gate on top of them.
+- **Phase 2 (in progress)**: a Home Assistant sidebar panel. Currently: read-only Updates and
+  Historie tabs, and an Instellingen tab for the Phase 0 staging rules. Later: the community verdict
+  from Phase 1, and a vote button.
+- **Phase 3** (direction decided, not yet designed): actually installing updates -- the end goal is
+  for Update Manager to manage updates, which eventually means automating installation too, not just
+  advising. This needs its own careful design (which categories, cooldown periods, backup
+  requirements, confirmation UX, fail-closed behavior) before any of it is built.
 
-Showing whether an update is considered problem-free and actually automating its installation are
-two separate features: the former is useful entirely on its own, even if automation is never built.
+Showing whether an update is worth a look and actually automating its installation are two separate
+features: the former is useful entirely on its own, even before the latter exists.
 
 ## Installation
 
@@ -35,7 +43,9 @@ Not yet published to HACS; this repository isn't ready to be installed by end us
 
 ## Configuration
 
-Nothing to configure yet. Setting up the integration currently just confirms it's installed.
+Confirm the single-instance setup, then open the **Update Manager** entry in the Home Assistant
+sidebar to review pending updates, browse the install history, and adjust the staging rules
+(Instellingen tab) -- there's nothing to configure during setup itself.
 
 ## Contributing
 

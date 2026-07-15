@@ -245,6 +245,8 @@ class UpdateManagerCoordinator:
         installable = bool(state.attributes.get("supported_features", 0) & 1)
         self.cache[entity_id] = {
             "entity_id": entity_id,
+            "installed_version": current,
+            "latest_version": latest,
             "version_jump": jump,
             "status": result.status,
             "remaining_seconds": (
