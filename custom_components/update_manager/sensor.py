@@ -200,6 +200,14 @@ class UpdateManagerSummarySensor(SensorEntity, RestoreEntity):
         else:
             available_since = await _async_available_since(self.hass, entity_id, latest)
         result = evaluate_staging(jump, available_since, now)
+        # UpdateEntityFeature.INSTALL = 1 (homeassistant/components/update/const.py):
+        # some update entities (e.g. firmware that must be flashed manually)
+        # only ever report that a newer version exists, with no install
+        # action at all -- ready/waiting/blocked is still meaningful for
+        # "should you move to this version", but this must gate any future
+        # auto-install: never call update.install on an entity that doesn't
+        # support it.
+        installable = bool(state.attributes.get("supported_features", 0) & 1)
         self._cache[entity_id] = {
             "entity_id": entity_id,
             "version_jump": jump,
@@ -207,6 +215,7 @@ class UpdateManagerSummarySensor(SensorEntity, RestoreEntity):
             "remaining_seconds": (
                 round(result.remaining.total_seconds()) if result.remaining is not None else None
             ),
+            "installable": installable,
         }
 
     def _recompute_aggregate(self) -> None:

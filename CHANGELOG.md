@@ -34,6 +34,14 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   (`tests/test_rollout.py`) -- grouping devices by model and actually triggering installs isn't
   wired up yet.
 
+### Added (cont'd)
+- `installable` attribute per update: whether the entity's `supported_features` bitmask includes
+  `UpdateEntityFeature.INSTALL` (value `1`). Some update entities (e.g. firmware that must be
+  flashed manually) can only report that a newer version exists, with no install action available
+  at all -- found via live testing. Doesn't change ready/waiting/blocked (still meaningful for "is
+  this a sensible version to move to"), but must gate any future auto-install: never call
+  `update.install` on an entity that doesn't support it.
+
 ### Fixed
 - Found via live testing on a real instance (194 update entities): every already-up-to-date entity
   (the normal, steady-state case for nearly all of them) was being counted as "blocked", because
