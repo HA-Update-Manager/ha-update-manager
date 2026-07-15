@@ -25,3 +25,7 @@ long the update has been available. No auto-install or rollout-pacing behavior y
   of the above. "How long has this update existed" comes from a best-effort recorder history
   lookup (same 30-day-lookback pattern already used by previous-state-tracker), falling back to
   "just now" (the conservative choice) when that history isn't available.
+- `rollout.py`: paces a group of devices sharing the same pending update one at a time, with a
+  minimum wait between each. Pure queue logic only so far and independently tested
+  (`tests/test_rollout.py`) -- grouping devices by model and actually triggering installs isn't
+  wired up yet.
