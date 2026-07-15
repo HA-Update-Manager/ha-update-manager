@@ -1,6 +1,7 @@
 {
     "domain": "update_manager",
     "name": "Update Manager",
+    "after_dependencies": ["recorder"],
     "codeowners": ["@klaptafel"],
     "config_flow": true,
     "dependencies": [],
