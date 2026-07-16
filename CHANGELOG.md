@@ -7,7 +7,8 @@ All notable changes to this project are documented here. Format loosely follows 
 Initial project scaffold, plus the first real piece of Phase 0: a single "Update Manager" sensor
 showing how many updates are ready to install now, with the per-update breakdown (ready/waiting/
 blocked, and why) as an attribute -- not one entity per update, which would mean 100+ near-useless
-extra entities on a large instance. No auto-install or rollout-pacing behavior yet.
+extra entities on a large instance. Auto-install now exists too (see below), fully opt-in and off
+by default; device-firmware rollout-pacing does not yet.
 
 ### Added
 - Bare custom_component skeleton (`manifest.json`, `const.py`, `__init__.py`, a single-instance
@@ -120,6 +121,110 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
     a plain-language explanation ("Patch (kleine bugfix)", "Major (grote wijziging, mogelijk
     breaking)", etc.) -- semver terms mean nothing to someone who doesn't already know semver, found
     via direct user feedback on exactly the page where that distinction is supposed to help.
+- **Auto-install** (niveau 3, see FUTURE.md's "Auto-install (niveau 3): ontwerp" for the full design
+  discussion this came out of):
+  - `announcer.py`: pure decision logic (`decide_action`) for what should happen right now to an
+    eligible update -- announce, execute, remove a stale/cancelled announcement, or nothing.
+    Independently tested (`tests/test_announcer.py`), same pure-logic-first pattern as
+    `semver.py`/`staging.py`/`rollout.py`.
+  - `install_manager.py`: wires that into real behaviour. Every 5 minutes, checks every update
+    against the new per-jump-type `*_auto_install` settings; once eligible, starts a cancellable
+    countdown (`announce_hours`, default 24) instead of installing immediately. Only once that
+    countdown elapses uncancelled does it call `update.install` -- always with `backup=true` when
+    the entity's `supported_features` includes `UpdateEntityFeature.BACKUP` (not user-configurable,
+    a pure safety measure with no real downside). Persisted (`Store`, survives restarts), so does the
+    "user explicitly cancelled this exact target version" state, which stays quiet for that version
+    without needing a settings change.
+  - **Fully opt-in, no hardcoded exceptions except Core/Supervisor/HAOS**: each jump type (including
+    major/unrecognized) gets its own `*_auto_install` toggle, off by default in every profile --
+    consistent with Fase 0's "nothing hardcoded" staging rules, just extended to actually installing.
+    Core/Supervisor/HAOS is the one deliberate, hardcoded exception (impact = the whole HA instance,
+    not one integration/add-on/device) -- always manual, not instelbaar, on purpose.
+  - **No HA Repair issue for the announcement** -- considered and explicitly rejected: "repair"
+    implies something's broken, this is just an announcement. Instead: a `persistent_notification`
+    (the right semantic: "look at this", not "something's wrong") linking to the panel, where the
+    actual pending-install list and its cancel button live (Updates tab, "Geplande installaties").
+    The announcement cleans itself up (no forced manual dismiss) once it's no longer relevant: the
+    install happened, the update disappeared/changed, or the setting was turned back off -- only a
+    genuine user cancellation needs an actual click.
+  - Deliberately not wired up yet for device firmware specifically: rollout-pacing (`rollout.py`)
+    needs to exist first so Zigbee/Z-Wave/Bluetooth updates don't all land on a shared mesh at once
+    -- HACS integrations/add-ons have no such constraint, so they come first.
+  - `update_manager/updates` now includes a `pending_install` field per entity (`to_version`/
+    `execute_at`, or `null`), and a new `update_manager/cancel_pending_install` command. Diagnostics
+    also expose the pending list.
+- Found via live testing: with the 4 new auto-install fields, the settings form grew to 13 flat
+  fields plus the profile picker in one long list -- "super onoverzichtelijk". Regrouped into one
+  collapsed-by-default `ha-form` expandable section per jump type (`type: "expandable"`,
+  `flatten: true` keeps the data flat, no schema restructuring needed), so only the category you
+  actually want to change is open at once. Field copy was also just plain wrong on its own: "dagen
+  voor 'klaar'" explained nothing outside the context of the Updates-tab status column it refers to.
+  Every field now has a `computeHelper` sentence explaining what it actually does, and since each
+  section's title already says which category ("Patch (kleine bugfix)" etc.), the fields inside it no
+  longer repeat that prefix on every single line.
+- Found via live testing right after the above: "Altijd handmatig beoordelen" and "Automatisch
+  installeren" could both be turned on for the same jump type at once -- blocked meant status never
+  reached "ready" at all, so auto-install silently had nothing to act on, with no indication why.
+  These were never really two independent settings, they're the same "what happens once ready" choice
+  FUTURE.md's three-levels model already describes. Replaced `*_blocked`/`*_auto_install` (2 booleans)
+  with a single `*_mode` field per jump type (`manual`/`shown`/`auto`) everywhere: `const.py`,
+  `coordinator.py`'s `rules_from_options`, `install_manager.py`'s `auto_install_rules_from_options`,
+  the `save_settings` websocket schema, and the panel's select field -- structurally impossible to
+  contradict now, not just documented as a footgun. No migration needed (still pre-release, per the
+  README's own note, no real settings exist to carry over).
+- Found via live testing, the same day: the 3-way mode field above wasn't really about "judging"
+  anything, and treating "unknown version type" as needing its own no-wait special case felt
+  unnecessary once said out loud. Simplified again, back to two independent settings per jump type:
+  `*_wait_days` (unchanged) and `*_auto_install` (a plain boolean again) -- but this time *without*
+  reintroducing the earlier contradiction, because there's no more "always blocked" state to conflict
+  with it. `staging.py` itself is untouched (it still fully supports an always-blocked wait of `None`),
+  only the settings model no longer ever produces one. "Unknown" gets a conservative default wait
+  instead (90/60/14 days for Conservative/Balanced/Free) rather than being blocked forever by default.
+- The Updates tab's status labels: "Klaar" became "Voldoet aan voorwaarden" (found via direct user
+  feedback: nothing is actually "done" at that point, the wording implied otherwise) and "Handmatig"
+  became "Afgeraden", reserved for a future signal (e.g. a community verdict) since nothing in today's
+  local rules produces it anymore.
+- The Updates tab now defaults to sorting safest first: green, then orange, then red, and oldest
+  first within each group (requested directly by the user, so the longest-standing, most "proven"
+  update always sinks to the top of its group). Sorting alphabetically on the status emoji itself
+  would actually sort backwards (red's codepoint sorts before orange's, before green's), so a hidden
+  numeric column combines status priority with the raw timestamp into one sortable key, and
+  `ha-data-table`'s `valueColumn` points the visible Status column at it.
+- **Renamed patch/minor/major/unknown to small/medium/big everywhere** (`semver.py`, `staging.py`,
+  `const.py`, `coordinator.py`, `announcer.py`, `install_manager.py`, `websocket_api.py`, the whole
+  panel): a deliberately generic scale, not semver's own vocabulary, so any version scheme's own
+  classifier can map onto it -- semver, calendar versioning, and now git commit hashes (below) each
+  have their own notion of "klein". There's no separate "unknown" category anymore either: anything
+  `classify_version_size` can't confidently place (not strict semver, not calendar-shaped, not a
+  recognizable commit hash, a downgrade, or an identical/re-announced version) is just "big", the same
+  conservative-by-default treatment "unknown" used to get -- one less settings category to configure.
+- `semver.py` now recognizes git commit hashes (e.g. HACS tracking a repo by commit instead of a
+  release tag) as their own case: "medium" when both sides are commit-shaped, since there's no
+  ordering signal at all (you can't tell which of two hashes came first without consulting git
+  history), so it's deliberately not "small" but a recognized, deliberate tracking choice rather than
+  truly unknown. Matches hex strings of 6 to 40 characters (git's own abbreviation length isn't fixed
+  at 7, it auto-expands to stay unique in a larger repo) with at least one a-f letter, so a plain
+  numeric build counter isn't mistaken for a hash just because every digit is also valid hex.
+- `is_ha_core_calendar_version` renamed to `is_calendar_version`: it was always a pure shape check
+  (year.month.patch), not specific to HA Core's own entity -- any integration/device could use the
+  same scheme, the old name implied an exclusivity that was never actually true.
+- Settings redesigned again: found via live testing that repeating "Wachttijd"/"Automatisch
+  installeren" across three separate collapsed sections still felt repetitive even after the mode
+  simplification above. Replaced the three `ha-form` sections with one compact table (a row per size,
+  column headers explaining the two settings once instead of three times) -- plain native
+  number/checkbox inputs, not `ha-form`, since a table doesn't map onto `ha-form`'s schema model
+  cleanly. "Wachttijd" was also renamed to "Uitsteltermijn" (direct user feedback).
+- Home Assistant Core/Supervisor/OS's own update entities are now actually recognized in code (the
+  "always manual, never auto-install regardless of settings" rule was, until now, only a design
+  decision in FUTURE.md, not enforced anywhere). Identified by their real, stable `unique_id`
+  (`home_assistant_core_version_latest`/`home_assistant_supervisor_version_latest`/
+  `home_assistant_os_version_latest`, verified against `homeassistant/components/hassio/entity.py`
+  and `const.py`), not by guessing an `entity_id` string or checking `platform == "hassio"` (which
+  would also catch regular add-ons, a different, actually-configurable category). A new
+  `auto_install_excluded` field per update (coordinator cache, `update_manager/updates`, diagnostics)
+  gates `install_manager.py` before it ever auto-installs anything -- the shown size/status stay fully
+  informational either way, only the auto-install gate is hardcoded. The Updates tab now also shows
+  "(altijd handmatig)" next to these three specifically.
 
 ### Changed
 - The summary sensor is a cheap debug view (Developer Tools -> States), not the source of truth or
@@ -132,6 +237,12 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   yet, anywhere. Reworded to make clear these settings only change the ready/waiting/needs-review
   label shown on the summary sensor; you still install updates yourself, the normal Home Assistant
   way.
+- `classify_version_jump` now classifies HA Core's own calendar versions (year.month.patch) as
+  "patch" (same year+month) or "minor" (year and/or month differs) instead of always "unknown" --
+  but deliberately never "major": a year rollover (2026.12.x -> 2027.1.0) is just another month
+  boundary in HA Core's own release cadence, not a signal of more risk than any other monthly
+  release. Only kicks in when *both* sides are calendar-shaped; a mixed comparison (one side
+  calendar, one not) stays "unknown", same as before.
 
 ### Removed
 - The options flow (profile + 8-field details screen): superseded by the panel's Instellingen tab
@@ -151,3 +262,32 @@ extra entities on a large instance. No auto-install or rollout-pacing behavior y
   of staying under the panel (`/update-manager/updates`). `hass-tabs-subpage` matches/links tabs
   using the *full* absolute path (`route.prefix + route.path`), not a path relative to the panel --
   `tabs[].path` was wrongly given just the relative tail.
+- Found via live testing: some pending updates never showed up on the Updates tab at all.
+  `coordinator.py`'s `async_start()` ran its initial bulk scan (which can easily take several
+  seconds on a large instance -- 100+ update entities, staggered on purpose) *before* subscribing to
+  `state_changed`. Any update entity whose very first state appeared in that window (e.g. an
+  integration that finishes its own setup later than ours) was in neither the scan's snapshot nor
+  caught by a not-yet-attached listener, and so was silently missed until something else about it
+  changed later. Subscribe first, then scan -- the worst case is now a harmless redundant refresh,
+  not a permanent gap.
+- `homeassistant.bus.async_listen`'s `run_immediately` argument is deprecated (breaks in HA 2025.5,
+  found via a real log warning) -- removed; no functional change; our listener was already a plain
+  `@callback`, which is what that argument used to opt into anyway.
+- Found via code review: `coordinator.py` only recomputed an update's status/remaining time when
+  `state_changed` fired (or a settings save), never purely because time itself had passed. An update
+  entity that reached "waiting" and then never changed state again (common -- most integrations only
+  touch `installed_version`/`latest_version`, not on a timer) stayed "waiting" forever, even once its
+  configured wait had long since elapsed -- so it would never become "ready" and `install_manager.py`
+  would never announce/auto-install it either. Added a 15-minute periodic recheck (`_recompute_all`,
+  shared with `async_update_rules`) alongside the existing `state_changed` trigger.
+- Found via code review: `install_manager.py` called `update.install` with `blocking=False`, which
+  meant (a) a user's cancel could race the actual install and appear to succeed even though the
+  install had already been dispatched, and (b) the surrounding `try`/`except` could only ever catch
+  pre-dispatch errors, never a genuine install failure -- those vanished silently instead of being
+  logged with Update Manager's own context. Fixed by finalizing the pending-install removal *before*
+  dispatching the install (so a cancel arriving in that window is simply too late, not a race), and
+  running the actual `update.install` call as its own task with `blocking=True` so a real failure
+  raises and gets logged there, without blocking the 5-minute tick from evaluating other entities.
+- Found via code review: the persistent_notification announcing a pending auto-install was always
+  Dutch text regardless of `hass.config.language`, inconsistent with the panel (already fixed to
+  follow `hass.language`). Now follows the same convention, EN/NL.

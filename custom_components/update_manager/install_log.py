@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -29,9 +30,6 @@ STORAGE_KEY = f"{DOMAIN}_install_log"
 # to show without needing to worry about pruning itself.
 MAX_ENTRIES = 1000
 
-# UpdateEntityFeature.RELEASE_NOTES (homeassistant/components/update/const.py).
-_FEATURE_RELEASE_NOTES = 16
-
 
 async def _async_release_notes(hass: HomeAssistant, entity_id: str, supported_features: int) -> str | None:
     """Best-effort: the entity's full release notes, if it supports fetching
@@ -39,7 +37,7 @@ async def _async_release_notes(hass: HomeAssistant, entity_id: str, supported_fe
     notes aren't a plain state attribute -- they're fetched on demand, the
     same way HA's own more-info dialog and its `update/release_notes`
     websocket command do, via the update entity's own async_release_notes()."""
-    if not supported_features & _FEATURE_RELEASE_NOTES:
+    if not supported_features & UpdateEntityFeature.RELEASE_NOTES:
         return None
     try:
         component = hass.data.get("update")

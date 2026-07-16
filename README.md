@@ -4,12 +4,13 @@
 # Update Manager: Home Assistant helper integration
 
 > [!NOTE]
-> Very early, pre-alpha stage. Phase 0 (below) mostly works and has been tested against a real
-> instance, but this repository isn't ready to be installed by end users yet -- no release has
-> been cut, and there's no auto-install or rollout-pacing (also below) at all yet.
+> Very early, pre-alpha stage. Phase 0 and auto-install (below) mostly work and have been tested
+> against a real instance, but this repository isn't ready to be installed by end users yet -- no
+> release has been cut, and device-firmware rollout-pacing isn't wired up yet (also below).
 
-Update Manager helps you decide when a Home Assistant update is worth installing. It never installs
-anything on its own: it only tells you, per pending update, whether it's worth a look right now.
+Update Manager helps you decide when a Home Assistant update is worth installing, and can optionally
+install it for you -- never silently: an eligible update is always announced first, with time to
+cancel, before anything actually happens.
 
 ## Planned scope
 
@@ -22,20 +23,27 @@ all:
   major/unrecognized versions -- is fully configurable, not hardcoded. An install log keeps track of
   what was installed and when, with release notes where available. Not yet built: pacing a group of
   devices sharing the same firmware update one at a time (`rollout.py`'s queue logic exists and is
-  tested, but isn't wired to real devices yet -- it only makes sense once Update Manager can act on
-  an update at all, see Phase 3).
+  tested, but isn't wired to real devices yet).
+- **Auto-install (mostly done)**: per version-jump type (patch/minor/major/unrecognized), optionally
+  let Update Manager actually install an update once it's "ready" -- off by default everywhere, one
+  independent on/off switch per type, no hardcoded exceptions (major updates can be auto-installed
+  too, if you explicitly turn that on). The only hard exception is Core/Supervisor/HAOS, which always
+  stays manual. Nothing installs the instant it's eligible: it's announced first (a configurable,
+  cancellable wait, default 24 hours), visible and cancellable on the panel's Updates tab, with a
+  heads-up notification. A backup is requested automatically when the entity supports it. Not yet
+  wired up for device firmware specifically -- that needs rollout-pacing (above) first, so Zigbee/
+  Z-Wave/Bluetooth updates don't all land on a shared mesh at once.
 - **Phase 1**: a community backend (plain git + GitHub Actions, no hosted server) where people can
   vote on whether a given release was problem-free.
-- **Phase 2 (in progress)**: a Home Assistant sidebar panel. Currently: read-only Updates and
-  Historie tabs, and an Instellingen tab for the Phase 0 staging rules. Later: the community verdict
-  from Phase 1, and a vote button.
-- **Phase 3** (direction decided, not yet designed): actually installing updates -- the end goal is
-  for Update Manager to manage updates, which eventually means automating installation too, not just
-  advising. This needs its own careful design (which categories, cooldown periods, backup
-  requirements, confirmation UX, fail-closed behavior) before any of it is built.
+- **Phase 2 (in progress)**: a Home Assistant sidebar panel. Currently: Updates (incl. any pending
+  auto-installs) and Historie tabs, and an Instellingen tab for the staging/auto-install rules. Later:
+  the community verdict from Phase 1, and a vote button.
+- **Phase 3** (mostly not needed anymore): feeding the community verdict into the local rules as an
+  extra, optional gate on top of auto-install -- see FUTURE.md for the parts (a fixed cooldown, a
+  quorum requirement) not yet decided.
 
-Showing whether an update is worth a look and actually automating its installation are two separate
-features: the former is useful entirely on its own, even before the latter exists.
+Showing whether an update is worth a look and actually installing it are two separate features: the
+former is useful entirely on its own, even for someone who never turns auto-install on.
 
 ## Installation
 

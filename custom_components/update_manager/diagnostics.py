@@ -19,7 +19,24 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
     data = hass.data.get(DOMAIN, {})
     coordinator = data.get("coordinator")
     install_log = data.get("install_log")
+    install_manager = data.get("install_manager")
     return {
+        # The raw, actually-persisted settings -- added 2026-07-16 to check
+        # a save without needing the browser console/websocket_api either.
+        "options": dict(entry.options),
         "updates": list(coordinator.cache.values()) if coordinator else [],
         "install_log": install_log.entries if install_log else [],
+        "pending_installs": (
+            [
+                {
+                    "entity_id": p.entity_id,
+                    "to_version": p.to_version,
+                    "announced_at": p.announced_at.isoformat(),
+                    "execute_at": p.execute_at.isoformat(),
+                }
+                for p in install_manager.all_pending
+            ]
+            if install_manager
+            else []
+        ),
     }

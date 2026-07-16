@@ -5,10 +5,9 @@ Phase 2's panel will use -- neither should duplicate this refresh logic or
 the recorder lookups it can trigger.
 
 Also the single place that notices when an update actually completes
-(installed_version changed), regardless of who/what triggered it, and tells
-anyone who registered an install listener (see install_log.py) -- Update
-Manager doesn't call `update.install` itself yet, so this is the only way to
-learn an install happened at all.
+(installed_version changed), regardless of who/what triggered it (a manual
+click, or install_manager.py's own auto-install), and tells anyone who
+registered an install listener (see install_log.py).
 """
 from __future__ import annotations
 
@@ -17,22 +16,22 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
 
+from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Event, HomeAssistant, State, callback
-from homeassistant.helpers.event import EventStateChangedData
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import EventStateChangedData, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .const import (
-    CONF_MAJOR_BLOCKED,
-    CONF_MAJOR_WAIT_DAYS,
-    CONF_MINOR_BLOCKED,
-    CONF_MINOR_WAIT_DAYS,
-    CONF_PATCH_BLOCKED,
-    CONF_PATCH_WAIT_DAYS,
-    CONF_UNKNOWN_BLOCKED,
-    CONF_UNKNOWN_WAIT_DAYS,
+    CONF_BIG_WAIT_DAYS,
+    CONF_EXCLUDED_ENTITIES,
+    CONF_MEDIUM_WAIT_DAYS,
+    CONF_SMALL_WAIT_DAYS,
+    PROFILE_BALANCED,
+    PROFILE_PRESETS,
 )
-from .semver import classify_version_jump
-from .staging import DEFAULT_RULES, StagingRules, evaluate_staging
+from .semver import classify_version_size
+from .staging import StagingRules, evaluate_staging, wait_for_size
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,32 +39,140 @@ _LOGGER = logging.getLogger(__name__)
 # for its own best-effort recorder history lookup.
 _HISTORY_LOOKBACK = timedelta(days=30)
 
+# Home Assistant Core/Supervisor/OS's own update entities, identified by
+# their unique_id (verified against homeassistant/components/hassio/
+# entity.py's HassioCoreEntity/HassioSupervisorEntity/HassioOSEntity --
+# f"home_assistant_{core,supervisor,os}_{ATTR_VERSION_LATEST}", and
+# ATTR_VERSION_LATEST = "version_latest" per hassio/const.py). Matched by
+# unique_id rather than by platform == "hassio": that platform also
+# provides regular add-ons' update entities, which are a different,
+# instelbaar category (see FUTURE.md), not this hard exception.
+_HARD_EXCLUDED_UNIQUE_IDS = frozenset(
+    {
+        "home_assistant_core_version_latest",
+        "home_assistant_supervisor_version_latest",
+        "home_assistant_os_version_latest",
+    }
+)
+
+# A registry entry's unique_id is whatever it was when first created, not
+# whatever today's hassio/entity.py would generate -- it doesn't get
+# migrated just because the integration's own code changed since. Found
+# live: a real instance's Core/Supervisor/OS update entities didn't match
+# _HARD_EXCLUDED_UNIQUE_IDS at all, despite that matching current source.
+# These conventional entity_ids are the fallback for exactly that drift --
+# not the primary check (entity_id can, in the abstract, be renamed, unique_id
+# can't), but nobody actually renames these three in practice, so it's a
+# safe net for whatever unique_id scheme a given instance's registry
+# happens to still be carrying.
+_HARD_EXCLUDED_ENTITY_IDS = frozenset(
+    {
+        "update.home_assistant_core_update",
+        "update.home_assistant_supervisor_update",
+        "update.home_assistant_operating_system_update",
+    }
+)
+
+
+def _matches_hard_exclusion(entity_id: str, unique_id: str | None) -> bool:
+    return entity_id in _HARD_EXCLUDED_ENTITY_IDS or unique_id in _HARD_EXCLUDED_UNIQUE_IDS
+
+
+def _is_hard_excluded_from_auto_install(hass: HomeAssistant, entity_id: str) -> bool:
+    """Core/Supervisor/HAOS always stay manual, never auto-install,
+    regardless of any setting -- decided 2026-07-15, see FUTURE.md: the
+    impact of a misser here is the whole HA instance, not one integration/
+    add-on/device. Still shown normally otherwise (real size classification,
+    a real ready/waiting/blocked status) -- this only ever gates
+    install_manager.py's auto-install, never the informational display."""
+    entry = er.async_get(hass).async_get(entity_id)
+    return _matches_hard_exclusion(entity_id, entry.unique_id if entry else None)
+
+
+def hard_excluded_entity_ids(hass: HomeAssistant) -> list[str]:
+    """The real entity_ids (if these entities exist on this instance at all)
+    behind _HARD_EXCLUDED_UNIQUE_IDS -- exposed via websocket_api.py's
+    get_settings so the panel's excluded-entities picker can show *which*
+    entities are always excluded regardless of what's selected there
+    (direct user feedback: the helper text said so, but nothing in the
+    picker itself showed them, and they can't be added/removed from that
+    list anyway since this exclusion doesn't come from it).
+
+    Called on every settings-tab load/save, so this tries the 3 known
+    conventional entity_ids directly (O(1) each via the registry's own
+    index) rather than scanning every entity on the instance; only the
+    rare drift case (see _HARD_EXCLUDED_ENTITY_IDS's own comment -- a
+    conventional entity_id not actually present under that exact id) falls
+    back to a full scan, and only for whatever wasn't already found."""
+    registry = er.async_get(hass)
+    found: set[str] = set()
+    remaining_unique_ids = set(_HARD_EXCLUDED_UNIQUE_IDS)
+    for entity_id in _HARD_EXCLUDED_ENTITY_IDS:
+        entry = registry.async_get(entity_id)
+        if entry is not None:
+            found.add(entity_id)
+            remaining_unique_ids.discard(entry.unique_id)
+    if remaining_unique_ids:
+        for entry in registry.entities.values():
+            if entry.unique_id in remaining_unique_ids:
+                found.add(entry.entity_id)
+    return sorted(found)
+
+
+def _is_excluded_from_auto_install(hass: HomeAssistant, entity_id: str, excluded_entities: frozenset[str]) -> bool:
+    """The hard Core/Supervisor/HAOS exclusion, plus whatever the user
+    picked themselves on the settings screen (direct user feedback: expected
+    a way to add their own entities to the same always-manual behaviour, not
+    just the 3 hardcoded ones). Same rule either way: still shown normally
+    in Updates/Historie, install_manager.py just never auto-installs it."""
+    return _is_hard_excluded_from_auto_install(hass, entity_id) or entity_id in excluded_entities
+
+
+def excluded_entities_from_options(options: dict) -> frozenset[str]:
+    return frozenset(options.get(CONF_EXCLUDED_ENTITIES, []))
+
 # Brief pause between recorder history lookups during the initial bulk
 # scan at startup -- a large instance can have 100+ update entities, and
 # firing that many recorder queries back to back right at startup (already
 # a busy time) isn't necessary just because we technically can.
 _STARTUP_QUERY_STAGGER = 0.05
 
+# state_changed only fires again once an entity's own state/installed_version/
+# latest_version actually changes -- a wait period can elapse with no such
+# change at all (the entity just sits there reporting the same pending
+# update), and without a separate timer nothing would ever recompute
+# status/remaining_seconds for it again. Found live: an update stuck on
+# "waiting" whose entity never changed state afterward stayed "waiting"
+# forever and was never announced/auto-installed, even once its configured
+# wait had long since elapsed. Purely a recompute from already-cached facts
+# (no recorder round-trip, see async_update_rules's own comment) so a
+# frequent-ish interval is cheap; 15 minutes is well under the coarsest
+# configurable wait granularity (whole days) so it doesn't visibly lag.
+_RECHECK_INTERVAL = timedelta(minutes=15)
+
 InstallListener = Callable[[str, str, str, State], None]
 
 
 def rules_from_options(options: dict) -> StagingRules:
-    """Builds a StagingRules from the options flow's stored values, falling
-    back to staging.DEFAULT_RULES for anything not set yet (e.g. before the
-    options flow has ever been completed)."""
+    """Builds a StagingRules from the settings panel's stored values, falling
+    back to the "balanced" profile's own numbers for anything not set yet
+    (e.g. before the settings have ever been saved) -- not staging.py's own
+    DEFAULT_RULES, whose big_wait=None means "always blocked". Every real
+    profile (const.py's PROFILE_PRESETS) gives "big" a real, finite wait, so
+    a freshly-created config entry (options == {}) should read exactly like
+    a freshly-saved "balanced" profile, not like a deliberate "block all
+    major updates forever" choice nobody actually made. Fixed 2026-07-16:
+    found live -- a brand new install showed a major update as blocked/red
+    before anyone had ever opened the settings tab."""
+    balanced = PROFILE_PRESETS[PROFILE_BALANCED]
 
-    def _wait(days_key: str, blocked_key: str, default: timedelta | None) -> timedelta | None:
-        if blocked_key not in options and days_key not in options:
-            return default
-        if options.get(blocked_key, False):
-            return None
-        return timedelta(days=options.get(days_key, 0))
+    def _wait(days_key: str) -> timedelta:
+        return timedelta(days=options.get(days_key, balanced[days_key]))
 
     return StagingRules(
-        patch_wait=_wait(CONF_PATCH_WAIT_DAYS, CONF_PATCH_BLOCKED, DEFAULT_RULES.patch_wait),
-        minor_wait=_wait(CONF_MINOR_WAIT_DAYS, CONF_MINOR_BLOCKED, DEFAULT_RULES.minor_wait),
-        major_wait=_wait(CONF_MAJOR_WAIT_DAYS, CONF_MAJOR_BLOCKED, DEFAULT_RULES.major_wait),
-        unknown_wait=_wait(CONF_UNKNOWN_WAIT_DAYS, CONF_UNKNOWN_BLOCKED, DEFAULT_RULES.unknown_wait),
+        small_wait=_wait(CONF_SMALL_WAIT_DAYS),
+        medium_wait=_wait(CONF_MEDIUM_WAIT_DAYS),
+        big_wait=_wait(CONF_BIG_WAIT_DAYS),
     )
 
 
@@ -119,14 +226,16 @@ async def _async_available_since(hass: HomeAssistant, entity_id: str, current_la
 
 
 class UpdateManagerCoordinator:
-    def __init__(self, hass: HomeAssistant, rules: StagingRules) -> None:
+    def __init__(self, hass: HomeAssistant, rules: StagingRules, excluded_entities: frozenset[str] = frozenset()) -> None:
         self.hass = hass
         self.rules = rules
-        # entity_id -> {"entity_id", "version_jump", "status", "remaining_seconds", "installable"}
+        self.excluded_entities = excluded_entities
+        # entity_id -> {"entity_id", "version_size", "status", "remaining_seconds", "installable"}
         self.cache: dict[str, dict] = {}
         self._listeners: list[Callable[[], None]] = []
         self._install_listeners: list[InstallListener] = []
         self._unsub_state_changed: Callable[[], None] | None = None
+        self._unsub_recheck: Callable[[], None] | None = None
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Registers a callback fired after any recompute. Returns an unsub."""
@@ -149,19 +258,72 @@ class UpdateManagerCoordinator:
         return _remove
 
     async def async_start(self) -> None:
+        # Subscribe *before* the initial bulk scan, not after -- found via
+        # live testing on a real instance (some pending updates never
+        # showed up at all). The staggered scan below can easily take
+        # several seconds on a large instance (100+ update entities); any
+        # update entity whose very first state (another integration finishing
+        # its own setup later than ours, e.g.) appeared in that window would
+        # be in neither the scan's snapshot nor caught by a listener that
+        # wasn't attached yet, and so was silently missed forever. Listening
+        # first means the worst case is now a harmless redundant refresh
+        # (the scan reaching that same entity a moment later), not a gap.
+        self._unsub_state_changed = self.hass.bus.async_listen("state_changed", self._handle_state_changed)
+        self._unsub_recheck = async_track_time_interval(self.hass, self._async_periodic_recheck, _RECHECK_INTERVAL)
+
         for entity_id in self.hass.states.async_entity_ids("update"):
             await self._async_refresh_one(entity_id)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
-
-        self._unsub_state_changed = self.hass.bus.async_listen(
-            "state_changed", self._handle_state_changed, run_immediately=True
-        )
 
     @callback
     def async_stop(self) -> None:
         if self._unsub_state_changed is not None:
             self._unsub_state_changed()
             self._unsub_state_changed = None
+        if self._unsub_recheck is not None:
+            self._unsub_recheck()
+            self._unsub_recheck = None
+
+    def _recompute_all(self, now: datetime) -> None:
+        """The actual status/remaining_seconds/auto_install_excluded
+        recompute, from already-cached facts (installed_version/
+        latest_version/available_since don't change here) -- shared by
+        async_update_rules (new rules) and _async_periodic_recheck (same
+        rules, just time having passed)."""
+        for entity_id, cached in self.cache.items():
+            available_since = dt_util.parse_datetime(cached["available_since"])
+            result = evaluate_staging(cached["version_size"], available_since, now, self.rules)
+            cached["status"] = result.status
+            cached["remaining_seconds"] = (
+                round(result.remaining.total_seconds()) if result.remaining is not None else None
+            )
+            cached["auto_install_excluded"] = _is_excluded_from_auto_install(
+                self.hass, entity_id, self.excluded_entities
+            )
+
+    @callback
+    def _async_periodic_recheck(self, now: datetime) -> None:
+        self._recompute_all(now)
+        for listener in list(self._listeners):
+            listener()
+
+    async def async_update_rules(self, rules: StagingRules, excluded_entities: frozenset[str] | None = None) -> None:
+        """Applies newly-saved staging rules (and, since 2026-07-16, the
+        user's own excluded-entities picks) without a full entry reload (see
+        __init__.py's update_listener): the already-cached installed_version/
+        latest_version/available_since facts don't change just because the
+        settings did, only the derived ready/waiting/blocked verdict (and
+        now also auto_install_excluded) does -- cheap to recompute in place,
+        no recorder round-trip needed. Found live: the Updates/History tabs
+        briefly went empty after every settings save, while the old
+        reload-based approach tore down and rebuilt the whole cache from
+        scratch (a multi-second, staggered bulk scan)."""
+        self.rules = rules
+        if excluded_entities is not None:
+            self.excluded_entities = excluded_entities
+        self._recompute_all(dt_util.utcnow())
+        for listener in list(self._listeners):
+            listener()
 
     @callback
     def _handle_state_changed(self, event: Event[EventStateChangedData]) -> None:
@@ -215,39 +377,32 @@ class UpdateManagerCoordinator:
             self.cache.pop(entity_id, None)
             return
 
-        jump = classify_version_jump(current, latest)
+        size = classify_version_size(current, latest)
         now = dt_util.utcnow()
-        # Uses this entry's actual configured rules (options flow), not
-        # always the hardcoded defaults -- a user may have given major/
-        # unknown a real wait instead of "always blocked" (see FUTURE.md).
-        # Only skip the recorder query when the *configured* wait for this
-        # jump is None, since only then can available_since not change the
-        # answer.
+        # Uses this entry's actual configured rules (settings panel), not
+        # always the hardcoded defaults -- a user may have given "big" a
+        # real wait instead of "always blocked" (see FUTURE.md). Only skip
+        # the recorder query when the *configured* wait for this size is
+        # None, since only then can available_since not change the answer.
         rules = self.rules
-        configured_wait = {
-            "patch": rules.patch_wait,
-            "minor": rules.minor_wait,
-            "major": rules.major_wait,
-            "unknown": rules.unknown_wait,
-        }[jump]
+        configured_wait = wait_for_size(rules, size)
         if configured_wait is None:
             available_since = now
         else:
             available_since = await _async_available_since(self.hass, entity_id, latest)
-        result = evaluate_staging(jump, available_since, now, rules)
-        # UpdateEntityFeature.INSTALL = 1 (homeassistant/components/update/const.py):
-        # some update entities (e.g. firmware that must be flashed manually)
+        result = evaluate_staging(size, available_since, now, rules)
+        # Some update entities (e.g. firmware that must be flashed manually)
         # only ever report that a newer version exists, with no install
         # action at all -- ready/waiting/blocked is still meaningful for
-        # "should you move to this version", but this must gate any future
-        # auto-install: never call update.install on an entity that doesn't
-        # support it.
-        installable = bool(state.attributes.get("supported_features", 0) & 1)
+        # "should you move to this version", but install_manager.py's
+        # auto-install must gate on this: never call update.install on an
+        # entity that doesn't support it.
+        installable = bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL)
         self.cache[entity_id] = {
             "entity_id": entity_id,
             "installed_version": current,
             "latest_version": latest,
-            "version_jump": jump,
+            "version_size": size,
             "status": result.status,
             "remaining_seconds": (
                 round(result.remaining.total_seconds()) if result.remaining is not None else None
@@ -257,4 +412,9 @@ class UpdateManagerCoordinator:
             # checked by hand (diagnostics download) instead of only being
             # inferable from status/remaining_seconds.
             "available_since": available_since.isoformat(),
+            # Core/Supervisor/HAOS, plus whatever the user picked themselves:
+            # always manual, regardless of the size/auto-install settings --
+            # install_manager.py checks this before ever auto-installing.
+            # Doesn't change size/status here, those stay informational.
+            "auto_install_excluded": _is_excluded_from_auto_install(self.hass, entity_id, self.excluded_entities),
         }

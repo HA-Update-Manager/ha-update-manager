@@ -1,57 +1,73 @@
 DOMAIN = "update_manager"
 
-CONF_PATCH_WAIT_DAYS = "patch_wait_days"
-CONF_PATCH_BLOCKED = "patch_blocked"
-CONF_MINOR_WAIT_DAYS = "minor_wait_days"
-CONF_MINOR_BLOCKED = "minor_blocked"
-CONF_MAJOR_WAIT_DAYS = "major_wait_days"
-CONF_MAJOR_BLOCKED = "major_blocked"
-CONF_UNKNOWN_WAIT_DAYS = "unknown_wait_days"
-CONF_UNKNOWN_BLOCKED = "unknown_blocked"
+CONF_SMALL_WAIT_DAYS = "small_wait_days"
+CONF_SMALL_AUTO_INSTALL = "small_auto_install"
+CONF_MEDIUM_WAIT_DAYS = "medium_wait_days"
+CONF_MEDIUM_AUTO_INSTALL = "medium_auto_install"
+CONF_BIG_WAIT_DAYS = "big_wait_days"
+CONF_BIG_AUTO_INSTALL = "big_auto_install"
+
+# Two independent settings per size (small/medium/big, see semver.py), not
+# three mutually exclusive choices: how long to wait (a traffic light, not
+# a judgment call, see FUTURE.md's 2026-07-16 note), and whether Update
+# Manager presses install itself once that wait elapses, or you do. An
+# earlier "always needs a manual look" third option, and a separate
+# "unknown version type" category, were both removed the same day: neither
+# was really about judging anything, and semver.py's own size
+# classification already folds "we can't confidently place this" into
+# "big" -- a conservative default wait covers it, no separate settings
+# category needed.
+CONF_ANNOUNCE_HOURS = "announce_hours"
+DEFAULT_ANNOUNCE_HOURS = 24
+
+# User-picked, on top of coordinator.py's own hard, non-configurable
+# Core/Supervisor/HAOS exclusion -- entities here are still shown normally
+# in Updates/Historie (a real size/status, real history), install_manager.py
+# just never auto-installs them, same as the hard exclusion. A plain list of
+# entity_ids, not part of any profile preset: this is a per-instance choice
+# about *which* entities, not a wait/auto-install tuning value.
+CONF_EXCLUDED_ENTITIES = "excluded_entities"
 
 PROFILE_CONSERVATIVE = "conservative"
 PROFILE_BALANCED = "balanced"
 PROFILE_FREE = "free"
-PROFILE_CUSTOM = "custom"
 
 # A profile only pre-fills the detailed fields below it -- it never hides
 # them (decided 2026-07-15, see FUTURE.md). "custom" means "keep whatever
 # is already configured (or the balanced defaults, the first time)" rather
 # than a distinct set of values of its own.
+#
+# Every profile defaults auto_install to False everywhere: auto-install is
+# a large enough step up in consequence (Update Manager actually calling
+# update.install) that no profile should switch it on silently; a user has
+# to opt in per size by hand (see FUTURE.md's auto-install design note,
+# 2026-07-15).
 PROFILE_PRESETS: dict[str, dict[str, int | bool]] = {
     PROFILE_CONSERVATIVE: {
-        CONF_PATCH_WAIT_DAYS: 3,
-        CONF_PATCH_BLOCKED: False,
-        CONF_MINOR_WAIT_DAYS: 14,
-        CONF_MINOR_BLOCKED: False,
-        CONF_MAJOR_WAIT_DAYS: 0,
-        CONF_MAJOR_BLOCKED: True,
-        CONF_UNKNOWN_WAIT_DAYS: 0,
-        CONF_UNKNOWN_BLOCKED: True,
+        CONF_SMALL_WAIT_DAYS: 3,
+        CONF_SMALL_AUTO_INSTALL: False,
+        CONF_MEDIUM_WAIT_DAYS: 14,
+        CONF_MEDIUM_AUTO_INSTALL: False,
+        CONF_BIG_WAIT_DAYS: 60,
+        CONF_BIG_AUTO_INSTALL: False,
+        CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
     },
     PROFILE_BALANCED: {
-        CONF_PATCH_WAIT_DAYS: 0,
-        CONF_PATCH_BLOCKED: False,
-        CONF_MINOR_WAIT_DAYS: 7,
-        CONF_MINOR_BLOCKED: False,
-        CONF_MAJOR_WAIT_DAYS: 0,
-        CONF_MAJOR_BLOCKED: True,
-        CONF_UNKNOWN_WAIT_DAYS: 0,
-        CONF_UNKNOWN_BLOCKED: True,
+        CONF_SMALL_WAIT_DAYS: 0,
+        CONF_SMALL_AUTO_INSTALL: False,
+        CONF_MEDIUM_WAIT_DAYS: 7,
+        CONF_MEDIUM_AUTO_INSTALL: False,
+        CONF_BIG_WAIT_DAYS: 30,
+        CONF_BIG_AUTO_INSTALL: False,
+        CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
     },
     PROFILE_FREE: {
-        CONF_PATCH_WAIT_DAYS: 0,
-        CONF_PATCH_BLOCKED: False,
-        CONF_MINOR_WAIT_DAYS: 0,
-        CONF_MINOR_BLOCKED: False,
-        CONF_MAJOR_WAIT_DAYS: 30,
-        CONF_MAJOR_BLOCKED: False,
-        # Deliberate judgment call, not explicitly discussed: "unknown"
-        # stays blocked even under the otherwise-permissive "free" profile,
-        # since it means "we can't even parse the version", not "a big
-        # jump" -- there's no real risk level to weigh, just a missing
-        # signal. Still fully editable by hand if someone disagrees.
-        CONF_UNKNOWN_WAIT_DAYS: 0,
-        CONF_UNKNOWN_BLOCKED: True,
+        CONF_SMALL_WAIT_DAYS: 0,
+        CONF_SMALL_AUTO_INSTALL: False,
+        CONF_MEDIUM_WAIT_DAYS: 0,
+        CONF_MEDIUM_AUTO_INSTALL: False,
+        CONF_BIG_WAIT_DAYS: 30,
+        CONF_BIG_AUTO_INSTALL: False,
+        CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
     },
 }

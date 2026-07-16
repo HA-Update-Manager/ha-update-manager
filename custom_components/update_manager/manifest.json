@@ -4,7 +4,7 @@
     "after_dependencies": ["recorder"],
     "codeowners": ["@klaptafel"],
     "config_flow": true,
-    "dependencies": ["http", "websocket_api", "panel_custom"],
+    "dependencies": ["http", "websocket_api", "panel_custom", "persistent_notification"],
     "documentation": "https://github.com/HA-Update-Manager/ha-update-manager",
     "integration_type": "service",
     "iot_class": "calculated",
