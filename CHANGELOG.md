@@ -225,6 +225,53 @@ by default; device-firmware rollout-pacing does not yet.
   gates `install_manager.py` before it ever auto-installs anything -- the shown size/status stay fully
   informational either way, only the auto-install gate is hardcoded. The Updates tab now also shows
   "(altijd handmatig)" next to these three specifically.
+- **Master pause switch**: one toggle at the top of the Instellingen tab (`enabled`, on by default)
+  pauses every autonomous action Update Manager itself takes -- announcing, executing an auto-install,
+  and hiding postponed updates (below) -- without touching any other setting. `coordinator.py` owns
+  the single shared flag (`master_enabled`); `install_manager.py` and `staging_skip.py` both read it
+  directly rather than each keeping an independent copy, so the two can't silently disagree about
+  whether Update Manager is paused. Turning it back on resumes an in-flight auto-install announcement
+  from the exact same `execute_at` it already had, instead of restarting a fresh `announce_hours`
+  countdown -- `announcer.py`'s `decide_action` treats the pause as "freeze in place" (untouched, not
+  removed), a deliberate change after seeing an active countdown jump forward a full day the moment
+  the switch was toggled off and on again.
+- **Hide postponed updates from Home Assistant's own update count**: opt-in (Instellingen tab). While
+  an update is still "waiting" (Fase 0's staging, not yet ready), Update Manager marks it skipped via
+  HA's own real `update.skip` service, so it disappears from the sidebar's update count and any other
+  native "updates available" surface, not just from this panel -- automatically un-skipped again once
+  it actually becomes ready. The one real risk this exists to avoid: HA's `skipped_version` has no
+  memory of *why* it was set, so blindly un-skipping everything seen skipped would just as happily
+  clear a skip the user set themselves. Every skip/unskip this feature performs is recorded in its own
+  persisted store first, and it only ever acts on an entity/version pair it recorded there itself --
+  the panel's own "Skipped" group only ever shows a real, user-initiated skip; a postponed update this
+  feature is hiding still just reads as "Postponed". A new `hidden_by_update_manager` field per update
+  (summary sensor, `update_manager/updates`) makes that distinction directly inspectable instead of
+  only reachable by reading the internal `is_own_skip` logic.
+- **Live install progress**: the detail dialog shows a real progress bar (percentage-based when the
+  entity reports one, otherwise indeterminate) while an update is actually installing, in the same
+  spot HA's own more-info dialog puts it, with the status text saying "Installing…" and the
+  Skip/Cancel/Clear skipped buttons disabled for the duration, all updating live as the entity's own
+  state streams in -- not just when the dialog happens to be open, the Updates list itself shows the
+  same spinner/percentage ring in place of its trailing chevron, matching `/config/updates` row for
+  row. Installing a postponed or skipped update (a new `update_manager/install` command) clears that
+  status immediately rather than waiting for the install to actually finish.
+- **"Update all" button** on the Ready-to-update group, matching `/config/updates`'s own
+  implementation exactly: a single batched `update.install` call covering every entity in the group
+  that isn't already installing (not a loop of individual calls -- HA's own services already support
+  a list target for `entity_id`), same disabled condition and error-message entity-id-to-friendly-name
+  substitution as the real one.
+- Settings now autosave (debounced) instead of requiring a separate Save button -- every edit is
+  written a moment after you stop typing/toggling, with a toast confirming it saved.
+- Countdowns throughout the panel (auto-install timing, postponement) now read as an absolute clock
+  time ("Today 14:06", "Tomorrow", a short date further out) instead of a relative "in 4 hours" --
+  respects both `hass.language` (not the browser's own OS locale, which can disagree) and the user's
+  own Home Assistant time-format preference (`hass.locale.time_format`: 12h/24h/system/language),
+  matching HA's own `useAmPm()` logic.
+- "Install" renamed to "Update" throughout the panel (buttons, dialog, translations), matching HA's
+  own real update-entity button wording, verified against source rather than guessed.
+- History dialog entries are now their own card per install, showing whether it was an automatic or
+  manual install, with the short release summary shown inline and the full changelog behind a
+  collapsed-by-default expansion panel -- the flat list this replaced showed neither of those things.
 
 ### Changed
 - The summary sensor is a cheap debug view (Developer Tools -> States), not the source of truth or
@@ -243,6 +290,10 @@ by default; device-firmware rollout-pacing does not yet.
   boundary in HA Core's own release cadence, not a signal of more risk than any other monthly
   release. Only kicks in when *both* sides are calendar-shaped; a mixed comparison (one side
   calendar, one not) stays "unknown", same as before.
+- The detail dialog no longer closes itself after Cancel/Skip/Clear skipped -- it reloads and rebuilds
+  in place instead, so the confirmation that the action actually happened stays visible instead of
+  being hidden behind a closed dialog (found live: it looked like nothing happened until a manual
+  page refresh).
 
 ### Removed
 - The options flow (profile + 8-field details screen): superseded by the panel's Instellingen tab
@@ -291,3 +342,15 @@ by default; device-firmware rollout-pacing does not yet.
 - Found via code review: the persistent_notification announcing a pending auto-install was always
   Dutch text regardless of `hass.config.language`, inconsistent with the panel (already fixed to
   follow `hass.language`). Now follows the same convention, EN/NL.
+- Found via live testing: the tab bar never showed which tab was actually active when opening the
+  panel on its bare URL. `set route`'s own redirect to the Updates tab corrected the visible browser
+  URL and the panel's own internal tab state, but never corrected the `route` object itself handed
+  down to `hass-tabs-subpage` -- its own active-tab matching compares `route.prefix + route.path`
+  against each tab's full path, so the still-empty `path` never matched anything. Two earlier fix
+  attempts (forcing a fresh `route` object reference, an extra re-push after load) didn't touch this
+  and so didn't help; correcting the stored path itself on that same redirect did.
+- Found via live testing: the panel's own JS file was served from a fixed URL with no cache-busting,
+  and HA's static-path registration for it already sends long-lived cache headers -- the browser could
+  keep serving an old cached copy indefinitely after any code change, with no way to tell short of a
+  hard refresh. `module_url` now includes a short hash of the file's own current content, so any
+  change to it automatically produces a new URL.

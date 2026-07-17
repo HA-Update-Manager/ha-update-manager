@@ -8,6 +8,7 @@ just an announcement.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -97,6 +98,15 @@ class InstallManager:
         # once per changed entity -- see _async_tick's own comment.
         self._dirty = False
         self._unsub_timer = None
+        self._unsub_coordinator_listener = None
+        # entity_id -> the to_version _async_execute just dispatched
+        # update.install for -- lets __init__.py's install-listener (fired
+        # once the entity's installed_version actually changes, from
+        # coordinator.py) tell install_log.py whether *this* completed
+        # install was auto-install's doing or a manual click elsewhere.
+        # Not persisted: only meaningful for the brief window between
+        # dispatching and the entity's own state catching up.
+        self._recently_executed: dict[str, str] = {}
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -135,6 +145,15 @@ class InstallManager:
 
     def async_start(self) -> None:
         self._unsub_timer = async_track_time_interval(self.hass, self._async_tick, _CHECK_INTERVAL)
+        # Also re-evaluated on every coordinator recompute (a state_changed,
+        # the periodic recheck, or a settings save), not just this class's
+        # own 5-minute timer -- same mechanism staging_skip.py's own
+        # _on_recompute already uses. Found by review: without this, a real
+        # user skip (via HA's own UI) on an already-announced "ready" entity
+        # left a stale pending_install/persistent_notification visible for
+        # up to 5 minutes, since decide_action only got a chance to notice
+        # the new "skipped" status on the next timer tick.
+        self._unsub_coordinator_listener = self._coordinator.async_add_listener(self._on_recompute)
 
     def update_rules(self, rules: AutoInstallRules) -> None:
         """Applies newly-saved auto-install rules in place -- no reload
@@ -143,17 +162,60 @@ class InstallManager:
         this up naturally."""
         self._rules = rules
 
+    async def async_set_master_enabled(self, enabled: bool) -> None:
+        """Applied immediately, not left to the next periodic tick (up to 5
+        minutes away) -- direct user feedback (2026-07-17): pausing should
+        visibly cancel any in-flight countdown (and dismiss its
+        persistent_notification) right away, not just quietly stop
+        advancing it in the background.
+
+        No-ops when the value hasn't actually changed -- a settings save
+        calls this both directly (websocket_api.py's save_settings handler)
+        and again via HA's own config-entry update_listener, fired as an
+        unawaited background task shortly after with the same value. Found
+        by review: without this guard, that second, redundant tick could
+        run moments after the first one just dispatched an install (an
+        entity's execute_at crossed exactly at save time), see a cleared
+        self._pending and a cache that hasn't caught up to the install yet,
+        and wrongly start a brand-new announcement for a version already
+        mid-install.
+
+        Stores the flag on the coordinator (self._coordinator.master_enabled),
+        not a private copy of its own -- see coordinator.py's own
+        set_master_enabled for why."""
+        if enabled == self._coordinator.master_enabled:
+            return
+        self._coordinator.set_master_enabled(enabled)
+        await self._async_tick(dt_util.utcnow())
+
+    @callback
+    def _on_recompute(self) -> None:
+        self.hass.async_create_task(self._async_tick(dt_util.utcnow()))
+
     @callback
     def async_stop(self) -> None:
         if self._unsub_timer is not None:
             self._unsub_timer()
             self._unsub_timer = None
+        if self._unsub_coordinator_listener is not None:
+            self._unsub_coordinator_listener()
+            self._unsub_coordinator_listener = None
 
-    async def async_cancel(self, entity_id: str) -> None:
-        pending = self._pending.get(entity_id)
-        if pending is None:
-            return
-        self._cancelled[entity_id] = pending.to_version
+    async def async_cancel(self, entity_id: str, to_version: str) -> None:
+        """Cancels auto-install for this exact target version -- callable
+        even before a real announcement exists yet (still "waiting", only
+        projected, see the panel's own projectedAutoInstallTime), not just
+        once actually "ready" and formally announced. Direct user feedback:
+        seeing a "will auto-update" projection with no way to act on it
+        yet read as a real gap. decide_action already checks
+        cancelled_to_version == current_to_version on every tick regardless
+        of status, so recording this now correctly prevents the real
+        announcement from ever starting once the entity does become ready
+        -- no other change needed for that half of it. `to_version` comes
+        from the caller (the version currently shown in the UI), not
+        necessarily from an existing PendingAnnouncement, since one might
+        not exist yet."""
+        self._cancelled[entity_id] = to_version
         await self._async_remove(entity_id)
         await self._async_save()
 
@@ -163,7 +225,15 @@ class InstallManager:
         # anymore (e.g. the update disappeared) -- the latter defaults to
         # "not ready", so decide_action correctly cleans it up.
         #
-        # One save at the end of the loop, not one per entity that changed
+        # Concurrent, not one entity at a time -- found live (2026-07-17):
+        # this tick now also runs on every coordinator recompute (see
+        # async_start's own coordinator listener), not just the 5-minute
+        # timer, and a settings save awaits async_set_master_enabled ->
+        # this same tick directly, so a slow sequential pass here was
+        # directly felt as "Save spins for a long time". Same concurrency
+        # fix staging_skip.py's own equivalent passes already use.
+        #
+        # One save at the end, not one per entity that changed
         # (_async_announce/_async_remove/the stale-cancellation prune below
         # just mark self._dirty) -- Store.async_save writes the whole
         # pending+cancelled dict immediately, so saving per-entity inside a
@@ -171,8 +241,7 @@ class InstallManager:
         # payload in the same tick instead of one.
         entity_ids = set(self._coordinator.cache) | set(self._pending)
         self._dirty = False
-        for entity_id in entity_ids:
-            await self._async_evaluate_one(entity_id, now)
+        await asyncio.gather(*(self._async_evaluate_one(entity_id, now) for entity_id in entity_ids))
         if self._dirty:
             await self._async_save()
 
@@ -191,21 +260,20 @@ class InstallManager:
 
         # Core/Supervisor/HAOS: hard, non-configurable exception -- never
         # auto-install these regardless of the size/setting, see
-        # coordinator.py's _is_hard_excluded_from_auto_install.
-        enabled = (
+        # coordinator.py's _is_hard_excluded_from_auto_install. The master
+        # pause switch is passed to decide_action as its own, separate
+        # master_enabled argument, not folded in here -- see that
+        # function's own docstring for why (pausing freezes an existing
+        # countdown in place instead of removing it).
+        rules_enabled = (
             size_auto_install_enabled(cached["version_size"], self._rules)
             if cached and not cached["auto_install_excluded"]
             else False
         )
-        remaining = (
-            timedelta(seconds=cached["remaining_seconds"])
-            if cached and cached["remaining_seconds"] is not None
-            else None
-        )
         action = decide_action(
             is_ready=bool(cached and cached["status"] == "ready"),
-            remaining=remaining,
-            auto_install_enabled=enabled,
+            auto_install_enabled=rules_enabled,
+            master_enabled=self._coordinator.master_enabled,
             installable=bool(cached and cached["installable"]),
             existing=self._pending.get(entity_id),
             cancelled_to_version=cancelled_to_version,
@@ -215,16 +283,14 @@ class InstallManager:
         )
 
         if action == "announce":
-            await self._async_announce(entity_id, current_to_version, now, remaining)
+            await self._async_announce(entity_id, current_to_version, now)
         elif action == "execute":
-            await self._async_execute(entity_id)
+            await self._async_execute(entity_id, current_to_version)
         elif action == "remove":
             await self._async_remove(entity_id)
 
-    async def _async_announce(
-        self, entity_id: str, to_version: str, now: datetime, remaining: timedelta | None
-    ) -> None:
-        announcement = start_announcement(entity_id, to_version, now, self._rules.announce_wait, remaining)
+    async def _async_announce(self, entity_id: str, to_version: str, now: datetime) -> None:
+        announcement = start_announcement(entity_id, to_version, now, self._rules.announce_wait)
         self._pending[entity_id] = announcement
         self._dirty = True
 
@@ -238,7 +304,7 @@ class InstallManager:
             notification_id=f"{_NOTIFICATION_ID_PREFIX}{entity_id}",
         )
 
-    async def _async_execute(self, entity_id: str) -> None:
+    async def _async_execute(self, entity_id: str, to_version: str) -> None:
         # Finalize the decision *before* dispatching the actual install
         # call: once the wait has elapsed, a cancel that arrives while the
         # install is being dispatched must have no effect (too late), not
@@ -248,6 +314,13 @@ class InstallManager:
         # cancelled, while the install had already been scheduled and
         # installed anyway.
         await self._async_remove(entity_id)
+
+        # Recorded before dispatching, not after it resolves (see
+        # _async_run_install's own task) -- was_auto_installed() needs this
+        # in place by the time coordinator.py's install-listener notices
+        # installed_version actually changed, which can happen well before
+        # the update.install call itself finishes.
+        self._recently_executed[entity_id] = to_version
 
         state = self.hass.states.get(entity_id)
         supported_features = state.attributes.get("supported_features", 0) if state else 0
@@ -262,13 +335,42 @@ class InstallManager:
         # with our own context, instead of only ever surfacing as HA's
         # generic unhandled-task-exception log with no mention of
         # Update Manager at all.
-        self.hass.async_create_task(self._async_run_install(entity_id, service_data))
+        self.hass.async_create_task(self._async_run_install(entity_id, to_version, service_data))
 
-    async def _async_run_install(self, entity_id: str, service_data: dict[str, Any]) -> None:
+    def was_auto_installed(self, entity_id: str, to_version: str) -> bool:
+        """Consumed once by __init__.py's install-listener callback, fired
+        when coordinator.py notices installed_version actually changed to
+        `to_version` -- True only if *this* completed install was the one
+        _async_execute just dispatched, not a manual click (or any other
+        means) that happened to land on the same entity around the same
+        time.
+
+        Only pops the record on an actual match, not unconditionally --
+        found live (well, found by review): a plain .pop(entity_id, None)
+        discarded a still-valid record for a *different*, later dispatch
+        whenever this fired first for some other, unrelated version change
+        on the same entity (e.g. a manual install to an intermediate
+        version landing before the real auto-installed one's own state
+        change did) -- the genuine auto-install's own callback would then
+        find no record left and misattribute it as a manual install in
+        install_log.py."""
+        if self._recently_executed.get(entity_id) != to_version:
+            return False
+        del self._recently_executed[entity_id]
+        return True
+
+    async def _async_run_install(self, entity_id: str, to_version: str, service_data: dict[str, Any]) -> None:
         try:
             await self.hass.services.async_call("update", "install", service_data, blocking=True)
         except Exception:
             _LOGGER.exception("Update Manager's auto-install failed for %s", entity_id)
+            # Otherwise this stays recorded forever (was_auto_installed is
+            # the only other place that clears it, and it's never called if
+            # installed_version never actually changes) -- a later, wholly
+            # unrelated install of this entity to the exact same to_version
+            # (a manual retry, say) would then be wrongly attributed to us.
+            if self._recently_executed.get(entity_id) == to_version:
+                del self._recently_executed[entity_id]
 
     async def _async_remove(self, entity_id: str) -> None:
         if entity_id in self._pending:

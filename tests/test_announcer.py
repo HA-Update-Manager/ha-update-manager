@@ -42,7 +42,7 @@ class TestSizeAutoInstallEnabled:
 class TestDecideAction:
     def test_not_ready_with_no_existing_announcement_does_nothing(self):
         action = announcer.decide_action(
-            is_ready=False, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=False, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=None, cancelled_to_version=None, current_to_version="2.0.0",
             now=NOW, announce_wait=WAIT,
         )
@@ -52,7 +52,7 @@ class TestDecideAction:
         # E.g. the wait rule changed, or the update resolved itself --
         # nothing to fire on anymore.
         action = announcer.decide_action(
-            is_ready=False, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=False, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=_existing(), cancelled_to_version=None, current_to_version="2.0.0",
             now=NOW, announce_wait=WAIT,
         )
@@ -60,7 +60,7 @@ class TestDecideAction:
 
     def test_auto_install_disabled_removes_existing_announcement(self):
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=False, installable=True,
+            is_ready=True, auto_install_enabled=False, master_enabled=True, installable=True,
             existing=_existing(), cancelled_to_version=None, current_to_version="2.0.0",
             now=NOW, announce_wait=WAIT,
         )
@@ -71,7 +71,7 @@ class TestDecideAction:
         # even if it was somehow announced before (e.g. feature flags
         # changed underneath us).
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=False,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=False,
             existing=_existing(), cancelled_to_version=None, current_to_version="2.0.0",
             now=NOW, announce_wait=WAIT,
         )
@@ -79,7 +79,7 @@ class TestDecideAction:
 
     def test_eligible_with_no_existing_announcement_announces(self):
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=None, cancelled_to_version=None, current_to_version="2.0.0",
             now=NOW, announce_wait=WAIT,
         )
@@ -87,7 +87,7 @@ class TestDecideAction:
 
     def test_existing_announcement_not_yet_due_does_nothing(self):
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=_existing(announced_at=NOW), cancelled_to_version=None,
             current_to_version="2.0.0", now=NOW + timedelta(hours=1), announce_wait=WAIT,
         )
@@ -95,7 +95,7 @@ class TestDecideAction:
 
     def test_existing_announcement_exactly_due_executes(self):
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=_existing(announced_at=NOW), cancelled_to_version=None,
             current_to_version="2.0.0", now=NOW + WAIT, announce_wait=WAIT,
         )
@@ -103,7 +103,7 @@ class TestDecideAction:
 
     def test_existing_announcement_well_past_due_executes(self):
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=_existing(announced_at=NOW), cancelled_to_version=None,
             current_to_version="2.0.0", now=NOW + timedelta(days=30), announce_wait=WAIT,
         )
@@ -114,7 +114,7 @@ class TestDecideAction:
         # -- clear the stale announcement rather than firing on it; a fresh
         # "announce" follows once this runs again with existing=None.
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=_existing(to_version="2.0.0"), cancelled_to_version=None,
             current_to_version="2.1.0", now=NOW, announce_wait=WAIT,
         )
@@ -122,7 +122,7 @@ class TestDecideAction:
 
     def test_cancelled_version_with_no_existing_announcement_stays_quiet(self):
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=None, cancelled_to_version="2.0.0", current_to_version="2.0.0",
             now=NOW, announce_wait=WAIT,
         )
@@ -130,7 +130,7 @@ class TestDecideAction:
 
     def test_cancelled_version_with_existing_announcement_removes_it(self):
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=_existing(to_version="2.0.0"), cancelled_to_version="2.0.0",
             current_to_version="2.0.0", now=NOW, announce_wait=WAIT,
         )
@@ -139,55 +139,68 @@ class TestDecideAction:
     def test_cancellation_does_not_apply_to_a_newer_version(self):
         # Cancelling 2.0.0 shouldn't silently suppress 2.1.0 too.
         action = announcer.decide_action(
-            is_ready=True, remaining=None, auto_install_enabled=True, installable=True,
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=None, cancelled_to_version="2.0.0", current_to_version="2.1.0",
             now=NOW, announce_wait=WAIT,
         )
         assert action == "announce"
 
-    def test_not_ready_but_within_announce_wait_of_ready_announces(self):
-        # Still "waiting" (staging.py), but little enough is left that the
-        # cancel window should start now rather than once fully ready --
-        # otherwise the total time-to-install becomes wait + announce_wait
-        # instead of reading as just the uitsteltermijn itself.
+    def test_not_ready_never_announces_even_when_close(self):
+        # Deliberately sequential (2026-07-17, direct user feedback):
+        # announcing only ever starts once is_ready is actually True, no
+        # matter how close staging.py's own wait is to finishing.
         action = announcer.decide_action(
-            is_ready=False, remaining=timedelta(hours=1), auto_install_enabled=True, installable=True,
-            existing=None, cancelled_to_version=None, current_to_version="2.0.0",
-            now=NOW, announce_wait=WAIT,
-        )
-        assert action == "announce"
-
-    def test_not_ready_and_beyond_announce_wait_of_ready_does_nothing(self):
-        action = announcer.decide_action(
-            is_ready=False, remaining=timedelta(days=5), auto_install_enabled=True, installable=True,
+            is_ready=False, auto_install_enabled=True, master_enabled=True, installable=True,
             existing=None, cancelled_to_version=None, current_to_version="2.0.0",
             now=NOW, announce_wait=WAIT,
         )
         assert action == "none"
 
+    def test_paused_with_no_existing_announcement_does_nothing(self):
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=False, installable=True,
+            existing=None, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT,
+        )
+        assert action == "none"
+
+    def test_paused_freezes_an_existing_announcement_instead_of_removing_it(self):
+        # Direct user feedback (2026-07-17): resuming should continue the
+        # same countdown, not restart a fresh one -- which requires the
+        # announcement to survive the pause untouched, not get "remove"d
+        # the way a real rules change would.
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=False, installable=True,
+            existing=_existing(), cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT,
+        )
+        assert action == "none"
+
+    def test_paused_does_not_execute_even_when_overdue(self):
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=False, installable=True,
+            existing=_existing(announced_at=NOW), cancelled_to_version=None,
+            current_to_version="2.0.0", now=NOW + timedelta(days=30), announce_wait=WAIT,
+        )
+        assert action == "none"
+
+    def test_resuming_executes_immediately_if_already_overdue(self):
+        # The countdown itself wasn't reset by the pause (see the two tests
+        # above) -- once master_enabled flips back on, a still-in-the-past
+        # execute_at fires right away rather than waiting a fresh
+        # announce_wait.
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=_existing(announced_at=NOW), cancelled_to_version=None,
+            current_to_version="2.0.0", now=NOW + timedelta(days=30), announce_wait=WAIT,
+        )
+        assert action == "execute"
+
 
 class TestStartAnnouncement:
-    def test_sets_execute_at_using_announce_wait_when_already_ready(self):
+    def test_sets_execute_at_using_announce_wait(self):
         result = announcer.start_announcement("update.thing", "2.0.0", NOW, WAIT)
         assert result.entity_id == "update.thing"
         assert result.to_version == "2.0.0"
         assert result.announced_at == NOW
-        assert result.execute_at == NOW + WAIT
-
-    def test_anchors_to_natural_ready_time_when_it_leaves_more_than_a_full_announce_wait(self):
-        # wait still has 48 hours left, more than the 24h announce_wait --
-        # execute_at should land on the natural ready time (in 48h), not just
-        # 24h beyond now.
-        result = announcer.start_announcement(
-            "update.thing", "2.0.0", NOW, WAIT, remaining=timedelta(hours=48)
-        )
-        assert result.execute_at == NOW + timedelta(hours=48)
-
-    def test_announce_wait_wins_when_remaining_is_shorter(self):
-        # Only 2 hours left on the uitsteltermijn -- the user must still get
-        # the full configured announce_wait to react, so execute_at can't
-        # land sooner than that.
-        result = announcer.start_announcement(
-            "update.thing", "2.0.0", NOW, WAIT, remaining=timedelta(hours=2)
-        )
         assert result.execute_at == NOW + WAIT

@@ -1,5 +1,13 @@
 DOMAIN = "update_manager"
 
+# The master switch (default on): pauses every autonomous action Update
+# Manager itself takes -- auto-install (announcing/executing) and the
+# hide-postponed auto-skip -- without touching any of the other settings
+# that decide *what* would happen once unpaused. Not part of any profile
+# preset, same reasoning as CONF_EXCLUDED_ENTITIES/CONF_HIDE_POSTPONED: a
+# behavior toggle, not a wait/auto-install tuning value.
+CONF_ENABLED = "enabled"
+
 CONF_SMALL_WAIT_DAYS = "small_wait_days"
 CONF_SMALL_AUTO_INSTALL = "small_auto_install"
 CONF_MEDIUM_WAIT_DAYS = "medium_wait_days"
@@ -27,6 +35,11 @@ DEFAULT_ANNOUNCE_HOURS = 24
 # entity_ids, not part of any profile preset: this is a per-instance choice
 # about *which* entities, not a wait/auto-install tuning value.
 CONF_EXCLUDED_ENTITIES = "excluded_entities"
+
+# Opt-in, off by default, not part of any profile preset (same reasoning as
+# CONF_EXCLUDED_ENTITIES above: a behavior toggle, not a wait/auto-install
+# tuning value). See staging_skip.py for what it actually does.
+CONF_HIDE_POSTPONED = "hide_postponed"
 
 PROFILE_CONSERVATIVE = "conservative"
 PROFILE_BALANCED = "balanced"

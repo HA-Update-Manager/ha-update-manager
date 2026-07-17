@@ -74,6 +74,7 @@ class InstallLog:
         release_url: str | None,
         release_summary: str | None,
         supported_features: int,
+        auto_installed: bool,
     ) -> None:
         release_notes = await _async_release_notes(self._hass, entity_id, supported_features)
         self._entries.append(
@@ -85,6 +86,7 @@ class InstallLog:
                 "release_url": release_url,
                 "release_summary": release_summary,
                 "release_notes": release_notes,
+                "auto_installed": auto_installed,
             }
         )
         if len(self._entries) > MAX_ENTRIES:

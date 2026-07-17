@@ -236,6 +236,31 @@ class UpdateManagerCoordinator:
         self._install_listeners: list[InstallListener] = []
         self._unsub_state_changed: Callable[[], None] | None = None
         self._unsub_recheck: Callable[[], None] | None = None
+        # The master pause switch (const.py's CONF_ENABLED) -- the single,
+        # shared source of truth install_manager.py/staging_skip.py both
+        # read directly (self._coordinator.master_enabled) instead of each
+        # keeping its own independently-set copy. Found by review: two
+        # hand-synced private copies, each updated from its own call site,
+        # could silently disagree if a future settings-apply path ever
+        # forgot to notify one of the two managers -- reading one shared
+        # flag off the coordinator both already hold a reference to makes
+        # that impossible (whichever manager *does* get told about a
+        # change updates the one flag the other reads too, even if its own
+        # notification was missed).
+        self.master_enabled: bool = True
+        # Wired up by __init__.py right after both this coordinator and
+        # staging_skip.py's StagingSkipManager exist (that manager depends
+        # on this coordinator, so can't be passed in at construction time
+        # here) -- lets _async_refresh_one tell "we skipped this ourselves,
+        # purely to hide a still-postponed update from HA's own update
+        # count" apart from "the user skipped this for their own reason",
+        # without this module needing to import/depend on that one.
+        # Defaults to "never ours" so this coordinator still works
+        # standalone (e.g. in tests) without that wiring.
+        self._is_own_skip: Callable[[str, str], bool] = lambda entity_id, version: False
+
+    def set_master_enabled(self, enabled: bool) -> None:
+        self.master_enabled = enabled
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Registers a callback fired after any recompute. Returns an unsub."""
@@ -256,6 +281,9 @@ class UpdateManagerCoordinator:
             self._install_listeners.remove(listener)
 
         return _remove
+
+    def set_own_skip_checker(self, checker: Callable[[str, str], bool]) -> None:
+        self._is_own_skip = checker
 
     async def async_start(self) -> None:
         # Subscribe *before* the initial bulk scan, not after -- found via
@@ -289,8 +317,32 @@ class UpdateManagerCoordinator:
         recompute, from already-cached facts (installed_version/
         latest_version/available_since don't change here) -- shared by
         async_update_rules (new rules) and _async_periodic_recheck (same
-        rules, just time having passed)."""
+        rules, just time having passed).
+
+        Skips entries already cached as "skipped" -- that status isn't
+        derived from staging rules at all (see _cache_skipped), it's a
+        direct reflection of HA's own skipped_version state; recomputing
+        staging over it here would silently overwrite it back to a
+        ready/waiting/blocked verdict on every settings save or periodic
+        recheck, even though the entity's real HA state never actually
+        changed (still genuinely skipped). Only a real _async_refresh_one,
+        triggered by an actual state_changed event, should ever transition
+        an entry in or out of "skipped" -- with one exception: if
+        is_own_skip now recognizes this exact entity/version as our own
+        automatic skip, it falls through to a normal staging verdict below
+        instead of staying protected. Found live: staging_skip.py's own
+        _async_skip has a narrow race window (its own docstring/comment
+        explains it) where the entity's state_changed event -- and so this
+        cache's very first "skipped" classification -- can land before its
+        internal record was written, permanently misclassifying an
+        auto-skip as a real user one (that guard above alone would leave it
+        stuck that way forever, since its own state never changes again).
+        This check heals that on the very next recompute instead of
+        requiring a restart."""
         for entity_id, cached in self.cache.items():
+            if cached["status"] == "skipped":
+                if not self._is_own_skip(entity_id, cached["latest_version"]):
+                    continue
             available_since = dt_util.parse_datetime(cached["available_since"])
             result = evaluate_staging(cached["version_size"], available_since, now, self.rules)
             cached["status"] = result.status
@@ -357,6 +409,18 @@ class UpdateManagerCoordinator:
         for listener in list(self._listeners):
             listener()
 
+    async def async_refresh_one(self, entity_id: str) -> None:
+        """Public entry point for a caller that changed something
+        is_own_skip's own answer for this entity depends on (see
+        websocket_api.py's skip handler) and wants this coordinator's
+        cached classification to catch up right now, rather than waiting
+        for a real state_changed event or the periodic recheck -- calling
+        the real update.skip service again when skipped_version already
+        equals latest_version is a harmless no-op from HA's own
+        perspective, so no state_changed event fires to trigger this on
+        its own."""
+        await self._async_handle_changed(entity_id)
+
     async def _async_refresh_one(self, entity_id: str) -> None:
         state = self.hass.states.get(entity_id)
         if state is None:
@@ -364,10 +428,37 @@ class UpdateManagerCoordinator:
             return
 
         # HA's own update entities are always exactly "on" (an update is
-        # available) or "off" (already up to date) -- that's the correct,
-        # authoritative check for "is there anything to report here at
-        # all", not comparing installed_version/latest_version ourselves.
+        # available) or "off" -- "off" normally means genuinely up to
+        # date, but also covers a *skipped* update (homeassistant/
+        # components/update/__init__.py's own state logic: latest_version
+        # == skipped_version reports "off" too, confirmed against source).
         if state.state != "on":
+            current = state.attributes.get("installed_version")
+            latest = state.attributes.get("latest_version")
+            skipped_version = state.attributes.get("skipped_version")
+            # `current` guarded explicitly, not just implied by `current !=
+            # latest` -- that comparison is also True whenever `current` is
+            # None (a real, reachable state for an entity that hasn't
+            # reported installed_version yet), and both branches below
+            # eventually call classify_version_size, which unconditionally
+            # calls .strip() on it. The sibling "on" branch further down
+            # already guards the same way for the same reason.
+            if latest and current and skipped_version == latest and current != latest:
+                if self._is_own_skip(entity_id, latest):
+                    # staging_skip.py's own doing -- purely a mechanism for
+                    # hiding a still-postponed update from HA's own update
+                    # count, not a fact the user should see reflected here
+                    # at all (direct user feedback: "skipped by us ==
+                    # postponed" -- it should read exactly as if state were
+                    # still "on"). Evaluate normally, not as skipped.
+                    await self._async_cache_active(entity_id, state, current, latest)
+                else:
+                    # A real, user-initiated skip (HA's own UI, or our own
+                    # Skip button) -- surface it distinctly instead of
+                    # treating it identically to nothing pending at all,
+                    # see the panel's own "Skipped" group.
+                    self._cache_skipped(entity_id, state, current, latest)
+                return
             self.cache.pop(entity_id, None)
             return
 
@@ -376,7 +467,9 @@ class UpdateManagerCoordinator:
         if not current or not latest:
             self.cache.pop(entity_id, None)
             return
+        await self._async_cache_active(entity_id, state, current, latest)
 
+    async def _async_cache_active(self, entity_id: str, state: State, current: str, latest: str) -> None:
         size = classify_version_size(current, latest)
         now = dt_util.utcnow()
         # Uses this entry's actual configured rules (settings panel), not
@@ -417,4 +510,41 @@ class UpdateManagerCoordinator:
             # install_manager.py checks this before ever auto-installing.
             # Doesn't change size/status here, those stay informational.
             "auto_install_excluded": _is_excluded_from_auto_install(self.hass, entity_id, self.excluded_entities),
+            # True only for a "waiting" entity that's *also* currently
+            # hidden from HA's own update count via staging_skip.py's own
+            # auto-skip (direct user feedback, 2026-07-17: the distinction
+            # between "we skipped this" and "the user skipped this" was
+            # only ever inspectable by reading is_own_skip's own logic --
+            # exposed here directly instead, on the summary sensor and the
+            # panel's websocket payload alike, for debugging without
+            # needing either).
+            "hidden_by_update_manager": bool(
+                state.attributes.get("skipped_version") == latest and self._is_own_skip(entity_id, latest)
+            ),
+        }
+
+    def _cache_skipped(self, entity_id: str, state: State, current: str, latest: str) -> None:
+        # No staging computation here (state itself is "off", not "on" --
+        # never ran through _async_cache_active), so no remaining_seconds/
+        # real available_since either; available_since falls back to
+        # whatever was last known, or now if this entity's never been
+        # cached before, same conservative default _async_available_since
+        # itself falls back to.
+        previous = self.cache.get(entity_id)
+        available_since = previous["available_since"] if previous else dt_util.utcnow().isoformat()
+        self.cache[entity_id] = {
+            "entity_id": entity_id,
+            "installed_version": current,
+            "latest_version": latest,
+            "version_size": classify_version_size(current, latest),
+            "status": "skipped",
+            "remaining_seconds": None,
+            "installable": bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL),
+            "available_since": available_since,
+            "auto_install_excluded": _is_excluded_from_auto_install(self.hass, entity_id, self.excluded_entities),
+            # Always False here -- reaching _cache_skipped at all already
+            # means the caller's own is_own_skip check said this isn't
+            # ours (see _async_refresh_one). See _async_cache_active's own
+            # comment for what this field is for.
+            "hidden_by_update_manager": False,
         }

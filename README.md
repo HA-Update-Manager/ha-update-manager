@@ -30,14 +30,22 @@ all:
   too, if you explicitly turn that on). The only hard exception is Core/Supervisor/HAOS, which always
   stays manual. Nothing installs the instant it's eligible: it's announced first (a configurable,
   cancellable wait, default 24 hours), visible and cancellable on the panel's Updates tab, with a
-  heads-up notification. A backup is requested automatically when the entity supports it. Not yet
-  wired up for device firmware specifically -- that needs rollout-pacing (above) first, so Zigbee/
-  Z-Wave/Bluetooth updates don't all land on a shared mesh at once.
+  heads-up notification. A backup is requested automatically when the entity supports it. A single
+  master switch pauses all of this (and the postponed-update-hiding below) at once, without touching
+  any other setting; resuming continues an in-flight countdown from where it left off. Not yet wired
+  up for device firmware specifically -- that needs rollout-pacing (above) first, so Zigbee/Z-Wave/
+  Bluetooth updates don't all land on a shared mesh at once.
+- **Hiding postponed updates from Home Assistant's own update count (mostly done)**: opt-in. While an
+  update is still postponed, Update Manager marks it skipped via HA's own real `update.skip` service,
+  so it disappears from the sidebar's update count until it's actually ready -- automatically
+  un-skipped again at that point. Never touches a skip you set yourself for your own reason: only a
+  genuine, user-initiated skip ever shows as "Skipped" on the panel.
 - **Phase 1**: a community backend (plain git + GitHub Actions, no hosted server) where people can
   vote on whether a given release was problem-free.
-- **Phase 2 (in progress)**: a Home Assistant sidebar panel. Currently: Updates (incl. any pending
-  auto-installs) and Historie tabs, and an Instellingen tab for the staging/auto-install rules. Later:
-  the community verdict from Phase 1, and a vote button.
+- **Phase 2 (in progress)**: a Home Assistant sidebar panel. Currently: Updates (with live install
+  progress and an "update all" button) and Historie tabs, and a settings tab for the staging/
+  auto-install rules (autosaving, no separate Save button). Later: the community verdict from Phase
+  1, and a vote button.
 - **Phase 3** (mostly not needed anymore): feeding the community verdict into the local rules as an
   extra, optional gate on top of auto-install -- see FUTURE.md for the parts (a fixed cooldown, a
   quorum requirement) not yet decided.

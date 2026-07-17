@@ -50,8 +50,8 @@ class PendingAnnouncement(NamedTuple):
 def decide_action(
     *,
     is_ready: bool,
-    remaining: timedelta | None,
     auto_install_enabled: bool,
+    master_enabled: bool,
     installable: bool,
     existing: PendingAnnouncement | None,
     cancelled_to_version: str | None,
@@ -70,20 +70,34 @@ def decide_action(
       needed (see FUTURE.md: only a real cancel needs a manual dismiss).
     - "none": nothing to do.
 
-    `remaining` is staging.py's own "how much longer until ready" right now
-    (None once ready, or while blocked with no configured wait). Announcing
-    starts as soon as that gets down to announce_wait, not only once fully
-    ready -- so the cancel window lands *inside* the tail end of the
-    uitsteltermijn instead of being tacked on after it finishes. Found via
-    direct user feedback: with the old "only announce once fully ready"
-    rule, the total time from "available" to "installed" quietly became
-    uitsteltermijn + aankondigingstermijn, longer than the uitsteltermijn
-    setting implies, and the traffic light stayed green (implying "safe to
-    install yourself right now") for that whole extra stretch -- a manual
-    install and the automatic one could both fire around the same time.
+    Deliberately sequential, not overlapping: the announcement only starts
+    once staging.py's own status is actually "ready" (is_ready=True), never
+    earlier. An overlapping design (start announcing once the remaining
+    uitsteltermijn drops to announce_wait, before status flips to "ready")
+    was tried and reverted (2026-07-17, direct user feedback): a "waiting"
+    entity that already had an active cancel countdown running underneath
+    it read as self-contradictory in the UI, and wasn't explainable to
+    users in one sentence. Total time from "available" to "installed" is
+    now plainly uitsteltermijn + aankondigingstermijn, matching what a user
+    reading those two settings would expect.
+
+    master_enabled (the global pause switch, const.py's CONF_ENABLED) is
+    deliberately its own parameter, not folded into auto_install_enabled --
+    while paused, an existing announcement is frozen in place (this
+    function returns "none", touching nothing at all) rather than removed,
+    so resuming continues the *same* countdown from the *same* execute_at
+    instead of restarting a fresh announce_wait from whenever the switch
+    happened to flip back on. Direct user feedback (2026-07-17), after
+    seeing an in-flight countdown jump forward by a full announce_wait the
+    moment the pause switch was toggled off and back on. auto_install_enabled
+    turning off for a real reason (the size's own rule, exclusion, or the
+    entity losing INSTALL support) still removes the announcement as before
+    -- that is a genuine, lasting change in disposition, not a pause.
     """
-    ready_enough = is_ready or (remaining is not None and remaining <= announce_wait)
-    if not ready_enough or not auto_install_enabled or not installable:
+    if not master_enabled:
+        return "none"
+
+    if not is_ready or not auto_install_enabled or not installable:
         return "remove" if existing is not None else "none"
 
     if cancelled_to_version is not None and cancelled_to_version == current_to_version:
@@ -113,19 +127,14 @@ def start_announcement(
     to_version: str,
     now: datetime,
     announce_wait: timedelta,
-    remaining: timedelta | None = None,
 ) -> PendingAnnouncement:
-    """`remaining` (staging.py's "how much longer until ready" at the
-    moment of announcing, None if already fully ready) anchors execute_at to
-    when the uitsteltermijn itself completes, not always now + announce_wait
-    -- the announcement effectively starts announce_wait early. If
-    announce_wait is longer than what's actually left (a short/zero
-    uitsteltermijn), the full announce_wait wins instead: never less
-    cancel-time than configured, see decide_action."""
-    natural_ready_at = now + remaining if remaining is not None else now
+    """Only ever called once is_ready (see decide_action) -- the countdown
+    always runs the full announce_wait from right now, not anchored to
+    anything about the uitsteltermijn (which has already finished by this
+    point)."""
     return PendingAnnouncement(
         entity_id=entity_id,
         to_version=to_version,
         announced_at=now,
-        execute_at=max(natural_ready_at, now + announce_wait),
+        execute_at=now + announce_wait,
     )

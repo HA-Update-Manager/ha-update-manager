@@ -64,10 +64,19 @@ const ICON_CLOCK_OUTLINE =
 // hass.language at all before this.
 const TRANSLATIONS = {
   en: {
+    // Explicit BCP-47 locale for absoluteWhen's own toLocaleDateString/
+    // toLocaleTimeString calls -- found live: passing `undefined` there
+    // uses the browser's own OS-level locale instead, which isn't
+    // necessarily the same as hass.language (a user can easily have
+    // these two disagree), producing a mixed-language result (e.g. an
+    // English "today" from our own tr object right next to a Dutch
+    // weekday name from the browser's locale).
+    locale: "en",
     tab_updates: "Updates",
     tab_history: "History",
     tab_settings: "Settings",
     refresh: "Refresh",
+    refreshed_toast: "Update Manager refreshed",
     dash: "–",
     // Deliberately generic, not semver's own vocabulary (renamed
     // 2026-07-16, see FUTURE.md): "Small/Medium/Big" is a scale any version
@@ -96,46 +105,91 @@ const TRANSLATIONS = {
     // reserved for a future signal (e.g. a community verdict, see
     // FUTURE.md's Fase 1/3) that actively discourages an update; nothing
     // in today's local rules produces it (see the settings legend's note).
-    status_ready: "Ready to install",
-    status_waiting: (n, unit) => `Postponed (${n} ${unit} left)`,
+    status_ready: "Ready to update",
+    status_waiting_manual: (when) => `Ready to update ${when}`,
     status_waiting_soon: "Postponed (almost ready)",
+    // Short, unparameterized form -- for the dialog header's brief .state
+    // value (matching state-card-update.ts's own short state text, not a
+    // full sentence -- the countdown itself already lives in the alert
+    // body below via statusText).
+    status_waiting_short: "Postponed",
     status_blocked: "Discouraged",
-    status_pending_install: (when) => `Will be installed automatically ${when}`,
-    always_manual_suffix: " (always manual)",
+    status_skipped: "Skipped",
+    // Lowercase, distinct from the Title Case group heading above -- matches
+    // ha-config-updates.ts's own row template, confirmed against its real
+    // source: `${title} ${latest_version} (${localize("ui.panel.config.updates.skipped")})`.
+    status_skipped_suffix: "skipped",
+    // Overrides every other status while attributes.in_progress is true
+    // (see statusText/timerBadge's own installing check) -- HA's own
+    // ui.panel.config.updates.update_in_progress is only ever used as an
+    // accessibility label (a spinner's aria-label/ha-progress-ring's own
+    // label, confirmed against ha-config-updates.ts's real source), never
+    // shown as visible text anywhere in HA itself -- this is our own
+    // dialog's status-alert text specifically, which (unlike HA's) has no
+    // other way to say what's happening right now.
+    status_installing: "Installing…",
+    status_pending_install: (when) => `Will update automatically ${when}`,
+    // Plain " ⋅ " separator, not a parenthetical -- same separator already
+    // used elsewhere in this file (e.g. the history entry's
+    // "from → to ⋅ when" line) to combine two independent facts.
+    always_manual_suffix: " ⋅ Always manual",
     field_excluded_entities: "Always manual (entities)",
     field_excluded_entities_helper:
-      "Still shown normally in Updates and History -- Update Manager just never auto-installs these, regardless of what's configured above.",
+      "Still shown normally in Updates and History. Update Manager just never auto-installs these, regardless of what's configured above.",
     hard_excluded_note: (names) => `Always excluded too, regardless of the list above: ${names}.`,
     field_wait_days: "Postponement period (days)",
-    field_auto_install: "Install automatically",
+    field_auto_install: "Update automatically",
     field_auto_install_helper:
-      "Update Manager installs it for you once it counts as ready, always after a cancellable announcement first, see the auto-install section below.",
-    auto_install_section_title: "Auto-install",
-    auto_install_section_desc: "Only applies to sizes where \"Install automatically\" is checked above.",
+      "Update Manager updates it for you once it counts as ready, always after a cancellable announcement first, see the auto-update section below.",
+    auto_install_section_title: "Auto-update",
+    hide_postponed_section_title: "Visibility in Home Assistant",
+    field_hide_postponed: "Hide postponed updates",
+    field_hide_postponed_helper:
+      "While an update is still postponed, Update Manager marks it as skipped in Home Assistant itself. It disappears from the sidebar's update count and other native notifications until it's actually ready, then gets automatically un-skipped again. Never touches an update you skipped yourself for another reason.",
+    auto_install_section_desc: "Only applies to sizes where \"Update automatically\" is checked above.",
     announce_hours_label: "Announcement notice (hours)",
     announce_hours_helper:
-      "How far in advance you'll see a scheduled automatic install coming (Updates tab) and can cancel it, before it actually happens. Counted back from the end of each size's own postponement period, not added on top of it -- unless the period itself is shorter than this notice, in which case you still get the full notice.",
+      "How long you have to cancel a scheduled automatic install (Updates tab) before it actually happens, once the postponement period is over.",
     col_impact: "Impact",
     dialog_current_version: "Installed version",
     dialog_new_version: "Latest version",
     dialog_release_announcement: "Release announcement",
     dialog_history_heading: "History",
+    dialog_history_auto: "Automatically updated",
+    dialog_history_release_link: "Release page",
+    dialog_history_changelog: "View changelog",
     dialog_more_info: "More info",
+    paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
+    enabled_section_title: "Update Manager",
+    field_enabled: "Enabled",
+    field_enabled_helper:
+      "Pauses every automatic action below: no announcements, no automatic installs, and postponed updates stop being hidden from Home Assistant's own update count. Everything you've configured stays saved, it just isn't applied until you turn this back on. Updates are still shown here as normal.",
     settings_header: "Update rules",
     settings_hint:
       "Updates are split into 3 categories by impact (below). For each one, you decide how long to " +
       "wait before an update counts as ready, and whether Update Manager then installs it for you " +
-      "or you do it yourself.",
+      "or you do it yourself. The point of waiting isn't caution for its own sake: it gives a " +
+      "release with a bug time to be noticed and fixed before you install it.",
     save: "Save",
-    cancel_auto_install: "Cancel auto-update",
-    dialog_install: "Install",
+    settings_saved_toast: "Settings saved",
+    cancel_auto_install: "Cancel",
+    dialog_install: "Update",
     dialog_skip: "Skip",
-    group_ready: "Ready to install",
+    dialog_unskip: "Clear skipped",
+    group_ready: "Ready to update",
     group_waiting: "Postponed",
     group_blocked: "Discouraged",
-    group_not_installable: "Not installable",
+    update_all: "Update all",
+    // Count+pluralized, matching ha-config-section-updates.ts's own real
+    // title_skipped/title_not_installable convention (confirmed against its
+    // source: both are passed {count} and pluralize the same way
+    // ui.card.updates.count_updates does) -- direct user feedback: "HA doet
+    // '3 skipped updates' en '1 not installable update'. Waarom heb je deze
+    // logica niet overgenomen?".
+    group_skipped: (count) => `${count} ${count === 1 ? "skipped update" : "skipped updates"}`,
+    group_not_installable: (count) => `${count} ${count === 1 ? "not installable update" : "not installable updates"}`,
     updates_empty: "No updates need attention, everything is up to date.",
-    history_empty: "No installs logged yet.",
+    history_empty: "No updates logged yet.",
     loading: "Loading…",
     load_error_prefix: "Couldn't load Update Manager: ",
     units: [
@@ -150,12 +204,18 @@ const TRANSLATIONS = {
     relative_future: (n, unit) => `in ${n} ${unit}`,
     relative_just_now: "just now",
     relative_soon: "very soon",
+    when_today: (time) => `today ${time}`,
+    when_tomorrow: (time) => `tomorrow ${time}`,
+    when_weekday: (weekday, time) => `${weekday} ${time}`,
+    when_date: (date, time) => `${date}, ${time}`,
   },
   nl: {
+    locale: "nl",
     tab_updates: "Updates",
     tab_history: "Historie",
     tab_settings: "Instellingen",
     refresh: "Vernieuwen",
+    refreshed_toast: "Update Manager ververst",
     dash: "–",
     size_small_short: "Klein",
     size_small_desc: "Patch, of kalenderdatum binnen dezelfde maand.",
@@ -163,46 +223,69 @@ const TRANSLATIONS = {
     size_medium_desc: "Minor, kalendermaand/-jaar, of commit-update.",
     size_big_short: "Groot",
     size_big_desc: "Major, of niet te herkennen.",
-    status_ready: "Klaar voor installatie",
-    status_waiting: (n, unit) => `Uitgesteld (nog ${n} ${unit})`,
+    status_ready: "Klaar om te updaten",
+    status_waiting_manual: (when) => `Klaar om te updaten ${when}`,
     status_waiting_soon: "Uitgesteld (bijna zo ver)",
+    status_waiting_short: "Uitgesteld",
     status_blocked: "Afgeraden",
-    status_pending_install: (when) => `Wordt automatisch geïnstalleerd ${when}`,
-    always_manual_suffix: " (altijd handmatig)",
+    status_skipped: "Overgeslagen",
+    status_skipped_suffix: "overgeslagen",
+    status_installing: "Bezig met installeren…",
+    status_pending_install: (when) => `Wordt automatisch geüpdatet ${when}`,
+    always_manual_suffix: " ⋅ Altijd handmatig",
     field_excluded_entities: "Altijd handmatig (entiteiten)",
     field_excluded_entities_helper:
-      "Blijven gewoon zichtbaar bij Updates en Historie -- Update Manager installeert ze alleen nooit automatisch, ongeacht wat je hierboven instelt.",
+      "Blijven gewoon zichtbaar bij Updates en Historie. Update Manager installeert ze alleen nooit automatisch, ongeacht wat je hierboven instelt.",
     hard_excluded_note: (names) => `Staan sowieso altijd óók uitgesloten, ongeacht bovenstaande lijst: ${names}.`,
     field_wait_days: "Uitsteltermijn (dagen)",
-    field_auto_install: "Automatisch installeren",
+    field_auto_install: "Automatisch updaten",
     field_auto_install_helper:
-      "Update Manager installeert 'm dan zelf zodra die als gereed geldt, altijd pas na een aankondiging die je eerst nog kan annuleren, zie de sectie automatisch installeren hieronder.",
-    auto_install_section_title: "Automatisch installeren",
-    auto_install_section_desc: "Geldt alleen voor groottes waar hierboven \"Automatisch installeren\" aan staat.",
+      "Update Manager update 'm dan zelf zodra die als gereed geldt, altijd pas na een aankondiging die je eerst nog kan annuleren, zie de sectie auto-update hieronder.",
+    auto_install_section_title: "Auto-update",
+    auto_install_section_desc: "Geldt alleen voor groottes waar hierboven \"Automatisch updaten\" aan staat.",
+    hide_postponed_section_title: "Zichtbaarheid in Home Assistant",
+    field_hide_postponed: "Uitgestelde updates verbergen",
+    field_hide_postponed_helper:
+      "Zolang een update nog is uitgesteld, markeert Update Manager 'm zelf als overgeslagen in Home Assistant. Hij verdwijnt dan uit de teller in de zijbalk en andere native meldingen, tot 'ie echt klaar is, en wordt dan automatisch weer zichtbaar gemaakt. Een update die je zelf om een andere reden hebt overgeslagen, blijft Update Manager met rust.",
     announce_hours_label: "Aankondigingstermijn (uren)",
     announce_hours_helper:
-      "Hoe lang van tevoren je een geplande automatische installatie ziet aankomen (Updates-tab) en kan annuleren, voordat 'ie echt gebeurt. Wordt afgeteld vanaf het einde van de uitsteltermijn per grootte, niet erbovenop opgeteld -- tenzij die termijn zelf korter is dan deze aankondiging, dan krijg je hem alsnog in volle lengte.",
+      "Hoelang je hebt om een geplande automatische installatie (Updates-tab) te annuleren voordat die echt gebeurt, zodra de uitsteltermijn voorbij is.",
     col_impact: "Impact",
     dialog_current_version: "Geïnstalleerde versie",
     dialog_new_version: "Nieuwste versie",
     dialog_release_announcement: "Release-aankondiging",
     dialog_history_heading: "Geschiedenis",
+    dialog_history_auto: "Automatisch geüpdatet",
+    dialog_history_release_link: "Release-pagina",
+    dialog_history_changelog: "Changelog bekijken",
     dialog_more_info: "Meer info",
+    paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
+    enabled_section_title: "Update Manager",
+    field_enabled: "Ingeschakeld",
+    field_enabled_helper:
+      "Pauzeert alle automatische acties hieronder: geen aankondigingen, geen automatische installaties, en uitgestelde updates worden niet langer verborgen voor Home Assistants eigen update-telling. Alles wat je hebt ingesteld blijft opgeslagen, het wordt alleen niet toegepast totdat je dit weer aanzet. Updates blijven hier gewoon zichtbaar.",
     settings_header: "Update-regels",
     settings_hint:
       "We verdelen updates in 3 categorieën op basis van impact (hieronder). Per categorie stel je in " +
       "hoelang je wilt wachten voordat een update als gereed geldt, en of Update Manager de update " +
-      "dan zelf installeert of dat jij dat zelf doet.",
+      "dan zelf installeert of dat jij dat zelf doet. Het wachten zelf is geen doel op zich: het " +
+      "geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij hem " +
+      "installeert.",
     save: "Opslaan",
-    cancel_auto_install: "Automatische update annuleren",
-    dialog_install: "Installeren",
+    settings_saved_toast: "Instellingen opgeslagen",
+    cancel_auto_install: "Annuleren",
+    dialog_install: "Updaten",
     dialog_skip: "Overslaan",
-    group_ready: "Klaar voor installatie",
+    dialog_unskip: "Overslaan ongedaan maken",
+    group_ready: "Klaar om te updaten",
     group_waiting: "Uitgesteld",
     group_blocked: "Afgeraden",
-    group_not_installable: "Niet installeerbaar",
+    update_all: "Alles updaten",
+    group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,
+    group_not_installable: (count) =>
+      `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
     updates_empty: "Geen updates die aandacht nodig hebben, alles is up-to-date.",
-    history_empty: "Nog geen installaties gelogd.",
+    history_empty: "Nog geen updates gelogd.",
     loading: "Laden…",
     load_error_prefix: "Kon Update Manager niet laden: ",
     units: [
@@ -217,6 +300,10 @@ const TRANSLATIONS = {
     relative_future: (n, unit) => `over ${n} ${unit}`,
     relative_just_now: "zojuist",
     relative_soon: "zo dadelijk",
+    when_today: (time) => `vandaag ${time}`,
+    when_tomorrow: (time) => `morgen ${time}`,
+    when_weekday: (weekday, time) => `${weekday} ${time}`,
+    when_date: (date, time) => `${date}, ${time}`,
   },
 };
 // Seconds per unit, in the same order as tr.units -- language-independent,
@@ -263,7 +350,7 @@ function fieldKind(name) {
 // on both load and save means stale keys just quietly stop being sent,
 // instead of silently accumulating.
 function knownSettingsFields() {
-  const names = ["announce_hours", "excluded_entities"];
+  const names = ["enabled", "announce_hours", "excluded_entities", "hide_postponed"];
   for (const size of SIZES) {
     names.push(`${size}_wait_days`, `${size}_auto_install`);
   }
@@ -287,12 +374,12 @@ function pickKnownSettings(data) {
 // "big" update available 59 days into a 60-day wait sorted above a
 // "medium" update 12 hours from ready, since it had simply existed longer,
 // not because it was closer to actionable).
-const STATUS_SORT_PRIORITY = { ready: 0, waiting: 1, blocked: 2 };
+const STATUS_SORT_PRIORITY = { ready: 0, waiting: 1, blocked: 2, skipped: 3 };
 
 // ha-alert's alertType per status, shown in the detail dialog -- kept next
 // to STATUS_SORT_PRIORITY since both need the same fallback for a status
 // value this panel doesn't recognize (see _FALLBACK_STATUS below).
-const STATUS_ALERT_TYPE = { ready: "success", waiting: "info", blocked: "warning" };
+const STATUS_ALERT_TYPE = { ready: "success", waiting: "info", blocked: "warning", skipped: "info" };
 
 // One shared fallback for an unrecognized/future status value, used by
 // every lookup keyed on u.status below (sort priority, grouping, alert
@@ -302,11 +389,57 @@ const STATUS_ALERT_TYPE = { ready: "success", waiting: "info", blocked: "warning
 // them would sort/group as blocked but render with the wrong alert color.
 const _FALLBACK_STATUS = "blocked";
 
-function updateSortKey(u) {
+function updateSortKey(u, settings) {
   const priority = STATUS_SORT_PRIORITY[u.status] ?? STATUS_SORT_PRIORITY[_FALLBACK_STATUS];
   const availableSinceSec = u.available_since ? Math.floor(new Date(u.available_since).getTime() / 1000) : 0;
-  const secondary = u.status === "waiting" && u.remaining_seconds != null ? u.remaining_seconds : availableSinceSec;
+  // Same number the badge itself displays, not always plain remaining_seconds
+  // -- found live: two auto-install-projected updates sorted apart, with an
+  // unrelated manual one in between, because remaining_seconds alone (time
+  // to "ready") no longer matches what's shown once projectedAutoInstallTime
+  // (remaining_seconds + announce_hours) is what the badge actually counts
+  // down to.
+  const projected = u.status === "waiting" ? projectedAutoInstallTime(u, settings) : null;
+  const waitingSeconds = projected
+    ? Math.round((new Date(projected).getTime() - Date.now()) / 1000)
+    : u.remaining_seconds;
+  const secondary = u.status === "waiting" && waitingSeconds != null ? waitingSeconds : availableSinceSec;
   return priority * 10_000_000_000 + secondary;
+}
+
+// Will this update ever auto-install itself, as currently configured?
+// Installable, not excluded (hard or user-picked), and the *_auto_install
+// setting for its size is on. `settings` is the saved settings object
+// (this._settings), not the live-edited form state -- what's actually
+// configured backend-side is what install_manager.py will actually act on.
+function autoInstallEnabledFor(u, settings) {
+  // settings.enabled -- the master pause switch (const.py's CONF_ENABLED) --
+  // short-circuits this exactly like every size's own auto_install being
+  // off at once, matching install_manager.py's own _async_evaluate_one:
+  // showing a "will update automatically" projection while paused would be
+  // actively misleading, since nothing will actually happen.
+  if (!settings || settings.enabled === false || !u.installable || u.auto_install_excluded) return false;
+  return !!settings[`${u.version_size}_auto_install`];
+}
+
+// The real moment auto-install would happen for a "waiting" update whose
+// size has auto-install enabled, even though no announcement exists yet --
+// announcer.py's decide_action is deliberately sequential (2026-07-17,
+// direct user feedback): the announcement itself only starts once status
+// is actually "ready", so the eventual real install time is exactly
+// remaining_seconds (time left until ready) plus the full announce_hours,
+// not just remaining_seconds alone. Direct user feedback: once auto-install
+// is on for a size, the "waiting" phase isn't really a different outcome
+// from "ready and counting down" -- it's the same eventual auto-install,
+// just an earlier segment of the same countdown, so it should read that
+// way rather than as an unrelated, shorter-looking wait. Returns an ISO
+// string (same shape as pending_install.execute_at) so callers can reuse
+// relativeTime's formatting, or null when this can't/shouldn't be
+// projected (not waiting, or auto-install isn't actually enabled for it).
+function projectedAutoInstallTime(u, settings) {
+  if (u.status !== "waiting" || u.remaining_seconds == null) return null;
+  if (!autoInstallEnabledFor(u, settings) || settings.announce_hours == null) return null;
+  const totalSeconds = u.remaining_seconds + settings.announce_hours * 3600;
+  return new Date(Date.now() + totalSeconds * 1000).toISOString();
 }
 
 // "Ready" (green) covers two different situations: nothing planned yet
@@ -318,20 +451,43 @@ function updateSortKey(u) {
 // that lives in the trailing timer badge/pill instead (see timerBadge),
 // direct user feedback: the badge should carry the "when", this text just
 // the "what".
-function statusText(tr, u) {
+function statusText(tr, u, settings, hass) {
+  // Overrides every other status, checked first -- while an install is
+  // actually running, whatever "waiting"/"skipped"/etc this entity was
+  // classified as a moment ago no longer describes what's happening right
+  // now (direct user feedback: seeing a stale "Postponed"/"Skipped" while
+  // an install you just started was already running read as wrong).
+  if (updateIsInstalling(entityState(hass, u.entity_id))) return tr.status_installing;
   let text;
-  // pending_install checked first, regardless of ready/waiting -- direct
-  // user feedback: count down to the real action (install, or counting as
-  // ready) rather than the moment the announcement itself went out. A
-  // "waiting" update can already have an announcement pending near the end
-  // of its own postponement period (see announcer.py's decide_action), and
-  // that real install moment can land later than the plain "time left"
-  // figure would suggest.
-  if (u.pending_install) {
-    text = tr.status_pending_install(relativeTime(tr, u.pending_install.execute_at));
-  } else if (u.status === "waiting") {
-    const parts = breakdownDuration(tr, u.remaining_seconds);
-    text = parts ? tr.status_waiting(parts.value, parts.unit) : tr.status_waiting_soon;
+  // status checked first, not pending_install -- announcer.py's
+  // decide_action is deliberately sequential (2026-07-17, direct user
+  // feedback): the announcement only ever starts once status is actually
+  // "ready", never while still "waiting". So these two are mutually
+  // exclusive by construction, and the icon/text can just follow status
+  // directly instead of needing to guess which one "wins".
+  //
+  // An absolute clock time throughout (absoluteWhen), not a relative
+  // countdown -- direct user feedback (2026-07-17): "Postponed (13 hours
+  // left)"/"Expected to update automatically in 4 hours" read as vague.
+  // "Will update automatically" is used for both the projected and the
+  // already-announced case alike, no separate hedged phrasing for the
+  // former -- also direct user feedback, the distinction wasn't worth the
+  // extra vagueness it added.
+  //
+  // absoluteWhen's own result is never capitalized (see its own comment) --
+  // it's embedded mid-sentence here, so a capital "Tomorrow" would be wrong.
+  if (u.status === "waiting") {
+    const projected = projectedAutoInstallTime(u, settings);
+    if (projected) {
+      text = tr.status_pending_install(absoluteWhen(tr, projected, hass));
+    } else if (u.remaining_seconds != null) {
+      const readyAt = new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
+      text = tr.status_waiting_manual(absoluteWhen(tr, readyAt, hass));
+    } else {
+      text = tr.status_waiting_soon;
+    }
+  } else if (u.pending_install) {
+    text = tr.status_pending_install(absoluteWhen(tr, u.pending_install.execute_at, hass));
   } else {
     text = tr[`status_${u.status}`] || u.status;
   }
@@ -340,18 +496,31 @@ function statusText(tr, u) {
 }
 
 // The Updates list row's trailing badge/pill (see _buildListRow): a
-// download icon + real install time for anything with an actual pending
-// auto-install, a clock icon + time-until-green for a plain "waiting"
-// update with no auto-install scheduled yet. Same "count to the real
-// action moment" priority as statusText above, not to the announcement.
-function timerBadge(tr, u) {
-  if (u.pending_install) {
-    return { icon: ICON_DOWNLOAD, text: relativeTime(tr, u.pending_install.execute_at) };
-  }
+// download icon + real clock time for anything that will end up
+// auto-installing itself (whether already announced, or still "waiting"
+// but projected -- see projectedAutoInstallTime), a clock icon + time-
+// until-ready for anything that still needs a manual click once ready.
+// Same status-first reasoning, and same absolute-time preference, as
+// statusText above.
+// Standalone (a pill of its own, not embedded in a sentence), so its
+// absoluteWhen result is capitalized here -- the one place that's correct.
+function timerBadge(tr, u, settings, hass) {
+  // Same override as statusText above, checked first here too -- the
+  // Updates list row's own spinner (see installingIndicatorNode,
+  // _buildListRow) replaces the normal countdown pill entirely while an
+  // install is actually running.
+  if (updateIsInstalling(entityState(hass, u.entity_id))) return { installing: true };
   if (u.status === "waiting") {
-    const parts = breakdownDuration(tr, u.remaining_seconds);
-    const text = parts ? tr.relative_future(parts.value, parts.unit) : tr.relative_soon;
-    return { icon: ICON_CLOCK_OUTLINE, text };
+    const projected = projectedAutoInstallTime(u, settings);
+    if (projected) return { icon: ICON_DOWNLOAD, text: capitalize(absoluteWhen(tr, projected, hass)) };
+    if (u.remaining_seconds != null) {
+      const readyAt = new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
+      return { icon: ICON_CLOCK_OUTLINE, text: capitalize(absoluteWhen(tr, readyAt, hass)) };
+    }
+    return { icon: ICON_CLOCK_OUTLINE, text: tr.relative_soon };
+  }
+  if (u.pending_install) {
+    return { icon: ICON_DOWNLOAD, text: capitalize(absoluteWhen(tr, u.pending_install.execute_at, hass)) };
   }
   return null;
 }
@@ -359,15 +528,27 @@ function timerBadge(tr, u) {
 // Grouped by status, not by domain/category (changed 2026-07-16, direct
 // user feedback: status is what you actually act on, not which
 // integration something came from) -- Ready first, then Postponed, then
-// Discouraged, same order as the status sort itself. Not-installable
-// updates (no UpdateEntityFeature.INSTALL, e.g.
-// firmware that must be flashed by hand) are pulled out into their own
-// group first and shown last, same as HA's own updates page does for that
-// same category (ha-config-section-updates.ts) -- status doesn't mean
-// anything actionable for those anyway.
+// Discouraged, same order as the status sort itself.
+//
+// Two categories pulled out of that ready/waiting/blocked bucketing
+// entirely, both shown last (direct user feedback: "Skipped" at the top
+// read as "heel vreemd" -- neither of these is something you act on via
+// the usual ready/waiting flow, so both sink below it), in the same
+// relative order and with the same precedence rule as HA's own real
+// Updates page (ha-config-section-updates.ts, confirmed against its real
+// source): "Skipped" first, then "Not installable" last. Critically,
+// _filterSkippedUpdateEntities there additionally requires
+// supportsFeature(entity, UpdateEntityFeature.INSTALL) -- so an entity
+// that's both skipped and not installable counts ONLY as "Not
+// installable", never "Skipped" (a real user-initiated skip -- see
+// coordinator.py's own is_own_skip distinction; our own staging_skip.py
+// auto-skips never show up as this status at all, they just read as
+// "waiting").
 function groupUpdates(tr, updates) {
   const notInstallable = updates.filter((u) => !u.installable);
-  const installable = updates.filter((u) => u.installable);
+  const rest = updates.filter((u) => u.installable);
+  const skipped = rest.filter((u) => u.status === "skipped");
+  const installable = rest.filter((u) => u.status !== "skipped");
 
   const byStatus = { ready: [], waiting: [], blocked: [] };
   installable.forEach((u) => {
@@ -378,13 +559,16 @@ function groupUpdates(tr, updates) {
   if (byStatus.ready.length) groups.push({ key: "ready", title: tr.group_ready, entities: byStatus.ready });
   if (byStatus.waiting.length) groups.push({ key: "waiting", title: tr.group_waiting, entities: byStatus.waiting });
   if (byStatus.blocked.length) groups.push({ key: "blocked", title: tr.group_blocked, entities: byStatus.blocked });
+  if (skipped.length) {
+    groups.push({ key: "skipped", title: tr.group_skipped(skipped.length), entities: skipped });
+  }
   if (notInstallable.length) {
-    groups.push({ key: "not_installable", title: tr.group_not_installable, entities: notInstallable });
+    groups.push({ key: "not_installable", title: tr.group_not_installable(notInstallable.length), entities: notInstallable });
   }
   return groups;
 }
 
-// Shared by relativeTime/breakdownDuration below: picks the largest unit
+// Shared by relativeTime below: picks the largest unit
 // (years..seconds, via _UNIT_SECONDS) that `abs` (already-non-negative
 // seconds) amounts to at least 1 of, and returns its {value, unit word}.
 // Null once `abs` doesn't even reach the smallest unit (e.g. "just now").
@@ -415,18 +599,104 @@ function relativeTime(tr, iso) {
   return future ? tr.relative_future(broken.value, broken.unit) : tr.relative_ago(broken.value, broken.unit);
 }
 
-// Same units as relativeTime, but broken into {value, unit} instead of a
-// full sentence -- timerBadge composes its own short pill text around this
-// ("nog 2 dagen"), direct user feedback: showing only "wacht nog" with no
-// indication of how much longer left it, without opening each entity's
-// own more-info dialog.
-function breakdownDuration(tr, seconds) {
-  if (seconds == null) return null;
-  return _breakdown(tr, Math.max(0, Math.round(seconds)));
+// "Today 11:24" / "Tomorrow 11:24" / "Monday 11:24" -- an absolute clock
+// time, not a relative countdown. Direct user feedback (2026-07-17):
+// "Postponed (13 hours left)"/"Expected to update automatically in 4
+// hours" read as vague hedging; a real clock time is unambiguous and lets
+// you actually plan around it, the same way a calendar invite would.
+// Falls back to a short date once far enough out that "which day" alone
+// stops being obviously unambiguous.
+function capitalize(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+// hass.locale.time_format -- a real, independent HA profile setting
+// (language/system/am_pm/24, see Settings -> General), not implied by the
+// display language alone. Same detection HA's own useAmPm() uses
+// (confirmed against src/common/datetime/use_am_pm.ts): a fixed 22:00
+// timestamp renders with "10" in it when the resolved convention is
+// 12-hour. Found live: hardcoding the browser/tr locale's own default
+// hour-cycle didn't necessarily match what the user actually configured.
+function useAmPm(hass) {
+  const timeFormat = hass && hass.locale && hass.locale.time_format;
+  if (timeFormat === "am_pm") return true;
+  if (timeFormat === "24") return false;
+  const testLanguage = timeFormat === "language" && hass && hass.language ? hass.language : undefined;
+  return new Date(2023, 0, 1, 22, 0, 0).toLocaleString(testLanguage).includes("10");
+}
+
+// Not capitalized here -- most callers embed this mid-sentence ("Ready to
+// update {when}", "Will update automatically {when}"), where a capital
+// "Tomorrow" would be wrong. The one caller that shows it standalone (the
+// Updates list's own trailing pill) capitalizes it itself.
+function absoluteWhen(tr, iso, hass) {
+  if (!iso) return tr.dash;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  // tr.locale, not undefined -- found live: `undefined` uses the browser's
+  // own OS-level locale, which isn't necessarily hass.language (they can
+  // easily disagree), producing a mixed-language result (an English
+  // "today" from our own tr object right next to a Dutch weekday name
+  // from the browser's own locale).
+  const locale = tr.locale;
+  const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", hour12: useAmPm(hass) });
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(date) - startOfDay(new Date())) / 86400000);
+  if (dayDiff === 0) return tr.when_today(time);
+  if (dayDiff === 1) return tr.when_tomorrow(time);
+  if (dayDiff > 1 && dayDiff < 7) return tr.when_weekday(date.toLocaleDateString(locale, { weekday: "long" }), time);
+  return tr.when_date(date.toLocaleDateString(locale, { day: "numeric", month: "short" }), time);
 }
 
 function entityState(hass, entityId) {
   return hass && hass.states && hass.states[entityId];
+}
+
+// Same three helpers more-info-update.ts itself exports from data/update.ts
+// (confirmed against its real source, not guessed) -- reused here so the
+// detail dialog's own live install-progress button/bar behave identically:
+// UpdateEntityFeature.PROGRESS = 4 (homeassistant/components/update/const.py).
+function latestVersionIsSkipped(state) {
+  return !!(state && state.attributes.latest_version && state.attributes.skipped_version === state.attributes.latest_version);
+}
+function updateButtonIsDisabled(state) {
+  return !!(state && state.state === "off" && !latestVersionIsSkipped(state));
+}
+function updateIsInstalling(state) {
+  return !!(state && state.attributes && state.attributes.in_progress);
+}
+function installProgressBar(state) {
+  if (!updateIsInstalling(state)) return null;
+  const bar = document.createElement("ha-progress-bar");
+  const supportsProgress = (state.attributes.supported_features || 0) & 4 && state.attributes.update_percentage != null;
+  if (supportsProgress) {
+    bar.loading = true;
+    bar.value = state.attributes.update_percentage;
+  } else {
+    bar.indeterminate = true;
+  }
+  return bar;
+}
+
+// The Updates list row's own trailing indicator while installing (see
+// _buildListRow) -- matches ha-config-updates.ts's own real
+// _renderUpdateProgress exactly: a percentage ring when the entity
+// supports it and reports one, a plain spinner otherwise. Replaces the
+// row's normal timer pill + chevron entirely while installing, same as
+// HA's own row replaces its trailing chevron with exactly this and
+// nothing else.
+function installingIndicatorNode(state, tr) {
+  if (state && state.attributes.update_percentage != null) {
+    const ring = document.createElement("ha-progress-ring");
+    ring.size = "small";
+    ring.value = state.attributes.update_percentage;
+    ring.label = tr.status_installing;
+    return ring;
+  }
+  const spinner = document.createElement("ha-spinner");
+  spinner.size = "small";
+  spinner.ariaLabel = tr.status_installing;
+  return spinner;
 }
 
 // The word "update" is baked into most update entities' own friendly_name
@@ -437,6 +707,18 @@ function friendlyEntityName(hass, entityId) {
   const state = entityState(hass, entityId);
   const name = (state && state.attributes && state.attributes.friendly_name) || entityId;
   return name.replace(/\s+update$/i, "");
+}
+
+// Matches ha-config-updates.ts's own real supporting-text line (confirmed
+// against source): the device's area name, via the device registry's own
+// area_id, not the entity's -- "service"-type devices (helpers/virtual,
+// no physical location) deliberately excluded, same as that component.
+function deviceAreaName(hass, entityId) {
+  const entity = hass && hass.entities && hass.entities[entityId];
+  const device = entity && entity.device_id && hass.devices && hass.devices[entity.device_id];
+  if (!device || device.entry_type === "service") return null;
+  const area = device.area_id && hass.areas && hass.areas[device.area_id];
+  return (area && area.name) || null;
 }
 
 function escapeHtml(value) {
@@ -472,6 +754,12 @@ class UpdateManagerPanel extends HTMLElement {
     this._profiles = null;
     this._hardExcludedEntities = [];
     this._dialogEntityId = null;
+    this._dialogLastState = null;
+    this._dialogProgressContainer = null;
+    this._dialogInstallBtn = null;
+    this._dialogStatusTextNode = null;
+    this._dialogActionButtons = [];
+    this._installSnapshots = null;
     this._formData = null;
     this._loadError = null;
   }
@@ -483,6 +771,8 @@ class UpdateManagerPanel extends HTMLElement {
       this._initialLoad();
     } else {
       this._updateShell();
+      this._updateDialogProgress();
+      this._updateInstallProgress();
     }
   }
 
@@ -503,14 +793,25 @@ class UpdateManagerPanel extends HTMLElement {
   // URL (e.g. /update-manager/history) -- the same mechanism every other
   // HA settings page uses, see hass-router-page.ts/compute-route.ts.
   set route(route) {
-    this._route = route;
     const path = (route && route.path) || "";
     if ((path === "" || path === "/") && route && route.prefix) {
       // Land on the Updates tab by default, same as e.g. /config redirecting
       // to its first sub-page -- don't leave the bare panel URL tab-less.
+      //
+      // this._route itself is corrected to the redirected path too, not
+      // just the visible URL and this._tab -- found by review (this is the
+      // real root cause behind two earlier, unsuccessful fix attempts):
+      // hass-tabs-subpage's own active-tab matching (willUpdate, confirmed
+      // against its real source) compares `route.prefix + route.path`
+      // against each tab's own full path. Leaving this._route's path as ""
+      // (or "/") meant that comparison never matched any tab at all on the
+      // bare panel URL, even though our own _tab/content already corrected
+      // themselves -- no tab ever looked active on first opening the panel.
       history.replaceState(null, "", `${route.prefix}/updates`);
+      this._route = { ...route, path: "/updates" };
       this._tab = "updates";
     } else {
+      this._route = route;
       this._tab = tabForPath(path);
     }
     this._updateShell();
@@ -530,6 +831,15 @@ class UpdateManagerPanel extends HTMLElement {
     this._updateShell();
     this._renderContent();
     await this._loadAll();
+    // A second _updateShell() call, not just the one above -- found live:
+    // the tab bar's active-tab highlight still didn't show on first load.
+    // Whatever the exact property-setter ordering HA's panel resolver uses
+    // for hass/narrow/route on first mount, every one of them is
+    // guaranteed to have already fired for real by the time this
+    // WebSocket round-trip finishes, so re-pushing route here (as its own
+    // fresh object, see _updateShell's own comment) is a safe, late
+    // catch-up regardless of what raced what earlier.
+    this._updateShell();
     this._renderContent();
   }
 
@@ -558,7 +868,13 @@ class UpdateManagerPanel extends HTMLElement {
         // entity list, not a wait/auto-install tuning value), so it needs
         // its own explicit empty-array default the same way.
         const fallback = (this._profiles && this._profiles.balanced) || {};
-        this._formData = { excluded_entities: [], ...fallback, ...pickKnownSettings(this._settings) };
+        this._formData = {
+          enabled: true,
+          excluded_entities: [],
+          hide_postponed: false,
+          ...fallback,
+          ...pickKnownSettings(this._settings),
+        };
       }
       this._loadError = null;
     } catch (err) {
@@ -566,9 +882,46 @@ class UpdateManagerPanel extends HTMLElement {
     }
   }
 
+  // The same "hass-notification" toast event real HA pages use
+  // (src/util/toast.ts's showToast, confirmed against source: a bubbling,
+  // composed CustomEvent, so dispatching it here reaches HA's real toast
+  // manager the same way) -- shared by _refresh's own confirmation and the
+  // Install button's error handler below, rather than each building the
+  // same CustomEvent by hand.
+  _showToast(message) {
+    this.dispatchEvent(
+      new CustomEvent("hass-notification", {
+        detail: { message },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
   async _refresh() {
-    await this._loadAll();
-    this._renderContent();
+    // Re-fetches our own already-computed state (updates/history/settings)
+    // and redraws -- it does not itself poll HA Core/HACS for brand new
+    // versions (that's each underlying integration's own update coordinator,
+    // typically hourly), just makes sure the page reflects whatever this
+    // integration's own coordinator already knows right now, including
+    // anything the 15-minute periodic recheck picked up since the page was
+    // last loaded. Found live: clicking it gave no visible feedback at all,
+    // indistinguishable from doing nothing -- the spin+disable below can
+    // still be too brief to notice on a fast connection, so this also
+    // fires the same "hass-notification" toast (see _showToast) real HA
+    // pages use for their own refresh confirmations.
+    const btn = this._subpageEl && this._subpageEl.querySelector(".refresh-btn");
+    if (btn) btn.disabled = true;
+    const icon = btn && btn.querySelector("ha-icon");
+    if (icon) icon.classList.add("spinning");
+    try {
+      await this._loadAll();
+      this._renderContent();
+      this._showToast(this._tr.refreshed_toast);
+    } finally {
+      if (btn) btn.disabled = false;
+      if (icon) icon.classList.remove("spinning");
+    }
   }
 
   // Builds the page chrome once: hass-tabs-subpage, the same layout
@@ -622,10 +975,133 @@ class UpdateManagerPanel extends HTMLElement {
     // found live: HA's panel resolver sets `hass` before `route`, so
     // _initialLoad's first _updateShell() call used to run before the real
     // route was known yet, handing hass-tabs-subpage an empty route right
-    // at first paint. It only recomputed which tab looks active once you
-    // clicked one yourself; the real route arriving a moment later (via the
-    // `route` setter below) didn't retrigger that highlight on its own.
-    if (this._route) this._subpageEl.route = this._route;
+    // at first paint.
+    //
+    // A fresh object every time, not the same this._route reference passed
+    // through unchanged -- hass-tabs-subpage only recomputes which tab
+    // looks active (its own _activeTab, see its willUpdate) when Lit's
+    // default change detection (plain !==) sees its `route` property
+    // actually change. _updateShell can run multiple times (hass/narrow/
+    // route setters all call it) reusing the same this._route object in
+    // between real navigations, which Lit would then treat as "unchanged"
+    // and skip -- found live: the tab bar never visibly showed which tab
+    // was current at all.
+    if (this._route) this._subpageEl.route = { ...this._route };
+  }
+
+  // Fired on every hass push (see set hass), same as more-info-update.ts's
+  // own reactive stateObj -- but touches the DOM only when the currently
+  // open dialog's own entity actually has a new state object (HA replaces
+  // only the changed entity's own nested state, so a cheap !== catches
+  // real changes without re-rendering on every unrelated entity's push).
+  // Purely the currently-open dialog's own DOM (progress bar, status text,
+  // Install/Skip/Cancel/Unskip buttons) -- reloading Updates/History once
+  // an install actually finishes is handled globally instead (see
+  // _updateInstallProgress below), not duplicated here, since that also
+  // has to work when the dialog isn't even open.
+  _updateDialogProgress() {
+    if (!this._dialogEntityId || !this._dialogProgressContainer) return;
+    const state = entityState(this._hass, this._dialogEntityId);
+    if (state === this._dialogLastState) return;
+    this._dialogLastState = state;
+
+    this._dialogProgressContainer.innerHTML = "";
+    const bar = installProgressBar(state);
+    if (bar) this._dialogProgressContainer.appendChild(bar);
+
+    const installing = updateIsInstalling(state);
+    if (this._dialogInstallBtn) {
+      this._dialogInstallBtn.progress = installing;
+      this._dialogInstallBtn.disabled = updateButtonIsDisabled(state);
+    }
+    for (const btn of this._dialogActionButtons) btn.disabled = installing;
+
+    if (this._dialogStatusTextNode) {
+      const tr = this._tr;
+      const u = this._updates && this._updates.find((x) => x.entity_id === this._dialogEntityId);
+      if (u) this._dialogStatusTextNode.textContent = statusText(tr, u, this._settings, this._hass);
+    }
+  }
+
+  // Fired on every hass push (see set hass), independent of whether the
+  // detail dialog is open -- two things every entity currently in
+  // this._updates is checked for: whether it just started/stopped
+  // installing (drives the Updates list's own spinner, see
+  // installingIndicatorNode/_buildListRow), and whether its
+  // installed_version just changed. The latter is the one signal every
+  // real install eventually produces, even for entities that never bother
+  // reporting in_progress at all -- found live ("het lijkt wel alsof de
+  // update manager nooit up to date is"): relying on the in_progress
+  // transition alone (the dialog's own former approach) left both the
+  // dialog and this list looking stuck on those entities, and the list
+  // never refreshed at all unless the dialog happened to be open for that
+  // exact entity.
+  _updateInstallProgress() {
+    if (!this._updates) return;
+    const previous = this._installSnapshots || new Map();
+    const next = new Map();
+    let installingChanged = false;
+    let anyVersionChanged = false;
+    for (const u of this._updates) {
+      const state = entityState(this._hass, u.entity_id);
+      const installing = updateIsInstalling(state);
+      const installedVersion = state && state.attributes && state.attributes.installed_version;
+      next.set(u.entity_id, { installing, installedVersion });
+      const prev = previous.get(u.entity_id);
+      if (!prev) continue;
+      if (prev.installing !== installing) installingChanged = true;
+      if (prev.installedVersion !== installedVersion) anyVersionChanged = true;
+    }
+    this._installSnapshots = next;
+    if (anyVersionChanged) {
+      this._loadAll().then(() => this._renderContent());
+    } else if (installingChanged && this._tab === "updates") {
+      this._renderContent();
+    }
+  }
+
+  // Matches ha-config-section-updates.ts's own _updateAll exactly
+  // (confirmed against its real source, including data/update.ts's own
+  // installUpdates helper): a single batched update.install call with an
+  // array of entity_ids (HA's own services already support a list target
+  // for entity_id, not a loop of individual per-entity calls), fire-and-
+  // forget beyond a try/catch for the error toast -- no loading state of
+  // its own, no per-entity clear-skip handling either, since a "ready"
+  // entity is never skipped/postponed by our own grouping to begin with.
+  async _updateAllInGroup(group) {
+    const entityIds = group.entities
+      .filter((u) => !updateIsInstalling(entityState(this._hass, u.entity_id)))
+      .map((u) => u.entity_id);
+    if (!entityIds.length) return;
+    try {
+      // notifyOnError=false, matching installUpdates -- HA's own
+      // hass.callService would otherwise show its own generic error toast
+      // in addition to the one built below.
+      await this._hass.callService("update", "install", { entity_id: entityIds }, undefined, false);
+    } catch (err) {
+      let message = (err && err.message) || String(err);
+      for (const entityId of entityIds) {
+        if (message.includes(entityId)) {
+          message = message.split(entityId).join(friendlyEntityName(this._hass, entityId));
+        }
+      }
+      this._showToast(message);
+    }
+  }
+
+  // Reloads our own data and rebuilds this same dialog in place, instead
+  // of closing it -- direct user feedback: closing after Cancel/Skip/Clear
+  // skipped hid the very confirmation that the action actually took
+  // effect (and needed a manual page refresh before the underlying list
+  // caught up too, on top of that). _openDetailDialog itself already
+  // tolerates the entity's status having changed (or even not being
+  // tracked at all anymore) since it always rebuilds from fresh data, and
+  // re-setting dialog.open to the value it already has is a no-op, not a
+  // close/reopen flicker.
+  async _afterDialogAction(entityId) {
+    await this._loadAll();
+    if (this._dialogEntityId === entityId) this._openDetailDialog(entityId);
+    this._renderContent();
   }
 
   _renderContent() {
@@ -744,8 +1220,16 @@ class UpdateManagerPanel extends HTMLElement {
     const end = document.createElement("div");
     end.slot = "end";
     end.className = "row-end";
-    if (timerBadgeInfo) end.appendChild(this._buildTimerPill(timerBadgeInfo));
-    end.appendChild(document.createElement("ha-icon-next"));
+    // Installing overrides the normal pill+chevron entirely -- matches
+    // ha-config-updates.ts's own row exactly (confirmed against its real
+    // source): its trailing chevron is *replaced* by the spinner/ring
+    // while installing, never shown alongside it.
+    if (timerBadgeInfo && timerBadgeInfo.installing) {
+      end.appendChild(installingIndicatorNode(entityState(this._hass, entityId), this._tr));
+    } else {
+      if (timerBadgeInfo) end.appendChild(this._buildTimerPill(timerBadgeInfo));
+      end.appendChild(document.createElement("ha-icon-next"));
+    }
     row.appendChild(end);
 
     row.addEventListener("click", onClick);
@@ -771,6 +1255,21 @@ class UpdateManagerPanel extends HTMLElement {
   // tokens, not approximated pixel values.
   _buildUpdatesList() {
     const tr = this._tr;
+    const outer = document.createElement("div");
+    outer.className = "update-groups-outer";
+
+    // Shown whenever the master pause switch is off (see _buildEnabledCard)
+    // -- without this, a paused instance would silently look identical to
+    // a normal one: same statuses, same "will update automatically"
+    // projections, just nothing actually happening, which read as broken
+    // rather than paused.
+    if (this._settings && this._settings.enabled === false) {
+      const pausedAlert = document.createElement("ha-alert");
+      pausedAlert.alertType = "warning";
+      pausedAlert.title = tr.paused_banner;
+      outer.appendChild(pausedAlert);
+    }
+
     if (!this._updates.length) {
       const card = document.createElement("ha-card");
       card.outlined = true;
@@ -778,7 +1277,8 @@ class UpdateManagerPanel extends HTMLElement {
       empty.className = "no-updates";
       empty.textContent = tr.updates_empty;
       card.appendChild(empty);
-      return card;
+      outer.appendChild(card);
+      return outer;
     }
 
     const groups = groupUpdates(tr, this._updates);
@@ -800,24 +1300,54 @@ class UpdateManagerPanel extends HTMLElement {
       title.setAttribute("role", "heading");
       title.textContent = group.title;
       header.appendChild(title);
+      // Only the "ready" group -- matches real HA's own placement
+      // (ha-config-section-updates.ts's own showUpdateAll), and direct
+      // user feedback specifically asked for it there, not for postponed/
+      // discouraged/skipped/not-installable groups where bulk-installing
+      // isn't the point. Plain ha-button, not ha-progress-button -- real
+      // HA's own button here has no loading state of its own either
+      // (confirmed against its exact source): _updateAll doesn't gate
+      // anything on the service call's own promise beyond a try/catch for
+      // the error toast, same as this._updateAllInGroup below.
+      if (group.key === "ready") {
+        const updateAllBtn = document.createElement("ha-button");
+        updateAllBtn.appearance = "plain";
+        updateAllBtn.size = "s";
+        updateAllBtn.textContent = tr.update_all;
+        updateAllBtn.disabled = group.entities.every((u) => updateIsInstalling(entityState(this._hass, u.entity_id)));
+        updateAllBtn.addEventListener("click", () => this._updateAllInGroup(group));
+        header.appendChild(updateAllBtn);
+      }
       content.appendChild(header);
 
       const list = document.createElement("ha-list-base");
       group.entities
         .slice()
-        .sort((a, b) => updateSortKey(a) - updateSortKey(b))
+        .sort((a, b) => updateSortKey(a, this._settings) - updateSortKey(b, this._settings))
         .forEach((u) => {
-          // Just the version to install, matching HA's own updates list
-          // row (ha-config-updates.ts) -- direct user feedback: this used
-          // to be a whole sentence (size, both versions, and the full
-          // status text), the status/countdown now live in the group
-          // heading and the trailing timer badge instead (see timerBadge).
+          // The version to install, plus the device's area (confirmed
+          // against ha-config-updates.ts's real source -- "AreaName ⋅
+          // version") and a "(skipped)" annotation whenever this specific
+          // entity is currently skipped, matching that component's own
+          // unconditional "(skipped)" suffix regardless of which group a
+          // row ends up in. Direct user feedback: this row used to be a
+          // whole sentence (size, both versions, full status text), the
+          // status/countdown now live in the group heading and the
+          // trailing timer badge instead (see timerBadge) -- just the
+          // area/version/skipped facts stay here, matching real HA.
+          // The "(skipped)" annotation is suppressed while actually
+          // installing -- direct user feedback: clicking Install on a
+          // postponed/skipped update should stop looking postponed/skipped
+          // right away, not keep that label until the install finishes.
+          const installingNow = updateIsInstalling(entityState(this._hass, u.entity_id));
           list.appendChild(
             this._buildListRow(
               u.entity_id,
-              u.latest_version,
+              [deviceAreaName(this._hass, u.entity_id), u.latest_version + (u.status === "skipped" && !installingNow ? ` (${tr.status_skipped_suffix})` : "")]
+                .filter(Boolean)
+                .join(" ⋅ "),
               () => this._openDetailDialog(u.entity_id),
-              timerBadge(tr, u)
+              timerBadge(tr, u, this._settings, this._hass)
             )
           );
         });
@@ -826,14 +1356,22 @@ class UpdateManagerPanel extends HTMLElement {
       wrap.appendChild(card);
     });
 
-    return wrap;
+    outer.appendChild(wrap);
+    return outer;
   }
 
   _buildHistoryList() {
     const tr = this._tr;
     const rows = this._installLog.map((entry) => {
       const supporting = `${entry.from_version} → ${entry.to_version} ⋅ ${relativeTime(tr, entry.installed_at)}`;
-      return this._buildListRow(entry.entity_id, supporting, () => this._openDetailDialog(entry.entity_id));
+      // Same download-icon pill _buildListRow already renders for the
+      // Updates tab's own auto-install countdown (see timerBadge) --
+      // reused here, not a new mechanism, so this list shows the same
+      // auto/manual distinction the per-entity dialog's own history cards
+      // already do (entry.auto_installed), instead of only showing it
+      // there.
+      const badge = entry.auto_installed ? { icon: ICON_DOWNLOAD, text: tr.dialog_history_auto } : null;
+      return this._buildListRow(entry.entity_id, supporting, () => this._openDetailDialog(entry.entity_id), badge);
     });
     return this._wrapList(rows, tr.history_empty);
   }
@@ -861,6 +1399,14 @@ class UpdateManagerPanel extends HTMLElement {
     // if the dialog closes or gets reopened for a different entity before
     // it resolves.
     this._dialogEntityId = entityId;
+    // Live-updated by _updateDialogProgress (see set hass) as real
+    // state_changed pushes stream in, exactly like more-info-update.ts's
+    // own reactive stateObj -- not something this one-shot render call
+    // itself keeps current.
+    this._dialogLastState = entityState(this._hass, entityId) || null;
+    this._dialogInstallBtn = null;
+    this._dialogStatusTextNode = null;
+    this._dialogActionButtons = [];
     dialog.innerHTML = "";
     dialog.headerTitle = friendlyEntityName(this._hass, entityId);
 
@@ -887,25 +1433,58 @@ class UpdateManagerPanel extends HTMLElement {
       const stateInfo = document.createElement("state-info");
       stateInfo.hass = this._hass;
       stateInfo.stateObj = state;
+      // Real HA more-info dialogs render this with inDialog=true (confirmed
+      // against source: ha-more-info-info.ts renders <state-card-content
+      // in-dialog>, which for the "update" domain -- not in
+      // DOMAINS_NO_INFO -- reaches state-card-update.ts and passes
+      // .inDialog through to here), which would give state-info's own
+      // built-in "Last changed"/"Last updated" tooltip. Deliberately NOT
+      // done here (direct user feedback): those are generic state-change
+      // timestamps, not the fact that actually matters for an update --
+      // how long the update itself has existed (available_since,
+      // coordinator.py's own recorder lookup) -- so inDialog stays false
+      // and that fact is slotted in below instead, in the same visual spot
+      // (.extra-info gets the exact same secondary-text/ellipsis styling
+      // state-info's own .time-ago block would).
       header.appendChild(stateInfo);
 
       if (u) {
-        // Just the version to install, matching the Updates list rows
-        // (direct user feedback) -- not the size/installed/latest sentence
-        // this used to show.
-        const summary = document.createElement("span");
-        summary.textContent = u.latest_version;
-        stateInfo.appendChild(summary);
+        const availableSince = document.createElement("span");
+        availableSince.textContent = relativeTime(tr, u.available_since);
+        stateInfo.appendChild(availableSince);
 
+        // Bug fixed 2026-07-17: tr.status_waiting is a function (n, unit) =>
+        // ..., not a plain string like tr.status_ready/status_blocked --
+        // assigning it straight to .textContent stringified the function's
+        // own source code instead of calling it. status_waiting_short is
+        // the deliberately unparameterized, brief form for this small
+        // header value (the full countdown sentence already lives in the
+        // alert body below via statusText).
         const stateValue = document.createElement("div");
         stateValue.className = "state";
-        stateValue.textContent = tr[`status_${u.status}`] || u.status;
+        stateValue.textContent = (u.status === "waiting" ? tr.status_waiting_short : tr[`status_${u.status}`]) || u.status;
         header.appendChild(stateValue);
       }
       body.appendChild(header);
     }
 
     if (u) {
+      // A live install-progress bar (indeterminate, or percentage-based
+      // when the entity supports it) -- matching more-info-update.ts's own
+      // placement exactly (confirmed against its real source): below the
+      // shared entity header (state-info above, icon/name/state -- that's
+      // a separate, domain-agnostic component in real HA too, not part of
+      // more-info-update.ts itself), at the very top of the domain-
+      // specific content, before the title. Shown only while
+      // attributes.in_progress is true, updated in place as that changes
+      // (see _updateDialogProgress) rather than by rebuilding this whole
+      // dialog on every hass push.
+      this._dialogProgressContainer = document.createElement("div");
+      this._dialogProgressContainer.className = "dialog-progress";
+      const initialBar = installProgressBar(this._dialogLastState);
+      if (initialBar) this._dialogProgressContainer.appendChild(initialBar);
+      body.appendChild(this._dialogProgressContainer);
+
       // The entity's own "title" attribute (e.g. "Frontend"), not
       // necessarily the same string as its friendly name in state-info
       // above -- more-info-update.ts shows both, so we do too.
@@ -926,27 +1505,79 @@ class UpdateManagerPanel extends HTMLElement {
       // its real source), the text itself already explains what's
       // happening (statusText), the icon just ties it visually to the
       // same download/clock icon used elsewhere for "when".
-      const dialogBadge = timerBadge(tr, u);
+      const dialogBadge = timerBadge(tr, u, this._settings, this._hass);
       if (dialogBadge) {
         const customIcon = document.createElement("ha-svg-icon");
         customIcon.slot = "icon";
         customIcon.path = dialogBadge.icon;
         statusAlert.appendChild(customIcon);
       }
-      statusAlert.appendChild(document.createTextNode(statusText(tr, u)));
-      if (u.pending_install) {
+      // Kept as its own text node reference, not a one-shot string --
+      // _updateDialogProgress re-sets its own .textContent live as hass
+      // pushes come in, so this reflects "Installing…" (statusText's own
+      // installing override) the moment an install actually starts,
+      // instead of staying frozen on whatever status this was at the
+      // moment the dialog opened.
+      this._dialogStatusTextNode = document.createTextNode(statusText(tr, u, this._settings, this._hass));
+      statusAlert.appendChild(this._dialogStatusTextNode);
+      // Buttons pushed onto this._dialogActionButtons below (reset
+      // unconditionally at the top of this method) get disabled while
+      // actually installing (see _updateDialogProgress), same as
+      // more-info-update.ts's own Skip button
+      // (.disabled=${... || updateIsInstalling(stateObj)}) -- none of
+      // these actions make sense mid-install.
+      // Cancellable even before a real announcement exists yet -- still
+      // "waiting" but auto-install is projected to happen (see
+      // projectedAutoInstallTime above), not just once actually "ready"
+      // and formally announced. Direct user feedback: seeing "will update
+      // automatically" with no way to act on it read as a real gap.
+      // install_manager.py's async_cancel already supports this (records
+      // the cancellation regardless of whether a PendingAnnouncement
+      // exists yet), so only the to_version to send needs picking: the
+      // real announcement's own target once one exists, else whatever
+      // version is currently projected.
+      const cancelToVersion = u.pending_install
+        ? u.pending_install.to_version
+        : projectedAutoInstallTime(u, this._settings)
+          ? u.latest_version
+          : null;
+      if (cancelToVersion) {
         const cancelBtn = document.createElement("ha-progress-button");
         cancelBtn.slot = "action";
         cancelBtn.label = tr.cancel_auto_install;
+        cancelBtn.disabled = updateIsInstalling(this._dialogLastState);
         cancelBtn.addEventListener("click", () =>
           _runProgressAction(cancelBtn, async () => {
-            await this._hass.callWS({ type: "update_manager/cancel_pending_install", entity_id: entityId });
-            await this._loadAll();
-            dialog.open = false;
-            this._renderContent();
+            await this._hass.callWS({
+              type: "update_manager/cancel_pending_install",
+              entity_id: entityId,
+              to_version: cancelToVersion,
+            });
+            await this._afterDialogAction(entityId);
           })
         );
         statusAlert.appendChild(cancelBtn);
+        this._dialogActionButtons.push(cancelBtn);
+      }
+      // A real, user-initiated skip (see coordinator.py's own
+      // is_own_skip distinction -- our own staging_skip.py auto-skips
+      // never reach this status at all, they just read as "waiting") --
+      // one-click undo via HA's own real update.clear_skipped, not
+      // something you'd otherwise have to remember to do from HA's own
+      // device page instead.
+      if (u.status === "skipped") {
+        const unskipBtn = document.createElement("ha-progress-button");
+        unskipBtn.slot = "action";
+        unskipBtn.label = tr.dialog_unskip;
+        unskipBtn.disabled = updateIsInstalling(this._dialogLastState);
+        unskipBtn.addEventListener("click", () =>
+          _runProgressAction(unskipBtn, async () => {
+            await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
+            await this._afterDialogAction(entityId);
+          })
+        );
+        statusAlert.appendChild(unskipBtn);
+        this._dialogActionButtons.push(unskipBtn);
       }
       body.appendChild(statusAlert);
 
@@ -1041,25 +1672,81 @@ class UpdateManagerPanel extends HTMLElement {
       historyHeading.textContent = tr.dialog_history_heading;
       body.appendChild(historyHeading);
 
-      const list = document.createElement("ul");
+      // One ha-card per entry, not a plain <ul> -- direct user feedback
+      // (2026-07-17): felt "spuug lelijk", didn't read as HA at all. Same
+      // outlined-card building block the Settings tab already uses, read
+      // top-to-bottom as a timeline (newest first, same order the log
+      // itself is already in). Each card's own details (release link,
+      // changelog) sit behind a real ha-expansion-panel, collapsed by
+      // default -- only the version jump + when + auto/manual icon is
+      // always visible, matching direct user feedback that a card should
+      // open to show its details rather than dumping everything inline.
+      const list = document.createElement("div");
       list.className = "dialog-history";
       entries.forEach((entry) => {
-        const li = document.createElement("li");
+        const card = document.createElement("ha-card");
+        card.outlined = true;
+
+        const content = document.createElement("div");
+        content.className = "card-content dialog-history-card";
+
         const main = document.createElement("div");
         main.className = "dialog-history-main";
-        main.textContent = `${entry.from_version} → ${entry.to_version} ⋅ ${relativeTime(tr, entry.installed_at)}`;
-        li.appendChild(main);
-        let notes = null;
-        if (entry.release_summary) notes = entry.release_summary;
-        else if (entry.release_notes) notes = entry.release_notes.slice(0, 200);
-        else if (entry.release_url) notes = entry.release_url;
-        if (notes) {
+        // Download icon only when this entry is known to have been
+        // auto-install's doing (install_manager.py's own record, consumed
+        // at the moment the entity's installed_version actually changed --
+        // see __init__.py's _on_install) -- absent (older entries logged
+        // before this existed, or a genuinely manual install) shows no
+        // icon at all, same "icon present = automation involved" language
+        // already used for the Updates tab's own pill.
+        if (entry.auto_installed) {
+          const autoIcon = document.createElement("ha-svg-icon");
+          autoIcon.path = ICON_DOWNLOAD;
+          autoIcon.title = tr.dialog_history_auto;
+          main.appendChild(autoIcon);
+        }
+        const versions = document.createElement("span");
+        versions.className = "dialog-history-versions";
+        versions.textContent = `${entry.from_version} → ${entry.to_version}`;
+        main.appendChild(versions);
+        const when = document.createElement("span");
+        when.className = "dialog-history-when";
+        when.textContent = relativeTime(tr, entry.installed_at);
+        main.appendChild(when);
+        content.appendChild(main);
+
+        if (entry.release_url) {
+          const link = document.createElement("a");
+          link.href = entry.release_url;
+          link.target = "_blank";
+          link.rel = "noreferrer";
+          link.className = "dialog-history-link";
+          link.textContent = tr.dialog_history_release_link;
+          content.appendChild(link);
+        }
+
+        // Full notes behind the collapsed-by-default expansion panel, not
+        // truncated inline text -- direct user feedback: wanted an actual
+        // way to read the changelog, not just the first 200 characters of
+        // it dumped into every single history entry whether you asked for
+        // it or not. A short release_summary is brief enough to just show
+        // directly instead, no need to hide it behind a click.
+        if (entry.release_notes) {
+          const panel = document.createElement("ha-expansion-panel");
+          panel.header = tr.dialog_history_changelog;
+          const markdown = document.createElement("ha-markdown");
+          markdown.content = entry.release_notes;
+          panel.appendChild(markdown);
+          content.appendChild(panel);
+        } else if (entry.release_summary) {
           const notesEl = document.createElement("div");
           notesEl.className = "dialog-history-notes";
-          notesEl.textContent = notes;
-          li.appendChild(notesEl);
+          notesEl.textContent = entry.release_summary;
+          content.appendChild(notesEl);
         }
-        list.appendChild(li);
+
+        card.appendChild(content);
+        list.appendChild(card);
       });
       body.appendChild(list);
     }
@@ -1090,38 +1777,74 @@ class UpdateManagerPanel extends HTMLElement {
     actions.appendChild(moreInfoBtn);
 
     if (u) {
-      const skipBtn = document.createElement("ha-progress-button");
-      skipBtn.appearance = "plain";
-      skipBtn.label = tr.dialog_skip;
-      skipBtn.addEventListener("click", () =>
-        _runProgressAction(skipBtn, async () => {
-          await this._hass.callService("update", "skip", { entity_id: entityId });
-          await this._loadAll();
-          dialog.open = false;
-          this._renderContent();
-        })
-      );
-      actions.appendChild(skipBtn);
+      // Already skipped: the alert's own "Clear skipped" button (see
+      // above) covers the only relevant action here, showing this too
+      // would just be a redundant, no-op way to skip an already-skipped
+      // update again. Install stays available either way (skipping
+      // doesn't prevent installing, it's only "don't bug me about this").
+      if (u.status !== "skipped") {
+        const skipBtn = document.createElement("ha-progress-button");
+        skipBtn.appearance = "plain";
+        skipBtn.label = tr.dialog_skip;
+        skipBtn.disabled = updateIsInstalling(this._dialogLastState);
+        skipBtn.addEventListener("click", () =>
+          _runProgressAction(skipBtn, async () => {
+            // update_manager/skip, not a plain hass.callService -- this
+            // entity might already be auto-skipped by our own
+            // hide_postponed feature (staging_skip.py), in which case a
+            // bare update.skip service call is a genuine no-op (skipped_
+            // version already equals latest_version) and nothing would
+            // visibly change. The websocket command also relinquishes
+            // staging_skip.py's own record first, so this explicit,
+            // user-initiated skip is actually reflected.
+            await this._hass.callWS({ type: "update_manager/skip", entity_id: entityId });
+            await this._afterDialogAction(entityId);
+          })
+        );
+        actions.appendChild(skipBtn);
+        this._dialogActionButtons.push(skipBtn);
+      }
 
       if (u.installable) {
         const installBtn = document.createElement("ha-progress-button");
         installBtn.appearance = "filled";
         installBtn.label = tr.dialog_install;
-        installBtn.addEventListener("click", () =>
-          _runProgressAction(installBtn, async () => {
-            // UpdateEntityFeature.BACKUP = 8 (homeassistant/components/
-            // update/const.py) -- same condition install_manager.py's own
-            // auto-install already uses, kept consistent here.
-            const serviceData = { entity_id: entityId };
-            if (state && (state.attributes.supported_features || 0) & 8) {
-              serviceData.backup = true;
-            }
-            await this._hass.callService("update", "install", serviceData);
-            await this._loadAll();
-            dialog.open = false;
-            this._renderContent();
-          })
-        );
+        installBtn.disabled = updateButtonIsDisabled(this._dialogLastState);
+        installBtn.progress = updateIsInstalling(this._dialogLastState);
+        this._dialogInstallBtn = installBtn;
+        // Fire-and-forget, not awaited before reacting -- matches
+        // more-info-update.ts's own _handleInstall exactly (confirmed
+        // against its real source): it doesn't await this call either.
+        // Direct user feedback: HA's own dialog shows a live progress bar
+        // and eventually the entity's new state right there, it doesn't
+        // just wait on the service call and then close -- some updates
+        // (e.g. a slow HAOS/add-on install) can run long after the
+        // service call itself returns, so gating our own UI on that
+        // promise either closed the dialog too early or left it stuck
+        // spinning for no visible reason. The button's own .progress/
+        // .disabled now instead track the entity's real in_progress/state
+        // attributes live (see _updateDialogProgress, driven by set hass),
+        // same as HA's own .loading=${updateIsInstalling(stateObj)}.
+        installBtn.addEventListener("click", () => {
+          const msg = { type: "update_manager/install", entity_id: entityId };
+          // UpdateEntityFeature.BACKUP = 8 (homeassistant/components/
+          // update/const.py) -- same condition install_manager.py's own
+          // auto-install already uses, kept consistent here.
+          if (state && (state.attributes.supported_features || 0) & 8) {
+            msg.backup = true;
+          }
+          // update_manager/install, not a plain hass.callService -- this
+          // entity might currently be postponed or skipped (either a real
+          // user skip, or our own hide_postponed auto-skip); the websocket
+          // command clears that immediately as part of installing, instead
+          // of leaving it looking postponed/skipped until the install
+          // itself finishes. Not awaited before reacting, same reasoning
+          // as before: the command dispatches update.install as its own
+          // task rather than blocking on the full install either.
+          this._hass.callWS(msg).catch((err) => {
+            this._showToast((err && err.message) || String(err));
+          });
+        });
         actions.appendChild(installBtn);
       }
     }
@@ -1129,6 +1852,66 @@ class UpdateManagerPanel extends HTMLElement {
     dialog.appendChild(actions);
 
     dialog.open = true;
+  }
+
+  // Debounced, not fired on every single value-changed event -- ha-form's
+  // number selector (wait_days/announce_hours) fires that on every
+  // keystroke while typing, and saving mid-edit would recompute staging
+  // rules against a half-typed number each time. 800ms of no further edits
+  // before it actually saves.
+  _scheduleAutosave() {
+    clearTimeout(this._autosaveTimer);
+    this._autosaveTimer = setTimeout(() => {
+      this._autosaveTimer = null;
+      this._saveSettingsNow();
+    }, 800);
+  }
+
+  async _saveSettingsNow() {
+    const settingsOnly = pickKnownSettings(this._formData);
+    try {
+      await this._hass.callWS({ type: "update_manager/save_settings", ...settingsOnly });
+      this._settings = { ...settingsOnly };
+      // Re-fetch Updates/History too, not just settings -- new rules can
+      // change an entity's ready/waiting/blocked verdict immediately (see
+      // coordinator.py's async_update_rules). Doesn't re-render (this only
+      // updates the background data model): the Settings tab is what's
+      // open right now, and rebuilding its own form mid-edit would drop
+      // focus/cursor position out from under the user.
+      await this._loadAll();
+      this._showToast(this._tr.settings_saved_toast);
+    } catch (err) {
+      this._showToast((err && err.message) || String(err));
+    }
+  }
+
+  // The master pause switch (const.py's CONF_ENABLED) -- its own small card,
+  // first and separate from every rule below it: this isn't a rule about
+  // *how* Update Manager behaves, it's whether any of that logic runs at
+  // all right now. Same ha-form+boolean-selector building block as
+  // _buildVisibilityCard below, single field, no schema section needed.
+  _buildEnabledCard(tr) {
+    const card = document.createElement("ha-card");
+    card.outlined = true;
+    card.header = tr.enabled_section_title;
+
+    const body = document.createElement("div");
+    body.className = "card-content";
+
+    const form = document.createElement("ha-form");
+    form.hass = this._hass;
+    form.schema = [{ name: "enabled", selector: { boolean: {} } }];
+    form.data = this._formData;
+    form.computeLabel = () => tr.field_enabled;
+    form.computeHelper = () => tr.field_enabled_helper;
+    form.addEventListener("value-changed", (e) => {
+      this._formData = { ...this._formData, ...e.detail.value };
+      form.data = this._formData;
+      this._scheduleAutosave();
+    });
+    body.appendChild(form);
+    card.appendChild(body);
+    return card;
   }
 
   // ha-card + ha-progress-button, the same building blocks (and .card-content/
@@ -1148,6 +1931,12 @@ class UpdateManagerPanel extends HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "settings-cards";
 
+    // First, above every other card -- the master pause switch (direct
+    // user feedback: wanted one toggle at the top of the settings page
+    // that pauses all of Update Manager's own logic at once, distinct
+    // from any single rule below).
+    wrap.appendChild(this._buildEnabledCard(tr));
+
     const autoInstallSlot = document.createElement("div");
     // Rebuilds the sibling card only when anyAutoInstall actually flips, not
     // on every value-changed event -- the "Update rules" form also fires
@@ -1165,27 +1954,13 @@ class UpdateManagerPanel extends HTMLElement {
     wrap.appendChild(this._buildUpdateRulesCard(tr, syncAutoInstallCard));
     wrap.appendChild(autoInstallSlot);
     syncAutoInstallCard();
-
-    const actions = document.createElement("div");
-    actions.className = "card-actions";
-    const saveBtn = document.createElement("ha-progress-button");
-    saveBtn.appearance = "filled";
-    saveBtn.label = tr.save;
-    saveBtn.addEventListener("click", () =>
-      _runProgressAction(saveBtn, async () => {
-        const settingsOnly = pickKnownSettings(this._formData);
-        await this._hass.callWS({ type: "update_manager/save_settings", ...settingsOnly });
-        this._settings = { ...settingsOnly };
-        // Re-fetch Updates/History too, not just settings -- new rules can
-        // change an entity's ready/waiting/blocked verdict immediately
-        // (see coordinator.py's async_update_rules), and without this the
-        // other two tabs kept showing whatever was loaded before the save
-        // until you hit the manual refresh button yourself.
-        await this._loadAll();
-      })
-    );
-    actions.appendChild(saveBtn);
-    wrap.appendChild(actions);
+    // Always visible, unlike the auto-install card above -- this applies to
+    // every postponed update regardless of whether auto-install is on for
+    // its size at all.
+    wrap.appendChild(this._buildVisibilityCard(tr));
+    // No explicit Save button -- every field autosaves itself (debounced,
+    // see _scheduleAutosave), direct user feedback: "kunnen we niet direct
+    // saven bij elke edit ipv via een losse button?".
 
     return wrap;
   }
@@ -1248,6 +2023,7 @@ class UpdateManagerPanel extends HTMLElement {
     form.addEventListener("value-changed", (e) => {
       this._formData = { ...this._formData, ...e.detail.value };
       form.data = this._formData;
+      this._scheduleAutosave();
       onAutoInstallChange();
     });
     body.appendChild(form);
@@ -1292,6 +2068,7 @@ class UpdateManagerPanel extends HTMLElement {
     form.addEventListener("value-changed", (e) => {
       this._formData = { ...this._formData, ...e.detail.value };
       form.data = this._formData;
+      this._scheduleAutosave();
     });
     body.appendChild(form);
 
@@ -1309,6 +2086,34 @@ class UpdateManagerPanel extends HTMLElement {
       note.textContent = tr.hard_excluded_note(names);
       body.appendChild(note);
     }
+    card.appendChild(body);
+    return card;
+  }
+
+  // Own card, always visible (unlike _buildAutoInstallCard above): whether
+  // to hide a postponed update from HA's own update count/notifications
+  // (see staging_skip.py) has nothing to do with whether auto-install is
+  // even on for its size.
+  _buildVisibilityCard(tr) {
+    const card = document.createElement("ha-card");
+    card.outlined = true;
+    card.header = tr.hide_postponed_section_title;
+
+    const body = document.createElement("div");
+    body.className = "card-content";
+
+    const form = document.createElement("ha-form");
+    form.hass = this._hass;
+    form.schema = [{ name: "hide_postponed", selector: { boolean: {} } }];
+    form.data = this._formData;
+    form.computeLabel = () => tr.field_hide_postponed;
+    form.computeHelper = () => tr.field_hide_postponed_helper;
+    form.addEventListener("value-changed", (e) => {
+      this._formData = { ...this._formData, ...e.detail.value };
+      form.data = this._formData;
+      this._scheduleAutosave();
+    });
+    body.appendChild(form);
     card.appendChild(body);
     return card;
   }
@@ -1331,6 +2136,9 @@ class UpdateManagerPanel extends HTMLElement {
         width: 40px; height: 40px; border-radius: 50%;
       }
       .icon-btn:hover { background: rgba(0, 0, 0, 0.05); }
+      .icon-btn:disabled { cursor: default; opacity: 0.6; }
+      .icon-btn ha-icon.spinning { animation: um-spin 1s linear infinite; }
+      @keyframes um-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
       .content { display: block; }
       .content--list { padding: 0; }
@@ -1347,6 +2155,12 @@ class UpdateManagerPanel extends HTMLElement {
       .content--groups .loading, .content--groups .empty, .content--groups .error { padding: 0; }
       .error { color: var(--error-color); padding: 16px 0; font-size: var(--ha-font-size-m, 14px); }
       ha-list-base { display: block; }
+      /* Confirmed against ha-config-updates.ts's real static styles: without
+         this, the "start" slot's own layout box doesn't actually match
+         state-badge's real, hardcoded 40x40px size (see state-badge.ts),
+         so the icon rendered inside it wasn't vertically centered. */
+      ha-list-item-button { --md-list-item-leading-icon-size: 40px; }
+      div[slot="start"] { position: relative; }
       .row-end { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       .timer-pill {
         display: inline-flex; align-items: center; gap: var(--ha-space-1, 4px);
@@ -1377,6 +2191,7 @@ class UpdateManagerPanel extends HTMLElement {
         padding: var(--ha-space-7, 28px) var(--ha-space-5, 20px) 0;
         max-width: 1040px; margin: 0 auto;
       }
+      .update-groups-outer > ha-alert { display: block; max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); }
       .update-groups { display: block; }
       .update-groups ha-card {
         max-width: 600px; margin: 0 auto var(--ha-space-6, 24px);
@@ -1419,6 +2234,12 @@ class UpdateManagerPanel extends HTMLElement {
         font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color);
       }
       .dialog-content hr { border-color: var(--divider-color); border-bottom: none; margin: 0; }
+      /* Empty (and invisible) whenever nothing's installing -- only ever
+         holds a single ha-progress-bar, inserted/removed live by
+         _updateDialogProgress, same spot more-info-update.ts's own
+         in_progress bar occupies (top of its content). */
+      .dialog-progress:empty { display: none; }
+      .dialog-progress ha-progress-bar { margin-bottom: var(--ha-space-4, 16px); }
       /* state-info (icon+name) and .state, exactly the pair state-card-
          update.ts itself renders side by side for every update entity's
          more-info header -- verified against its real source, including
@@ -1437,16 +2258,33 @@ class UpdateManagerPanel extends HTMLElement {
          .row is exactly this and nothing else, confirmed against its real
          static styles, not approximated. */
       .row { margin: 0; display: flex; flex-direction: row; justify-content: space-between; }
-      .dialog-history { list-style: none; margin: 0; padding: 0; }
-      .dialog-history li {
-        padding: var(--ha-space-2, 8px) 0; border-bottom: 1px solid var(--divider-color);
-        font-size: var(--ha-font-size-s, 13px);
+      /* Timeline of ha-cards, same building block/spacing as the Settings
+         tab's own .settings-cards (direct user feedback: the old plain
+         <ul> "felt nothing like HA"). */
+      .dialog-history { display: flex; flex-direction: column; gap: var(--ha-space-2, 8px); }
+      .dialog-history ha-card { margin: 0; }
+      .dialog-history-card { padding-top: var(--ha-space-4, 16px); font-size: var(--ha-font-size-s, 13px); }
+      .dialog-history-main {
+        display: flex; align-items: center; gap: var(--ha-space-2, 8px);
+        color: var(--primary-text-color);
       }
-      .dialog-history li:last-child { border-bottom: none; }
+      .dialog-history-main ha-svg-icon {
+        --mdc-icon-size: 16px; color: var(--secondary-text-color); flex-shrink: 0;
+      }
+      .dialog-history-versions { flex: 1; font-weight: var(--ha-font-weight-medium, 500); }
+      .dialog-history-when { color: var(--secondary-text-color); }
       .dialog-history-notes {
-        color: var(--secondary-text-color); margin-top: 2px;
-        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        color: var(--secondary-text-color); margin-top: var(--ha-space-2, 8px);
+        white-space: pre-wrap;
       }
+      .dialog-history-link {
+        display: block; margin-top: var(--ha-space-2, 8px);
+        color: var(--primary-color); font-size: var(--ha-font-size-s, 13px);
+        text-decoration: none;
+      }
+      .dialog-history-link:hover { text-decoration: underline; }
+      .dialog-history ha-expansion-panel { margin-top: var(--ha-space-2, 8px); --expansion-panel-content-padding: 0; }
+      .dialog-history ha-markdown { display: block; padding-top: var(--ha-space-2, 8px); }
     `;
   }
 }
