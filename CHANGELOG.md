@@ -2,13 +2,23 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.1.0] - 2026-07-17
 
-Initial project scaffold, plus the first real piece of Phase 0: a single "Update Manager" sensor
-showing how many updates are ready to install now, with the per-update breakdown (ready/waiting/
-blocked, and why) as an attribute -- not one entity per update, which would mean 100+ near-useless
-extra entities on a large instance. Auto-install now exists too (see below), fully opt-in and off
-by default; device-firmware rollout-pacing does not yet.
+Update Manager's first release: helps you decide *when* to install a Home Assistant update, and can
+optionally handle the installing for you. Waiting a bit before installing isn't caution for its own
+sake; it gives a broken release time to be noticed and fixed before you commit to it.
+
+**Staging rules**: updates are grouped by how big a jump they are (a small bugfix vs. a bigger,
+possibly breaking change), each with its own configurable waiting period before it counts as ready.
+
+**Auto-install**: fully opt-in, off by default. Once eligible, an update isn't installed instantly;
+it's announced first with a cancellable countdown, and a backup is taken automatically when
+supported. A master switch pauses all of this at once if you ever need to, without touching any
+other setting.
+
+**Sidebar panel**: an Updates tab (with live install progress, an "update all" button, and an option
+to hide still-postponed updates from Home Assistant's own sidebar count), a History tab with
+changelogs for everything installed, and a Settings tab that autosaves as you edit.
 
 ### Added
 - Bare custom_component skeleton (`manifest.json`, `const.py`, `__init__.py`, a single-instance

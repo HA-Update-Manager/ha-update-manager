@@ -4,13 +4,12 @@
 # Update Manager: Home Assistant helper integration
 
 > [!NOTE]
-> Very early, pre-alpha stage. Phase 0 and auto-install (below) mostly work and have been tested
-> against a real instance, but this repository isn't ready to be installed by end users yet -- no
-> release has been cut, and device-firmware rollout-pacing isn't wired up yet (also below).
+> Early stage. Phase 0 and auto-install (below) work and have been tested against a real instance;
+> device-firmware rollout-pacing and the community layer (Phase 1-3) aren't built yet.
 
-Update Manager helps you decide when a Home Assistant update is worth installing, and can optionally
-install it for you -- never silently: an eligible update is always announced first, with time to
-cancel, before anything actually happens.
+Update Manager helps you decide when to install a Home Assistant update, and can optionally install
+it for you -- never silently: an eligible update is always announced first, with time to cancel,
+before anything actually happens.
 
 ## Planned scope
 
@@ -55,7 +54,9 @@ former is useful entirely on its own, even for someone who never turns auto-inst
 
 ## Installation
 
-Not yet published to HACS; this repository isn't ready to be installed by end users yet.
+Not yet in the HACS default store. Add this repository as a custom repository in HACS
+(Integration), or install the [latest release](https://github.com/HA-Update-Manager/ha-update-manager/releases)
+manually under `custom_components/update_manager`.
 
 ## Configuration
 
