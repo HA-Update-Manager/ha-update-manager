@@ -75,7 +75,7 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
     data["install_manager"].update_rules(auto_install_rules_from_options(options))
 
     async def _apply_staging_skip() -> None:
-        await data["staging_skip_manager"].async_update_enabled(options.get(CONF_HIDE_POSTPONED, False))
+        await data["staging_skip_manager"].async_update_enabled(options.get(CONF_HIDE_POSTPONED, True))
         await data["staging_skip_manager"].async_set_master_enabled(master_enabled)
 
     await asyncio.gather(

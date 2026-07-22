@@ -36,7 +36,8 @@ DEFAULT_ANNOUNCE_HOURS = 24
 # about *which* entities, not a wait/auto-install tuning value.
 CONF_EXCLUDED_ENTITIES = "excluded_entities"
 
-# Opt-in, off by default, not part of any profile preset (same reasoning as
+# On by default (changed 2026-07-21, direct user feedback), opt-out rather
+# than opt-in. Not part of any profile preset (same reasoning as
 # CONF_EXCLUDED_ENTITIES above: a behavior toggle, not a wait/auto-install
 # tuning value). See staging_skip.py for what it actually does.
 CONF_HIDE_POSTPONED = "hide_postponed"
@@ -68,9 +69,9 @@ PROFILE_PRESETS: dict[str, dict[str, int | bool]] = {
     PROFILE_BALANCED: {
         CONF_SMALL_WAIT_DAYS: 0,
         CONF_SMALL_AUTO_INSTALL: False,
-        CONF_MEDIUM_WAIT_DAYS: 7,
+        CONF_MEDIUM_WAIT_DAYS: 1,
         CONF_MEDIUM_AUTO_INSTALL: False,
-        CONF_BIG_WAIT_DAYS: 30,
+        CONF_BIG_WAIT_DAYS: 3,
         CONF_BIG_AUTO_INSTALL: False,
         CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
     },

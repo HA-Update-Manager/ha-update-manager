@@ -13,7 +13,7 @@ from .panel import async_register_update_manager_panel
 from .staging_skip import StagingSkipManager
 from .websocket_api import async_apply_options, async_setup_websocket_api
 
-PLATFORMS: list[str] = ["sensor"]
+PLATFORMS: list[str] = ["sensor", "switch"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -75,7 +75,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     coordinator.async_add_install_listener(_on_install)
     install_manager.async_start()
-    staging_skip_manager.async_start(bool(options.get(CONF_HIDE_POSTPONED, False)))
+    staging_skip_manager.async_start(bool(options.get(CONF_HIDE_POSTPONED, True)))
 
     hass.data[DOMAIN] = {
         "coordinator": coordinator,

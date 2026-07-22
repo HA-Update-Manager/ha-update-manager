@@ -68,6 +68,31 @@ _NOTIFICATION_STRINGS = {
     },
 }
 
+_FAILURE_NOTIFICATION_ID_PREFIX = f"{DOMAIN}_failed_install_"
+
+# Same hass.config.language convention as _NOTIFICATION_STRINGS above.
+# Direct user feedback: a failed auto-install used to only ever show up as
+# an exception in the log, with nothing telling the user it happened at
+# all, let alone in their own language.
+_FAILURE_NOTIFICATION_STRINGS = {
+    "en": {
+        "title": "Update failed",
+        "body": (
+            "Update Manager tried to update **{name}** to version {to_version}, but the install "
+            "failed. Check the Home Assistant logs for details, or try installing it manually from "
+            "the [Update Manager page]({url})."
+        ),
+    },
+    "nl": {
+        "title": "Update mislukt",
+        "body": (
+            "Update Manager probeerde **{name}** bij te werken naar versie {to_version}, maar de "
+            "installatie is mislukt. Bekijk de Home Assistant-logs voor details, of installeer "
+            "handmatig via de [Update Manager-pagina]({url})."
+        ),
+    },
+}
+
 
 def auto_install_rules_from_options(options: dict) -> AutoInstallRules:
     return AutoInstallRules(
@@ -107,6 +132,18 @@ class InstallManager:
         # Not persisted: only meaningful for the brief window between
         # dispatching and the entity's own state catching up.
         self._recently_executed: dict[str, str] = {}
+        # Serializes every _async_tick pass against every other one: same
+        # fix, and same underlying race, as staging_skip.py's own StagingSkipManager
+        # lock (see its docstring for the full incident this closes). _on_recompute
+        # schedules a brand-new _async_tick task on *every* coordinator recompute,
+        # with nothing stopping a previous tick's own asyncio.gather from still
+        # being in flight. Two overlapping ticks could both see the same entity's
+        # self._pending as None (neither had written it yet) and both decide
+        # "announce", each computing its own PendingAnnouncement independently.
+        # Found by review while investigating a separate reported issue, not
+        # something confirmed live yet, but the exact same shape of bug
+        # staging_skip.py already had to fix once.
+        self._lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -239,13 +276,34 @@ class InstallManager:
         # pending+cancelled dict immediately, so saving per-entity inside a
         # loop of N changed entities was N full-file writes of an O(N)
         # payload in the same tick instead of one.
-        entity_ids = set(self._coordinator.cache) | set(self._pending)
-        self._dirty = False
-        await asyncio.gather(*(self._async_evaluate_one(entity_id, now) for entity_id in entity_ids))
-        if self._dirty:
-            await self._async_save()
+        #
+        # The whole pass serialized against any other tick via self._lock
+        # (see its own comment). Concurrency *within* one tick (the gather
+        # below) is still fully parallel, only two separate ticks can no
+        # longer run their own read-decide-write sequence interleaved.
+        async with self._lock:
+            entity_ids = set(self._coordinator.cache) | set(self._pending)
+            self._dirty = False
+            await asyncio.gather(*(self._async_evaluate_one(entity_id, now) for entity_id in entity_ids))
+            if self._dirty:
+                await self._async_save()
 
     async def _async_evaluate_one(self, entity_id: str, now: datetime) -> None:
+        if entity_id in self._recently_executed:
+            # An install is still in flight for this entity (dispatched by
+            # _async_execute, not yet resolved either way: cleared by
+            # was_auto_installed on success or _async_run_install's own
+            # except-branch on failure). Found by review: without this
+            # guard, a slow install (e.g. a firmware flash) still running
+            # at the next tick (the 5-minute timer, or any earlier
+            # coordinator recompute) looked exactly like a fresh "ready"
+            # update with nothing pending (this class's own _pending record
+            # for it was already cleared, right at the start of
+            # _async_execute, before dispatching), and got a second, fully
+            # redundant announce+execute cycle stacked on top of the first
+            # one still running.
+            return
+
         cached = self._coordinator.cache.get(entity_id)
         current_to_version = cached["latest_version"] if cached else None
 
@@ -369,11 +427,30 @@ class InstallManager:
             # installed_version never actually changes) -- a later, wholly
             # unrelated install of this entity to the exact same to_version
             # (a manual retry, say) would then be wrongly attributed to us.
+            # Also, since _async_evaluate_one now treats any entity_id
+            # still in self._recently_executed as "install in flight" (see
+            # its own comment), leaving this in place after a real failure
+            # would permanently freeze the entity out of ever being
+            # re-announced.
             if self._recently_executed.get(entity_id) == to_version:
                 del self._recently_executed[entity_id]
+
+            name = _friendly_name(self.hass, entity_id)
+            strings = _FAILURE_NOTIFICATION_STRINGS.get(self.hass.config.language, _FAILURE_NOTIFICATION_STRINGS["en"])
+            persistent_notification.async_create(
+                self.hass,
+                strings["body"].format(name=name, to_version=to_version, url=_PANEL_UPDATES_URL),
+                title=strings["title"],
+                notification_id=f"{_FAILURE_NOTIFICATION_ID_PREFIX}{entity_id}",
+            )
 
     async def _async_remove(self, entity_id: str) -> None:
         if entity_id in self._pending:
             del self._pending[entity_id]
             self._dirty = True
         persistent_notification.async_dismiss(self.hass, f"{_NOTIFICATION_ID_PREFIX}{entity_id}")
+        # Also called at the start of every _async_execute, i.e. right
+        # before each (re)attempt: clears out a previous attempt's
+        # failure notification so it doesn't linger once a retry is
+        # actually underway.
+        persistent_notification.async_dismiss(self.hass, f"{_FAILURE_NOTIFICATION_ID_PREFIX}{entity_id}")

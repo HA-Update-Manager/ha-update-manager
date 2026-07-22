@@ -50,12 +50,33 @@ const ICON_HISTORY =
   "M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3";
 const ICON_COG =
   "M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z";
-// Verified against the real @mdi/js package (mdiDownload/mdiClockOutline),
+// Verified against the real @mdi/js package (mdiAutoDownload/mdiClockOutline),
 // same approach as the tab icons above -- used on the trailing timer
-// badge/pill (see timerBadge), not the ICON_* tab set.
-const ICON_DOWNLOAD = "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z";
+// badge/pill (see timerBadge), not the ICON_* tab set. mdiAutoDownload, not
+// the plain mdiDownload this used to be: every use of this icon means
+// specifically "Update Manager's own auto-install did/will do this", not
+// just "a download happened": direct user feedback, the generic download
+// glyph didn't actually say "automatic" at a glance.
+const ICON_AUTO_DOWNLOAD =
+  "M22 17V19H11V17H22M19 4.5V9.5H22L16.5 15L11 9.5H14V4.5H19M10.7 15H8.8L8.1 13H4.9L4.2 15H2.3L5.5 6H7.5L10.7 15M7.65 11.65L6.5 8L5.35 11.65H7.65Z";
 const ICON_CLOCK_OUTLINE =
   "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
+// mdiChevronDown: the history dialog's own "expand this row's changelog"
+// chevron (see _openDetailDialog), rotated 180deg via .open instead of
+// relying on ha-expansion-panel's own built-in one: that component's row
+// looked visually distinct from the plain ha-list-item-button used for
+// entries with only a release_url (different padding/typography), which
+// read as inconsistent sitting side by side in the same timeline. Direct
+// user feedback. Both now render as the exact same ha-list-item-button
+// row; only the trailing icon (this rotating chevron vs. ICON_OPEN_IN_NEW
+// below) signals which of the two actually happens on click.
+const ICON_CHEVRON_DOWN = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z";
+// mdiOpenInNew: the entries in that same history timeline whose row opens
+// an external release page instead of expanding in place. Direct user
+// feedback: ha-icon-next (a plain chevron, this file's usual "opens more
+// detail" signal, e.g. _buildListRow) doesn't actually say "leaves the
+// app" the way this universally-recognized external-link glyph does.
+const ICON_OPEN_IN_NEW = "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z";
 
 // hass.language-driven, same convention this project family's other files
 // use (see cover-media-card.js's TRANSLATIONS/_tr) -- flat keys, English as
@@ -89,11 +110,27 @@ const TRANSLATIONS = {
     // Updates tab's "Impact" column shows the _short word only, no room/
     // need for the explanation there.
     size_small_short: "Small",
-    size_small_desc: "Patch, or a calendar date within the same month.",
+    // Functions, not plain strings, for the two with a calendar-version
+    // example (currentCalendarVersion): always today's real year/month,
+    // never a hardcoded date that quietly goes stale. size_big_desc stays
+    // a function too, purely so every size_*_desc can be called the same
+    // way (see computeHelper below) rather than branching per size.
+    size_small_desc: () => {
+      const { year, month } = currentCalendarVersion();
+      return `A patch release (e.g. 1.0.0 → 1.0.1), or the same calendar month (e.g. ${year}.${month}.0 → ${year}.${month}.1).`;
+    },
     size_medium_short: "Medium",
-    size_medium_desc: "Minor, a calendar month/year change, or a commit-hash update.",
+    size_medium_desc: () => {
+      const { year, month } = currentCalendarVersion();
+      const nextMonth = month === 12 ? 1 : month + 1;
+      const nextYear = month === 12 ? year + 1 : year;
+      return (
+        `A minor release (e.g. 1.0.0 → 1.1.0), a new calendar month/year (e.g. ${year}.${month}.0 → ` +
+        `${nextYear}.${nextMonth}.0), or a commit-hash update (e.g. 7sg82tw → 8dhw8wg).`
+      );
+    },
     size_big_short: "Big",
-    size_big_desc: "Major, or not recognizable.",
+    size_big_desc: () => "A major release (e.g. 1.0.0 → 2.0.0) or a jump too different to classify.",
     // Used in the detail dialog's status alert (see statusText/
     // _openDetailDialog) -- no emoji prefix here, the alert's own color and
     // icon (a real ha-alert, success/info/warning) already carry that, an
@@ -133,19 +170,15 @@ const TRANSLATIONS = {
     // used elsewhere in this file (e.g. the history entry's
     // "from → to ⋅ when" line) to combine two independent facts.
     always_manual_suffix: " ⋅ Always manual",
-    field_excluded_entities: "Always manual (entities)",
+    field_excluded_entities: "Always manual",
     field_excluded_entities_helper:
       "Still shown normally in Updates and History. Update Manager just never auto-installs these, regardless of what's configured above.",
-    hard_excluded_note: (names) => `Always excluded too, regardless of the list above: ${names}.`,
     field_wait_days: "Postponement period (days)",
     field_auto_install: "Update automatically",
-    field_auto_install_helper:
-      "Update Manager updates it for you once it counts as ready, always after a cancellable announcement first, see the auto-update section below.",
     auto_install_section_title: "Auto-update",
-    hide_postponed_section_title: "Visibility in Home Assistant",
     field_hide_postponed: "Hide postponed updates",
     field_hide_postponed_helper:
-      "While an update is still postponed, Update Manager marks it as skipped in Home Assistant itself. It disappears from the sidebar's update count and other native notifications until it's actually ready, then gets automatically un-skipped again. Never touches an update you skipped yourself for another reason.",
+      "Marks a postponed update as skipped in Home Assistant itself until it's actually ready. Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
     auto_install_section_desc: "Only applies to sizes where \"Update automatically\" is checked above.",
     announce_hours_label: "Announcement notice (hours)",
     announce_hours_helper:
@@ -160,16 +193,23 @@ const TRANSLATIONS = {
     dialog_history_changelog: "View changelog",
     dialog_more_info: "More info",
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
-    enabled_section_title: "Update Manager",
+    // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
+    // that this card also covers hide_postponed (merged in from its own
+    // former "Visibility in Home Assistant" card), "the settings page's
+    // own name repeated as a card title on the settings page" read as odd,
+    // and "General" is what this actually is: the settings that aren't
+    // specific to any one size, as opposed to "Update rules" (per size)
+    // and "Auto-update" (the auto-install mechanism's own details) below
+    // it.
+    enabled_section_title: "General",
     field_enabled: "Enabled",
     field_enabled_helper:
-      "Pauses every automatic action below: no announcements, no automatic installs, and postponed updates stop being hidden from Home Assistant's own update count. Everything you've configured stays saved, it just isn't applied until you turn this back on. Updates are still shown here as normal.",
+      "Pauses every automatic action below: no announcements, no automatic installs, and postponed updates stop being hidden from Home Assistant's own update count. Everything you've configured stays saved, it just isn't applied until you turn this back on.",
     settings_header: "Update rules",
     settings_hint:
-      "Updates are split into 3 categories by impact (below). For each one, you decide how long to " +
-      "wait before an update counts as ready, and whether Update Manager then installs it for you " +
-      "or you do it yourself. The point of waiting isn't caution for its own sake: it gives a " +
-      "release with a bug time to be noticed and fixed before you install it.",
+      "Every update is grouped into one of these three sizes, based on how big the version jump " +
+      "is. For each, choose how many days to postpone it, and whether Update Manager should then " +
+      "install it for you.",
     save: "Save",
     settings_saved_toast: "Settings saved",
     cancel_auto_install: "Cancel",
@@ -190,6 +230,16 @@ const TRANSLATIONS = {
     group_not_installable: (count) => `${count} ${count === 1 ? "not installable update" : "not installable updates"}`,
     updates_empty: "No updates need attention, everything is up to date.",
     history_empty: "No updates logged yet.",
+    // History's own date sections (see historySections), relative rather
+    // than a fixed calendar date range in the heading itself, same spirit
+    // as relativeTime/absoluteWhen elsewhere in this file: "This week"
+    // stays true and readable all week, a literal date range would need
+    // recomputing (and re-reading) every single day.
+    history_section_today: "Today",
+    history_section_yesterday: "Yesterday",
+    history_section_this_week: "This week",
+    history_section_this_month: "This month",
+    history_section_earlier: "Earlier",
     loading: "Loading…",
     load_error_prefix: "Couldn't load Update Manager: ",
     units: [
@@ -218,11 +268,22 @@ const TRANSLATIONS = {
     refreshed_toast: "Update Manager ververst",
     dash: "–",
     size_small_short: "Klein",
-    size_small_desc: "Patch, of kalenderdatum binnen dezelfde maand.",
+    size_small_desc: () => {
+      const { year, month } = currentCalendarVersion();
+      return `Een patch-release (bijv. 1.0.0 → 1.0.1), of dezelfde kalendermaand (bijv. ${year}.${month}.0 → ${year}.${month}.1).`;
+    },
     size_medium_short: "Gemiddeld",
-    size_medium_desc: "Minor, kalendermaand/-jaar, of commit-update.",
+    size_medium_desc: () => {
+      const { year, month } = currentCalendarVersion();
+      const nextMonth = month === 12 ? 1 : month + 1;
+      const nextYear = month === 12 ? year + 1 : year;
+      return (
+        `Een minor-release (bijv. 1.0.0 → 1.1.0), een nieuwe kalendermaand/-jaar (bijv. ${year}.${month}.0 → ` +
+        `${nextYear}.${nextMonth}.0), of een commit-update (bijv. 7sg82tw → 8dhw8wg).`
+      );
+    },
     size_big_short: "Groot",
-    size_big_desc: "Major, of niet te herkennen.",
+    size_big_desc: () => "Een major-release (bijv. 1.0.0 → 2.0.0), of een sprong die niet te classificeren is.",
     status_ready: "Klaar om te updaten",
     status_waiting_manual: (when) => `Klaar om te updaten ${when}`,
     status_waiting_soon: "Uitgesteld (bijna zo ver)",
@@ -233,20 +294,16 @@ const TRANSLATIONS = {
     status_installing: "Bezig met installeren…",
     status_pending_install: (when) => `Wordt automatisch geüpdatet ${when}`,
     always_manual_suffix: " ⋅ Altijd handmatig",
-    field_excluded_entities: "Altijd handmatig (entiteiten)",
+    field_excluded_entities: "Altijd handmatig",
     field_excluded_entities_helper:
       "Blijven gewoon zichtbaar bij Updates en Historie. Update Manager installeert ze alleen nooit automatisch, ongeacht wat je hierboven instelt.",
-    hard_excluded_note: (names) => `Staan sowieso altijd óók uitgesloten, ongeacht bovenstaande lijst: ${names}.`,
     field_wait_days: "Uitsteltermijn (dagen)",
     field_auto_install: "Automatisch updaten",
-    field_auto_install_helper:
-      "Update Manager update 'm dan zelf zodra die als gereed geldt, altijd pas na een aankondiging die je eerst nog kan annuleren, zie de sectie auto-update hieronder.",
     auto_install_section_title: "Auto-update",
     auto_install_section_desc: "Geldt alleen voor groottes waar hierboven \"Automatisch updaten\" aan staat.",
-    hide_postponed_section_title: "Zichtbaarheid in Home Assistant",
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper:
-      "Zolang een update nog is uitgesteld, markeert Update Manager 'm zelf als overgeslagen in Home Assistant. Hij verdwijnt dan uit de teller in de zijbalk en andere native meldingen, tot 'ie echt klaar is, en wordt dan automatisch weer zichtbaar gemaakt. Een update die je zelf om een andere reden hebt overgeslagen, blijft Update Manager met rust.",
+      "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
     announce_hours_label: "Aankondigingstermijn (uren)",
     announce_hours_helper:
       "Hoelang je hebt om een geplande automatische installatie (Updates-tab) te annuleren voordat die echt gebeurt, zodra de uitsteltermijn voorbij is.",
@@ -260,16 +317,14 @@ const TRANSLATIONS = {
     dialog_history_changelog: "Changelog bekijken",
     dialog_more_info: "Meer info",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
-    enabled_section_title: "Update Manager",
+    enabled_section_title: "Algemeen",
     field_enabled: "Ingeschakeld",
     field_enabled_helper:
-      "Pauzeert alle automatische acties hieronder: geen aankondigingen, geen automatische installaties, en uitgestelde updates worden niet langer verborgen voor Home Assistants eigen update-telling. Alles wat je hebt ingesteld blijft opgeslagen, het wordt alleen niet toegepast totdat je dit weer aanzet. Updates blijven hier gewoon zichtbaar.",
+      "Pauzeert alle automatische acties hieronder: geen aankondigingen, geen automatische installaties, en uitgestelde updates worden niet langer verborgen voor Home Assistants eigen update-telling. Alles wat je hebt ingesteld blijft opgeslagen, het wordt alleen niet toegepast totdat je dit weer aanzet.",
     settings_header: "Update-regels",
     settings_hint:
-      "We verdelen updates in 3 categorieën op basis van impact (hieronder). Per categorie stel je in " +
-      "hoelang je wilt wachten voordat een update als gereed geldt, en of Update Manager de update " +
-      "dan zelf installeert of dat jij dat zelf doet. Het wachten zelf is geen doel op zich: het " +
-      "geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij hem " +
+      "Elke update valt in een van deze drie groottes, op basis van hoe groot de versiesprong is. " +
+      "Per grootte kies je hoeveel dagen je 'm uitstelt, en of Update Manager 'm daarna zelf " +
       "installeert.",
     save: "Opslaan",
     settings_saved_toast: "Instellingen opgeslagen",
@@ -286,6 +341,11 @@ const TRANSLATIONS = {
       `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
     updates_empty: "Geen updates die aandacht nodig hebben, alles is up-to-date.",
     history_empty: "Nog geen updates gelogd.",
+    history_section_today: "Vandaag",
+    history_section_yesterday: "Gisteren",
+    history_section_this_week: "Deze week",
+    history_section_this_month: "Deze maand",
+    history_section_earlier: "Eerder",
     loading: "Laden…",
     load_error_prefix: "Kon Update Manager niet laden: ",
     units: [
@@ -512,7 +572,7 @@ function timerBadge(tr, u, settings, hass) {
   if (updateIsInstalling(entityState(hass, u.entity_id))) return { installing: true };
   if (u.status === "waiting") {
     const projected = projectedAutoInstallTime(u, settings);
-    if (projected) return { icon: ICON_DOWNLOAD, text: capitalize(absoluteWhen(tr, projected, hass)) };
+    if (projected) return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, projected, hass)) };
     if (u.remaining_seconds != null) {
       const readyAt = new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
       return { icon: ICON_CLOCK_OUTLINE, text: capitalize(absoluteWhen(tr, readyAt, hass)) };
@@ -520,7 +580,7 @@ function timerBadge(tr, u, settings, hass) {
     return { icon: ICON_CLOCK_OUTLINE, text: tr.relative_soon };
   }
   if (u.pending_install) {
-    return { icon: ICON_DOWNLOAD, text: capitalize(absoluteWhen(tr, u.pending_install.execute_at, hass)) };
+    return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, u.pending_install.execute_at, hass)) };
   }
   return null;
 }
@@ -581,6 +641,16 @@ function _breakdown(tr, abs) {
     }
   }
   return null;
+}
+
+// The real current year/month, not a hardcoded example that would
+// otherwise silently go stale (e.g. "2026.7" still shown as the calendar-
+// versioning example long after that month has passed). Used by
+// TRANSLATIONS' own size_small_desc/size_medium_desc, direct user
+// feedback. month is already 1-indexed (getMonth() + 1).
+function currentCalendarVersion() {
+  const now = new Date();
+  return { year: now.getFullYear(), month: now.getMonth() + 1 };
 }
 
 // HA's own relative-time display is a live-updating component
@@ -646,6 +716,45 @@ function absoluteWhen(tr, iso, hass) {
   if (dayDiff === 1) return tr.when_tomorrow(time);
   if (dayDiff > 1 && dayDiff < 7) return tr.when_weekday(date.toLocaleDateString(locale, { weekday: "long" }), time);
   return tr.when_date(date.toLocaleDateString(locale, { day: "numeric", month: "short" }), time);
+}
+
+// Groups install-log entries (already newest-first) into calendar-relative
+// sections for the History tab: Today/Yesterday/This week/This month/
+// Earlier, same "relative, not a fixed date" spirit as relativeTime/
+// absoluteWhen above. Only returns buckets that actually have something in
+// them, in that fixed order, so an instance with only a handful of old
+// entries doesn't show four empty "This week"/"This month" headings above
+// its one real "Earlier" section.
+function historySections(tr, entries) {
+  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const today = startOfDay(new Date());
+  // `key` (language-independent, unlike `label`) lets a caller single out
+  // "today" specifically: see _buildHistoryList, which only shows a
+  // relative time in each entry's own subtitle for that one section; every
+  // other section's heading already says roughly when, so repeating it
+  // (in every single row under "Yesterday"/"This week"/...) was redundant.
+  const buckets = [
+    { key: "today", label: tr.history_section_today, items: [] },
+    { key: "yesterday", label: tr.history_section_yesterday, items: [] },
+    { key: "week", label: tr.history_section_this_week, items: [] },
+    { key: "month", label: tr.history_section_this_month, items: [] },
+    { key: "earlier", label: tr.history_section_earlier, items: [] },
+  ];
+  for (const entry of entries) {
+    const date = new Date(entry.installed_at);
+    // NaN (unparseable/missing installed_at) and a future timestamp (clock
+    // skew between this browser and whatever wrote the entry) both fall
+    // through to dayDiff <= 0, the same bucket a genuinely "just now" entry
+    // lands in: there's no sensible "earlier" section for something that
+    // fails to parse as being in the past at all.
+    const dayDiff = Number.isNaN(date.getTime()) ? 0 : Math.round((today - startOfDay(date)) / 86400000);
+    if (dayDiff <= 0) buckets[0].items.push(entry);
+    else if (dayDiff === 1) buckets[1].items.push(entry);
+    else if (dayDiff < 7) buckets[2].items.push(entry);
+    else if (dayDiff < 30) buckets[3].items.push(entry);
+    else buckets[4].items.push(entry);
+  }
+  return buckets.filter((bucket) => bucket.items.length);
 }
 
 function entityState(hass, entityId) {
@@ -871,7 +980,7 @@ class UpdateManagerPanel extends HTMLElement {
         this._formData = {
           enabled: true,
           excluded_entities: [],
-          hide_postponed: false,
+          hide_postponed: true,
           ...fallback,
           ...pickKnownSettings(this._settings),
         };
@@ -937,6 +1046,15 @@ class UpdateManagerPanel extends HTMLElement {
 
     const subpage = document.createElement("hass-tabs-subpage");
     subpage.tabs = TAB_DEFS.map((t) => ({ path: t.path, name: this._tr[t.nameKey], iconPath: t.iconPath }));
+    // This is a top-level sidebar panel, not a page nested under another
+    // one. Without mainPage=true, hass-tabs-subpage's own default
+    // (confirmed against its real source) is a back-arrow that navigates
+    // browser history, only falling back to the menu icon on its own if
+    // history.state?.root happens to be true, which isn't guaranteed for
+    // a panel opened directly from the sidebar. Direct user feedback:
+    // caught this should be the hamburger/menu icon, like every other
+    // top-level HA panel, not a back arrow.
+    subpage.mainPage = true;
 
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "icon-btn refresh-btn";
@@ -1108,11 +1226,13 @@ class UpdateManagerPanel extends HTMLElement {
     if (!this._contentEl) return;
     const hasData = this._updates !== null;
     this._contentEl.innerHTML = "";
-    // History stays a bare, edge-to-edge list (same as /config/devices);
-    // Updates is grouped into cards now (see _buildUpdatesList), so it
-    // gets the centered/padded treatment settings already used, just
-    // wider (more than one card can sit side by side in the same reading
-    // width HA's own updates page uses).
+    // All three tabs now share the same centered/padded page grid (changed
+    // 2026-07-21, direct user feedback: History used to be a bare, edge-to-
+    // edge list, unlike the other two, and Settings used a narrower column
+    // than Updates for no real reason). Each still keeps its own class for
+    // the tab-specific content inside it (grouped cards, date-sectioned
+    // item cards, or a settings form), see _styles' shared content--*
+    // rule for the actual shared width/padding values.
     this._contentEl.className =
       this._tab === "settings"
         ? "content content--form"
@@ -1151,38 +1271,26 @@ class UpdateManagerPanel extends HTMLElement {
     );
   }
 
-  // ha-list-base + ha-list-item-button + state-badge -- the same list
-  // pattern HA's own /config updates section uses (verified against
-  // ha-config-updates.ts's real source, not guessed, direct user feedback
-  // that the previous ha-data-table felt inflexible: no real entity icons,
-  // and a poor mobile experience since it's fundamentally a multi-column
-  // table trying to fit a narrow screen). A plain scrollable list has
-  // neither problem: state-badge gives every row its real icon, and there
-  // are no columns to hide on a phone in the first place.
-  _wrapList(rowElements, emptyText) {
-    if (!rowElements.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = emptyText;
-      return empty;
-    }
-    const list = document.createElement("ha-list-base");
-    rowElements.forEach((row) => list.appendChild(row));
-    return list;
-  }
-
-  // The icon+time pill (see timerBadge) -- shared between the Updates list
-  // rows and the detail dialog's status alert, so "when does this actually
-  // happen" reads identically in both places.
+  // The icon(+time) pill (see timerBadge), shared between the Updates
+  // list rows and the detail dialog's status alert, so "when does this
+  // actually happen" reads identically in both places. Also reused by
+  // History's own auto-install badge, which passes no `text` at all
+  // (icon-only, changed 2026-07-21, direct user feedback: the "Automatically
+  // updated" label next to every auto-installed row added up to a lot of
+  // repeated text down a long list). The title attribute stands in for
+  // that dropped label so the meaning isn't lost, just not spelled out inline.
   _buildTimerPill(timerBadgeInfo) {
     const pill = document.createElement("div");
     pill.className = "timer-pill";
     const pillIcon = document.createElement("ha-svg-icon");
     pillIcon.path = timerBadgeInfo.icon;
+    if (!timerBadgeInfo.text) pillIcon.title = timerBadgeInfo.title || "";
     pill.appendChild(pillIcon);
-    const pillText = document.createElement("span");
-    pillText.textContent = timerBadgeInfo.text;
-    pill.appendChild(pillText);
+    if (timerBadgeInfo.text) {
+      const pillText = document.createElement("span");
+      pillText.textContent = timerBadgeInfo.text;
+      pill.appendChild(pillText);
+    }
     return pill;
   }
 
@@ -1258,7 +1366,7 @@ class UpdateManagerPanel extends HTMLElement {
     const outer = document.createElement("div");
     outer.className = "update-groups-outer";
 
-    // Shown whenever the master pause switch is off (see _buildEnabledCard)
+    // Shown whenever the master pause switch is off (see _buildGeneralCard)
     // -- without this, a paused instance would silently look identical to
     // a normal one: same statuses, same "will update automatically"
     // projections, just nothing actually happening, which read as broken
@@ -1360,20 +1468,66 @@ class UpdateManagerPanel extends HTMLElement {
     return outer;
   }
 
+  // Own card per entry, not one shared list (changed 2026-07-21, direct
+  // user feedback: wanted the same "white card, border, breathing room
+  // between rows" look the per-entity dialog's own history cards already
+  // have, applied to this top-level tab too). Grouped into the same
+  // Today/Yesterday/This week/... sections as historySections, each with
+  // its own plain-text heading: a real ha-card per group (like the
+  // Updates tab's status groups) would be one card per row *inside* another
+  // card, which HA's own design language doesn't do.
   _buildHistoryList() {
     const tr = this._tr;
-    const rows = this._installLog.map((entry) => {
-      const supporting = `${entry.from_version} → ${entry.to_version} ⋅ ${relativeTime(tr, entry.installed_at)}`;
-      // Same download-icon pill _buildListRow already renders for the
-      // Updates tab's own auto-install countdown (see timerBadge) --
-      // reused here, not a new mechanism, so this list shows the same
-      // auto/manual distinction the per-entity dialog's own history cards
-      // already do (entry.auto_installed), instead of only showing it
-      // there.
-      const badge = entry.auto_installed ? { icon: ICON_DOWNLOAD, text: tr.dialog_history_auto } : null;
-      return this._buildListRow(entry.entity_id, supporting, () => this._openDetailDialog(entry.entity_id), badge);
+    if (!this._installLog.length) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = tr.history_empty;
+      return empty;
+    }
+
+    const outer = document.createElement("div");
+    outer.className = "history-sections";
+    historySections(tr, this._installLog).forEach((section) => {
+      const heading = document.createElement("h2");
+      heading.className = "history-section-heading";
+      heading.textContent = section.label;
+      outer.appendChild(heading);
+
+      const items = document.createElement("div");
+      items.className = "history-section-items";
+      section.items.forEach((entry) => {
+        // Only "Today" spells out a relative time in the subtitle itself
+        // (still useful there: "3 hours ago" vs. "just now" is real
+        // information within a single day). Every other section's own
+        // heading already places it roughly in time, so repeating that in
+        // every single row under it was redundant. Direct user feedback.
+        const supporting =
+          section.key === "today"
+            ? `${entry.from_version} → ${entry.to_version} ⋅ ${relativeTime(tr, entry.installed_at)}`
+            : `${entry.from_version} → ${entry.to_version}`;
+        // Same download-icon pill _buildListRow already renders for the
+        // Updates tab's own auto-install countdown (see timerBadge),
+        // reused here, not a new mechanism, so this list shows the same
+        // auto/manual distinction the per-entity dialog's own history
+        // cards already do (entry.auto_installed), instead of only
+        // showing it there.
+        const badge = entry.auto_installed ? { icon: ICON_AUTO_DOWNLOAD, title: tr.dialog_history_auto } : null;
+        const row = this._buildListRow(
+          entry.entity_id,
+          supporting,
+          () => this._openDetailDialog(entry.entity_id),
+          badge
+        );
+        const card = document.createElement("ha-card");
+        card.outlined = true;
+        const list = document.createElement("ha-list-base");
+        list.appendChild(row);
+        card.appendChild(list);
+        items.appendChild(card);
+      });
+      outer.appendChild(items);
     });
-    return this._wrapList(rows, tr.history_empty);
+    return outer;
   }
 
   // A real ha-dialog (built once, see _ensureShell), repopulated per click
@@ -1672,15 +1826,16 @@ class UpdateManagerPanel extends HTMLElement {
       historyHeading.textContent = tr.dialog_history_heading;
       body.appendChild(historyHeading);
 
-      // One ha-card per entry, not a plain <ul> -- direct user feedback
+      // One ha-card per entry, not a plain <ul>. Direct user feedback
       // (2026-07-17): felt "spuug lelijk", didn't read as HA at all. Same
       // outlined-card building block the Settings tab already uses, read
       // top-to-bottom as a timeline (newest first, same order the log
-      // itself is already in). Each card's own details (release link,
-      // changelog) sit behind a real ha-expansion-panel, collapsed by
-      // default -- only the version jump + when + auto/manual icon is
-      // always visible, matching direct user feedback that a card should
-      // open to show its details rather than dumping everything inline.
+      // itself is already in). Each card is fully clickable when there's
+      // anywhere to go (release notes to expand, or a release page to
+      // open), collapsed by default. Only the version jump + when +
+      // auto/manual pill is always visible, matching direct user feedback
+      // that a card should open to show its details rather than dumping
+      // everything inline.
       const list = document.createElement("div");
       list.className = "dialog-history";
       entries.forEach((entry) => {
@@ -1690,59 +1845,123 @@ class UpdateManagerPanel extends HTMLElement {
         const content = document.createElement("div");
         content.className = "card-content dialog-history-card";
 
-        const main = document.createElement("div");
-        main.className = "dialog-history-main";
-        // Download icon only when this entry is known to have been
-        // auto-install's doing (install_manager.py's own record, consumed
-        // at the moment the entity's installed_version actually changed --
-        // see __init__.py's _on_install) -- absent (older entries logged
-        // before this existed, or a genuinely manual install) shows no
-        // icon at all, same "icon present = automation involved" language
-        // already used for the Updates tab's own pill.
-        if (entry.auto_installed) {
-          const autoIcon = document.createElement("ha-svg-icon");
-          autoIcon.path = ICON_DOWNLOAD;
-          autoIcon.title = tr.dialog_history_auto;
-          main.appendChild(autoIcon);
-        }
-        const versions = document.createElement("span");
-        versions.className = "dialog-history-versions";
-        versions.textContent = `${entry.from_version} → ${entry.to_version}`;
-        main.appendChild(versions);
-        const when = document.createElement("span");
-        when.className = "dialog-history-when";
-        when.textContent = relativeTime(tr, entry.installed_at);
-        main.appendChild(when);
-        content.appendChild(main);
+        const versionText = `${entry.from_version} → ${entry.to_version}`;
+        const whenText = relativeTime(tr, entry.installed_at);
+        const pill = entry.auto_installed
+          ? this._buildTimerPill({ icon: ICON_AUTO_DOWNLOAD, title: tr.dialog_history_auto })
+          : null;
 
-        if (entry.release_url) {
-          const link = document.createElement("a");
-          link.href = entry.release_url;
-          link.target = "_blank";
-          link.rel = "noreferrer";
-          link.className = "dialog-history-link";
-          link.textContent = tr.dialog_history_release_link;
-          content.appendChild(link);
-        }
+        // A timeline of versions is only worth having if you can actually
+        // get to what changed. Direct user feedback: the version+time
+        // line used to sit there inert, with a separate small "View
+        // changelog" toggle and a separate link line competing for
+        // attention below it. Now the whole row is the one thing you'd
+        // tap: reads the changelog in place if there is one to read, else
+        // opens the original release page, else it's plain, unclickable
+        // fact (no chevron promising an action that doesn't exist).
+        if (entry.release_notes || entry.release_url) {
+          // One row shape for both interactive cases, not ha-expansion-panel
+          // for one and ha-list-item-button for the other. Direct user
+          // feedback: those two components' own different padding/
+          // typography made entries look inconsistent sitting right next
+          // to each other in the same timeline. Only the trailing icon
+          // differs: a chevron that rotates (expands the changelog in
+          // place, below) versus the external-link glyph (opens the
+          // release page, see ICON_OPEN_IN_NEW's own comment).
+          const hasNotes = !!entry.release_notes;
+          const row = document.createElement("ha-list-item-button");
+          row.hasMeta = true;
+          const headline = document.createElement("span");
+          headline.slot = "headline";
+          headline.textContent = versionText;
+          row.appendChild(headline);
+          const supporting = document.createElement("span");
+          supporting.slot = "supporting-text";
+          supporting.textContent = whenText;
+          row.appendChild(supporting);
+          const end = document.createElement("div");
+          end.slot = "end";
+          end.className = "row-end";
+          if (pill) end.appendChild(pill);
+          const chevron = document.createElement("ha-svg-icon");
+          if (hasNotes) {
+            chevron.path = ICON_CHEVRON_DOWN;
+            chevron.className = "dialog-history-chevron";
+          } else {
+            chevron.path = ICON_OPEN_IN_NEW;
+            chevron.title = tr.dialog_history_release_link;
+          }
+          end.appendChild(chevron);
+          row.appendChild(end);
+          content.appendChild(row);
 
-        // Full notes behind the collapsed-by-default expansion panel, not
-        // truncated inline text -- direct user feedback: wanted an actual
-        // way to read the changelog, not just the first 200 characters of
-        // it dumped into every single history entry whether you asked for
-        // it or not. A short release_summary is brief enough to just show
-        // directly instead, no need to hide it behind a click.
-        if (entry.release_notes) {
-          const panel = document.createElement("ha-expansion-panel");
-          panel.header = tr.dialog_history_changelog;
-          const markdown = document.createElement("ha-markdown");
-          markdown.content = entry.release_notes;
-          panel.appendChild(markdown);
-          content.appendChild(panel);
-        } else if (entry.release_summary) {
-          const notesEl = document.createElement("div");
-          notesEl.className = "dialog-history-notes";
-          notesEl.textContent = entry.release_summary;
-          content.appendChild(notesEl);
+          if (hasNotes) {
+            // Collapsed by default, toggled by hand (not ha-expansion-panel's
+            // own built-in toggle, see this block's own comment above) --
+            // just a hidden attribute and a rotated icon, not a new
+            // component of its own.
+            const notesWrap = document.createElement("div");
+            notesWrap.className = "dialog-history-notes-wrap";
+            notesWrap.hidden = true;
+            const markdown = document.createElement("ha-markdown");
+            markdown.content = entry.release_notes;
+            notesWrap.appendChild(markdown);
+            // Still reachable even while primarily reading the notes in
+            // place, same .row/.key link-only pattern as the release_url
+            // row above for the entity's *currently* pending update,
+            // confirmed against more-info-update.ts's own source, not a
+            // one-off style of its own.
+            if (entry.release_url) {
+              const linkRow = document.createElement("div");
+              linkRow.className = "row";
+              const linkKey = document.createElement("div");
+              linkKey.className = "key";
+              const link = document.createElement("a");
+              link.href = entry.release_url;
+              link.target = "_blank";
+              link.rel = "noreferrer";
+              link.textContent = tr.dialog_history_release_link;
+              linkKey.appendChild(link);
+              linkRow.appendChild(linkKey);
+              notesWrap.appendChild(linkRow);
+            }
+            content.appendChild(notesWrap);
+            row.addEventListener("click", () => {
+              notesWrap.hidden = !notesWrap.hidden;
+              chevron.classList.toggle("open", !notesWrap.hidden);
+            });
+          } else {
+            row.addEventListener("click", () => window.open(entry.release_url, "_blank", "noopener,noreferrer"));
+          }
+
+          if (entry.release_summary && !hasNotes) {
+            const notesEl = document.createElement("div");
+            notesEl.className = "dialog-history-notes";
+            notesEl.textContent = entry.release_summary;
+            content.appendChild(notesEl);
+          }
+        } else {
+          // Nothing to read, nowhere to go: a plain, unclickable fact --
+          // no chevron, no ha-list-item-button ripple/hover promising an
+          // action that isn't there.
+          const main = document.createElement("div");
+          main.className = "dialog-history-main";
+          const versions = document.createElement("span");
+          versions.className = "dialog-history-versions";
+          versions.textContent = versionText;
+          main.appendChild(versions);
+          const when = document.createElement("span");
+          when.className = "dialog-history-when";
+          when.textContent = whenText;
+          main.appendChild(when);
+          if (pill) main.appendChild(pill);
+          content.appendChild(main);
+          if (entry.release_summary) {
+            const notesEl = document.createElement("div");
+            notesEl.className = "dialog-history-notes";
+            notesEl.textContent = entry.release_summary;
+            content.appendChild(notesEl);
+          }
         }
 
         card.appendChild(content);
@@ -1885,12 +2104,28 @@ class UpdateManagerPanel extends HTMLElement {
     }
   }
 
-  // The master pause switch (const.py's CONF_ENABLED) -- its own small card,
-  // first and separate from every rule below it: this isn't a rule about
-  // *how* Update Manager behaves, it's whether any of that logic runs at
-  // all right now. Same ha-form+boolean-selector building block as
-  // _buildVisibilityCard below, single field, no schema section needed.
-  _buildEnabledCard(tr) {
+  // "General": the settings that aren't specific to any one update size,
+  // the master pause switch (const.py's CONF_ENABLED) and whether a
+  // postponed update stays hidden from Home Assistant's own update count
+  // (const.py's CONF_HIDE_POSTPONED). First card on the page, above "Update
+  // rules": merged from two separate cards (2026-07-21, direct user
+  // feedback: both were "general Update Manager settings", not a rule
+  // about any one size, and having them apart read as two unrelated
+  // toggles rather than one coherent "how does Update Manager behave
+  // overall" section). No intro paragraph explaining "postponed" here
+  // anymore either (also direct user feedback, same day): that concept is
+  // about the per-size wait itself, not a general behavior, so belongs
+  // with "Postponement period" in Update rules, not up here, and the
+  // page had too much text regardless. The word carries enough of its own
+  // meaning in context (a field literally called "Postponement period"
+  // right below, "Hide postponed updates" here) without a paragraph
+  // spelling it out first.
+  // Plain ha-form, both fields' label and helper fully native (reverted
+  // 2026-07-21, direct user feedback after trying both a hand-built
+  // ha-settings-row version and a split-per-field manual-.hint version:
+  // neither was wanted, this plain ha-form rendering is "how it was" and
+  // should stay that way).
+  _buildGeneralCard(tr) {
     const card = document.createElement("ha-card");
     card.outlined = true;
     card.header = tr.enabled_section_title;
@@ -1900,10 +2135,13 @@ class UpdateManagerPanel extends HTMLElement {
 
     const form = document.createElement("ha-form");
     form.hass = this._hass;
-    form.schema = [{ name: "enabled", selector: { boolean: {} } }];
+    form.schema = [
+      { name: "enabled", selector: { boolean: {} } },
+      { name: "hide_postponed", selector: { boolean: {} } },
+    ];
     form.data = this._formData;
-    form.computeLabel = () => tr.field_enabled;
-    form.computeHelper = () => tr.field_enabled_helper;
+    form.computeLabel = (s) => (s.name === "enabled" ? tr.field_enabled : tr.field_hide_postponed);
+    form.computeHelper = (s) => (s.name === "enabled" ? tr.field_enabled_helper : tr.field_hide_postponed_helper);
     form.addEventListener("value-changed", (e) => {
       this._formData = { ...this._formData, ...e.detail.value };
       form.data = this._formData;
@@ -1931,11 +2169,9 @@ class UpdateManagerPanel extends HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "settings-cards";
 
-    // First, above every other card -- the master pause switch (direct
-    // user feedback: wanted one toggle at the top of the settings page
-    // that pauses all of Update Manager's own logic at once, distinct
-    // from any single rule below).
-    wrap.appendChild(this._buildEnabledCard(tr));
+    // First, above every other card: the settings that apply regardless
+    // of size (see _buildGeneralCard), not a rule about any one of them.
+    wrap.appendChild(this._buildGeneralCard(tr));
 
     const autoInstallSlot = document.createElement("div");
     // Rebuilds the sibling card only when anyAutoInstall actually flips, not
@@ -1954,10 +2190,6 @@ class UpdateManagerPanel extends HTMLElement {
     wrap.appendChild(this._buildUpdateRulesCard(tr, syncAutoInstallCard));
     wrap.appendChild(autoInstallSlot);
     syncAutoInstallCard();
-    // Always visible, unlike the auto-install card above -- this applies to
-    // every postponed update regardless of whether auto-install is on for
-    // its size at all.
-    wrap.appendChild(this._buildVisibilityCard(tr));
     // No explicit Save button -- every field autosaves itself (debounced,
     // see _scheduleAutosave), direct user feedback: "kunnen we niet direct
     // saven bij elke edit ipv via een losse button?".
@@ -1988,13 +2220,24 @@ class UpdateManagerPanel extends HTMLElement {
     hint.textContent = tr.settings_hint;
     body.appendChild(hint);
 
+    // Back to ha-form's own `type: "expandable"` schema entries (reverted
+    // 2026-07-21: a hand-built ha-expansion-panel per size was tried
+    // instead, to get an auto-install icon next to the chevron, but direct
+    // user feedback was that the native ha-form-expandable version, with
+    // its own styling/spacing integrated into the rest of this same form,
+    // was better, and losing the icon idea was the right trade).
+    // expanded is now false, not true: confirmed against ha-form-expandable's
+    // own source, the ha-expansion-panel underneath it already lets you
+    // click its header to open/close regardless of this initial value, so
+    // it only ever controlled the *default* state, which used to be
+    // permanently open for no real reason.
     const form = document.createElement("ha-form");
     form.hass = this._hass;
     form.schema = SIZES.map((size) => ({
       name: size,
       type: "expandable",
       title: tr[`size_${size}_short`],
-      expanded: true,
+      expanded: false,
       flatten: true,
       // Stacked, not a "grid" side by side (direct user feedback: each
       // should be free to take the full width, a number field and a
@@ -2013,12 +2256,16 @@ class UpdateManagerPanel extends HTMLElement {
     };
     form.computeHelper = (s) => {
       // The per-size expandable section's own description (its `name` is
-      // just "small"/"medium"/"big") -- confirmed against
-      // ha-form-expandable.ts: renders as its own line below the header,
-      // not squeezed into the title itself, direct user feedback.
-      if (SIZES.includes(s.name)) return tr[`size_${s.name}_desc`];
-      const kind = fieldKind(s.name);
-      return kind === "auto_install" ? tr.field_auto_install_helper : "";
+      // just "small"/"medium"/"big"), rendered by ha-form-expandable as
+      // its own line below the header, not squeezed into the title
+      // itself, and visible regardless of expanded state.
+      if (SIZES.includes(s.name)) return tr[`size_${s.name}_desc`]();
+      // No per-field helper for auto_install (direct user feedback:
+      // text-heavy page): it used to repeat the exact same sentence
+      // identically under Small, Medium, and Big, since all three
+      // sections used to be always expanded at once. Said once now, in
+      // settings_hint above, instead of three times in a row.
+      return "";
     };
     form.addEventListener("value-changed", (e) => {
       this._formData = { ...this._formData, ...e.detail.value };
@@ -2050,72 +2297,93 @@ class UpdateManagerPanel extends HTMLElement {
     hint.textContent = tr.auto_install_section_desc;
     body.appendChild(hint);
 
-    const form = document.createElement("ha-form");
-    form.hass = this._hass;
-    form.schema = [
-      { name: "announce_hours", selector: { number: { min: 1, max: 336, mode: "box" } } },
-      { name: "excluded_entities", selector: { entity: { multiple: true, filter: { domain: "update" } } } },
-    ];
-    form.data = this._formData;
-    form.computeLabel = (s) => {
-      if (s.name === "excluded_entities") return tr.field_excluded_entities;
-      return s.name === "announce_hours" ? tr.announce_hours_label : s.name;
-    };
-    form.computeHelper = (s) => {
-      if (s.name === "excluded_entities") return tr.field_excluded_entities_helper;
-      return s.name === "announce_hours" ? tr.announce_hours_helper : "";
-    };
-    form.addEventListener("value-changed", (e) => {
+    // Manually-drawn label + hint, same pattern as excludedLabel/
+    // excludedHint below. Direct user feedback: liked that look enough to
+    // want it here too, not just on the field it was originally built for,
+    // even though this field's own helper never had the same "renders too
+    // far below a tall widget" problem excluded_entities did; just for a
+    // consistent look across this card.
+    const announceLabel = document.createElement("p");
+    announceLabel.className = "field-label";
+    announceLabel.textContent = tr.announce_hours_label;
+    body.appendChild(announceLabel);
+
+    const announceHint = document.createElement("p");
+    announceHint.className = "hint";
+    announceHint.textContent = tr.announce_hours_helper;
+    body.appendChild(announceHint);
+
+    const announceForm = document.createElement("ha-form");
+    announceForm.hass = this._hass;
+    announceForm.schema = [{ name: "announce_hours", selector: { number: { min: 1, max: 336, mode: "box" } } }];
+    announceForm.data = this._formData;
+    announceForm.computeLabel = () => "";
+    announceForm.computeHelper = () => "";
+    announceForm.addEventListener("value-changed", (e) => {
       this._formData = { ...this._formData, ...e.detail.value };
-      form.data = this._formData;
+      announceForm.data = this._formData;
       this._scheduleAutosave();
     });
-    body.appendChild(form);
+    body.appendChild(announceForm);
 
-    // Read-only, not part of the entity picker itself -- these can't be
-    // added/removed from that list (they're excluded regardless of it), so
-    // showing them as ordinary, removable chips there would be misleading.
-    // Direct user feedback: the helper text said they're always excluded,
-    // but nothing actually showed *which* entities that meant.
-    if (this._hardExcludedEntities.length) {
-      const names = this._hardExcludedEntities
-        .map((entityId) => friendlyEntityName(this._hass, entityId))
-        .join(", ");
-      const note = document.createElement("p");
-      note.className = "hint";
-      note.textContent = tr.hard_excluded_note(names);
-      body.appendChild(note);
-    }
+    // A manually-drawn label, not ha-form's own computeLabel for this
+    // field (see entitiesForm below, which suppresses it): direct user
+    // feedback wanted the explanatory hint to sit under this label but
+    // still above the picker itself, and ha-form always renders a field's
+    // own label and its widget as a single, inseparable unit. There's no
+    // way to slot anything in between the two while still going through
+    // the schema.
+    const excludedLabel = document.createElement("p");
+    excludedLabel.className = "field-label";
+    excludedLabel.textContent = tr.field_excluded_entities;
+    body.appendChild(excludedLabel);
+
+    const excludedHint = document.createElement("p");
+    excludedHint.className = "hint";
+    excludedHint.textContent = tr.field_excluded_entities_helper;
+    body.appendChild(excludedHint);
+
+    // Home Assistant Core/Supervisor/OS's own update entities are always
+    // excluded from auto-install, regardless of this list (see
+    // coordinator.py's hard_excluded_entity_ids). Shown here as if
+    // already part of it, not as a separate "these are also always
+    // excluded" note underneath that direct user feedback said nobody
+    // actually read in practice. this._mergedExcludedEntities() adds them
+    // to the *displayed* value only; the value-changed handler below
+    // filters them back out before they ever reach this._formData or a
+    // save, so removing one of these chips is a harmless no-op (still
+    // excluded either way, just via the hard rule instead of this list)
+    // rather than a real, persisted choice.
+    const entitiesForm = document.createElement("ha-form");
+    entitiesForm.hass = this._hass;
+    entitiesForm.schema = [
+      { name: "excluded_entities", selector: { entity: { multiple: true, filter: { domain: "update" } } } },
+    ];
+    entitiesForm.data = { ...this._formData, excluded_entities: this._mergedExcludedEntities() };
+    // Label drawn manually above (excludedLabel), not here: see this
+    // section's own comment.
+    entitiesForm.computeLabel = () => "";
+    entitiesForm.computeHelper = () => "";
+    entitiesForm.addEventListener("value-changed", (e) => {
+      const chosen = e.detail.value.excluded_entities.filter((id) => !this._hardExcludedEntities.includes(id));
+      this._formData = { ...this._formData, excluded_entities: chosen };
+      entitiesForm.data = { ...this._formData, excluded_entities: this._mergedExcludedEntities() };
+      this._scheduleAutosave();
+    });
+    body.appendChild(entitiesForm);
+
     card.appendChild(body);
     return card;
   }
 
-  // Own card, always visible (unlike _buildAutoInstallCard above): whether
-  // to hide a postponed update from HA's own update count/notifications
-  // (see staging_skip.py) has nothing to do with whether auto-install is
-  // even on for its size.
-  _buildVisibilityCard(tr) {
-    const card = document.createElement("ha-card");
-    card.outlined = true;
-    card.header = tr.hide_postponed_section_title;
-
-    const body = document.createElement("div");
-    body.className = "card-content";
-
-    const form = document.createElement("ha-form");
-    form.hass = this._hass;
-    form.schema = [{ name: "hide_postponed", selector: { boolean: {} } }];
-    form.data = this._formData;
-    form.computeLabel = () => tr.field_hide_postponed;
-    form.computeHelper = () => tr.field_hide_postponed_helper;
-    form.addEventListener("value-changed", (e) => {
-      this._formData = { ...this._formData, ...e.detail.value };
-      form.data = this._formData;
-      this._scheduleAutosave();
-    });
-    body.appendChild(form);
-    card.appendChild(body);
-    return card;
+  // The picker's displayed value: the user's own saved excluded_entities
+  // plus the hard-excluded entities (deduplicated), so the latter show up
+  // as ordinary chips instead of a separate explanatory note (see
+  // _buildAutoInstallCard). Never what actually gets saved: that stays
+  // this._formData.excluded_entities on its own, with the hard-excluded
+  // ones filtered back out on every change.
+  _mergedExcludedEntities() {
+    return Array.from(new Set([...(this._formData.excluded_entities || []), ...this._hardExcludedEntities]));
   }
 
   _styles() {
@@ -2141,18 +2409,18 @@ class UpdateManagerPanel extends HTMLElement {
       @keyframes um-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
       .content { display: block; }
-      .content--list { padding: 0; }
-      .content--form { padding: var(--ha-space-4, 16px); max-width: 640px; margin: 0 auto; }
       .loading, .empty {
         color: var(--secondary-text-color); padding: 32px 0; text-align: center;
         font-size: var(--ha-font-size-m, 14px);
       }
-      .content--list .loading, .content--list .empty, .content--list .error { padding: 32px 16px; }
-      /* .content--groups already has its own top/side padding (see below) --
-         without this, a loading/error message shown there stacked its own
-         vertical padding on top of the container's, landing at a different
-         (larger) amount than every other tab instead of matching them. */
-      .content--groups .loading, .content--groups .empty, .content--groups .error { padding: 0; }
+      /* Every tab shares one padded/centered container (.content--groups/
+         --form/--list below all resolve to the same rule). Without this,
+         a loading/error message shown there stacked its own vertical
+         padding on top of the container's, landing at a different (larger)
+         amount than the rest of the page. */
+      .content--groups .loading, .content--groups .empty, .content--groups .error,
+      .content--form .loading, .content--form .empty, .content--form .error,
+      .content--list .loading, .content--list .empty, .content--list .error { padding: 0; }
       .error { color: var(--error-color); padding: 16px 0; font-size: var(--ha-font-size-m, 14px); }
       ha-list-base { display: block; }
       /* Confirmed against ha-config-updates.ts's real static styles: without
@@ -2172,7 +2440,32 @@ class UpdateManagerPanel extends HTMLElement {
       .timer-pill ha-svg-icon { --mdc-icon-size: 14px; }
 
       ha-form { display: block; }
+      /* margin-bottom, not padding-bottom on .content--form: every content--*
+         container deliberately has 0 bottom padding of its own (see below)
+         and instead relies on its last child for the trailing gap before
+         the page ends. .update-groups' own cards each already carry a
+         bottom margin, and .history-section-items does the same for its
+         last section, but .settings-cards had nothing of its own, so
+         Settings was the one tab that ended flush with no space at all
+         below its last card. */
       .settings-cards { display: flex; flex-direction: column; gap: 16px; }
+      /* Same 600px per-card width as .update-groups ha-card below. All
+         three tabs' cards read as one consistent-width column regardless
+         of which tab put them there (2026-07-21, direct user feedback).
+         Explicit width: 100% (not left at the default auto) plus
+         max-width and margin: 0 auto together, not align-self: the
+         "Auto-update" card isn't a direct child of .settings-cards (it
+         sits inside its own autoInstallSlot wrapper div, see
+         _buildSettingsCard, so it can be shown/hidden without disturbing
+         its siblings). A plain descendant selector reaches it too, but
+         align-self only has any effect on a flex container's own direct
+         children, so it would have centered every other card while
+         leaving this one flush left. width: 100% first (a flex item's
+         auto margins would otherwise disable stretch-to-fill and shrink
+         it to content width instead, found live) means margin: 0 auto can
+         do the centering here exactly like it already does for
+         .update-groups ha-card below, in a plain block context. */
+      .settings-cards ha-card { width: 100%; max-width: 600px; margin: 0 auto; }
       ha-card { margin: 0; }
       .card-content { padding: 0 16px 16px; display: flex; flex-direction: column; }
       .card-content > *:not(:first-child) { margin-top: 16px; }
@@ -2181,16 +2474,41 @@ class UpdateManagerPanel extends HTMLElement {
         color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px);
         line-height: 1.4; margin: 0;
       }
+      /* A manually-drawn field label (see _buildAutoInstallCard), for a
+         field whose own ha-form label had to be suppressed so a hint
+         could sit between it and its control. Normal weight, not bold/
+         medium: matches ha-settings-row's own heading slot (confirmed
+         against its real source, even though this file doesn't use that
+         component directly, since a custom-component detour for the rest
+         of this page's fields wasn't wanted, direct user feedback), not a
+         heavier typography scale of its own. The following .hint gets a much
+         smaller top margin than .card-content's own generic 16px between
+         unrelated blocks: this pair reads as one label+description
+         unit, not two separate blocks. */
+      .field-label { font-size: var(--ha-font-size-m, 14px); color: var(--primary-text-color); margin: 0; }
+      .field-label + .hint { margin-top: var(--ha-space-1, 4px); }
 
-      /* Updates tab: matches ha-config-section-updates.ts's own static
-         styles exactly (values and --ha-space-* tokens, not approximated
-         pixels), not just "close enough". Deliberately scoped under
-         .update-groups so it can't leak into the unrelated .card-content
-         rules the settings cards above already use. */
-      .content--groups {
+      /* One shared page grid for all three tabs (2026-07-21, direct user
+         feedback: Updates, History and Settings each had their own
+         container width before). Values match ha-config-section-updates.ts's
+         own static styles exactly (confirmed against its real source, not
+         approximated pixels); Updates just happened to be the first tab
+         built against that reference. */
+      .content--groups, .content--form, .content--list {
         padding: var(--ha-space-7, 28px) var(--ha-space-5, 20px) 0;
         max-width: 1040px; margin: 0 auto;
       }
+      /* .content--form's own bottom padding, not a trailing margin on
+         .settings-cards. Updates/History both get their own trailing
+         space from a margin on their actual last card/section (a plain
+         block context there, see .update-groups/.history-section-items),
+         but .settings-cards is itself a flex column with no border/padding
+         of its own separating it from .content--form, so a margin-bottom
+         on it was liable to collapse straight through and not reliably
+         show up in the scrollable area (found live: it didn't). Padding
+         never collapses, so this is the more robust fix for this one
+         container specifically. */
+      .content--form { padding-bottom: var(--ha-space-6, 24px); }
       .update-groups-outer > ha-alert { display: block; max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); }
       .update-groups { display: block; }
       .update-groups ha-card {
@@ -2205,6 +2523,28 @@ class UpdateManagerPanel extends HTMLElement {
       .update-groups .title { font-size: var(--ha-font-size-l, 18px); }
       .update-groups ha-list-base { margin-bottom: var(--ha-space-2, 8px); }
       .update-groups .no-updates { padding: 16px; }
+
+      /* History tab: one outlined ha-card per entry (see _buildHistoryList),
+         same 600px width as the Updates/Settings cards above, grouped under
+         plain-text date headings (historySections). Card spacing (gap) and
+         heading margins both use the same --ha-space-2/-6 tokens the rest
+         of this file already leans on. */
+      .history-section-items {
+        display: flex; flex-direction: column; gap: var(--ha-space-2, 8px);
+        margin-bottom: var(--ha-space-6, 24px);
+      }
+      /* Explicit width: 100% before margin: 0 auto, same reasoning as
+         .settings-cards ha-card above: a flex item's auto margins alone
+         would shrink it to content width instead of stretching to fill. */
+      .history-section-items > ha-card { width: 100%; max-width: 600px; margin: 0 auto; }
+      .history-section-items .card-content { padding: 0; display: block; }
+      /* No top margin: the gap above a section (including the very first
+         one) already comes from the page's own top padding, or from the
+         previous section's .history-section-items margin-bottom. */
+      .history-section-heading {
+        font-size: var(--ha-font-size-l, 18px); font-weight: var(--ha-font-weight-medium, 500);
+        max-width: 600px; margin: 0 auto var(--ha-space-2, 8px);
+      }
 
       /* Detail dialog. ha-dialog was rewritten upstream to wrap a
          WebAwesome <wa-dialog> -- confirmed against a current stable
@@ -2263,27 +2603,61 @@ class UpdateManagerPanel extends HTMLElement {
          <ul> "felt nothing like HA"). */
       .dialog-history { display: flex; flex-direction: column; gap: var(--ha-space-2, 8px); }
       .dialog-history ha-card { margin: 0; }
-      .dialog-history-card { padding-top: var(--ha-space-4, 16px); font-size: var(--ha-font-size-s, 13px); }
+      /* padding: 0, not just no extra top override. The shared
+         .card-content rule (used by every card in this file, Settings
+         included) already sets 0 16px 16px on its own, which must be
+         canceled here explicitly, not merely left un-added-to. Changed
+         2026-07-22, direct user feedback: "enorme padding om de items".
+         ha-list-item-button (both interactive cases now, see
+         _openDetailDialog) already carries its own generous, native
+         padding. This card's own 16px on top of that was stacking two
+         insets into one that read as excessive. The one case with no
+         built-in padding of its own, the plain unclickable fallback
+         (.dialog-history-main), gets its padding set directly on itself
+         instead, below. */
+      .dialog-history-card { padding: 0; font-size: var(--ha-font-size-s, 13px); }
       .dialog-history-main {
         display: flex; align-items: center; gap: var(--ha-space-2, 8px);
-        color: var(--primary-text-color);
+        color: var(--primary-text-color); padding: var(--ha-space-4, 16px);
       }
-      .dialog-history-main ha-svg-icon {
-        --mdc-icon-size: 16px; color: var(--secondary-text-color); flex-shrink: 0;
-      }
+      /* .dialog-history-versions' own flex: 1 already pushes .dialog-history-when
+         and the trailing auto-install pill (see _buildTimerPill above) to the
+         row's far right as a group, no separate margin-left: auto needed. Only
+         used by the plain, unclickable fallback now (no release_notes or
+         release_url at all): the interactive case above builds its own row
+         entirely out of ha-list-item-button instead. */
       .dialog-history-versions { flex: 1; font-weight: var(--ha-font-weight-medium, 500); }
+      /* Same size as everything else here, not demoted. Direct user
+         feedback: "it's a timeline of versions, the time isn't irrelevant."
+         An earlier pass shrank this to try to de-emphasize it; reverted. */
       .dialog-history-when { color: var(--secondary-text-color); }
       .dialog-history-notes {
         color: var(--secondary-text-color); margin-top: var(--ha-space-2, 8px);
         white-space: pre-wrap;
       }
-      .dialog-history-link {
-        display: block; margin-top: var(--ha-space-2, 8px);
-        color: var(--primary-color); font-size: var(--ha-font-size-s, 13px);
-        text-decoration: none;
+      /* font-size reset, not inherited: .dialog-history-card shrinks its
+         whole content area to 13px (a deliberately compact timeline row),
+         which would otherwise also shrink ha-list-item-button's own
+         headline/supporting-text below the normal size that same
+         component uses elsewhere in this file (Updates list), looking and
+         feeling noticeably weaker by comparison. Direct user feedback. */
+      .dialog-history-card ha-list-item-button { font-size: var(--ha-font-size-m, 14px); }
+      /* The chevron for the "expand this row's changelog in place" case
+         (see ICON_CHEVRON_DOWN/_openDetailDialog). Rotates on toggle the
+         same way ha-expansion-panel's own built-in chevron would, since
+         this row no longer uses that component (see this block's own
+         comment above for why). */
+      .dialog-history-chevron {
+        transition: transform 150ms ease-in-out;
       }
-      .dialog-history-link:hover { text-decoration: underline; }
-      .dialog-history ha-expansion-panel { margin-top: var(--ha-space-2, 8px); --expansion-panel-content-padding: 0; }
+      .dialog-history-chevron.open { transform: rotate(180deg); }
+      /* Matches ha-list-item-button's own horizontal inset above it, so the
+         expanded changelog's left/right edges line up with the row's own
+         text instead of sitting flush against the card's true edges. */
+      .dialog-history-notes-wrap {
+        padding: 0 var(--ha-space-4, 16px) var(--ha-space-4, 16px);
+      }
+      .dialog-history-notes-wrap .row { margin-top: var(--ha-space-2, 8px); }
       .dialog-history ha-markdown { display: block; padding-top: var(--ha-space-2, 8px); }
     `;
   }

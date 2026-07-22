@@ -20,6 +20,7 @@ from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import EventStateChangedData, async_track_time_interval
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -27,6 +28,7 @@ from .const import (
     CONF_EXCLUDED_ENTITIES,
     CONF_MEDIUM_WAIT_DAYS,
     CONF_SMALL_WAIT_DAYS,
+    DOMAIN,
     PROFILE_BALANCED,
     PROFILE_PRESETS,
 )
@@ -34,6 +36,9 @@ from .semver import classify_version_size
 from .staging import StagingRules, evaluate_staging, wait_for_size
 
 _LOGGER = logging.getLogger(__name__)
+
+_AVAILABLE_SINCE_STORAGE_VERSION = 1
+_AVAILABLE_SINCE_STORAGE_KEY = f"{DOMAIN}_available_since"
 
 # Same lookback window previous-state-tracker's config_flow.py already uses
 # for its own best-effort recorder history lookup.
@@ -232,6 +237,19 @@ class UpdateManagerCoordinator:
         self.excluded_entities = excluded_entities
         # entity_id -> {"entity_id", "version_size", "status", "remaining_seconds", "installable"}
         self.cache: dict[str, dict] = {}
+        # entity_id -> {"version", "since"}: the authoritative "when did
+        # `version` first become this entity's latest_version" record, see
+        # _async_get_available_since. Persisted (unlike self.cache, which is
+        # rebuilt from scratch on every restart) precisely because it must
+        # survive a restart intact: direct user feedback, the recorder-only
+        # lookup this replaces could quietly reset an update's wait back to
+        # "just now" after a restart, the entity briefly going unavailable,
+        # or an integration reload, none of which mean the update actually
+        # just became available again.
+        self._available_since: dict[str, dict[str, str]] = {}
+        self._available_since_store: Store[dict[str, dict[str, str]]] = Store(
+            hass, _AVAILABLE_SINCE_STORAGE_VERSION, _AVAILABLE_SINCE_STORAGE_KEY
+        )
         self._listeners: list[Callable[[], None]] = []
         self._install_listeners: list[InstallListener] = []
         self._unsub_state_changed: Callable[[], None] | None = None
@@ -286,6 +304,8 @@ class UpdateManagerCoordinator:
         self._is_own_skip = checker
 
     async def async_start(self) -> None:
+        self._available_since = await self._available_since_store.async_load() or {}
+
         # Subscribe *before* the initial bulk scan, not after -- found via
         # live testing on a real instance (some pending updates never
         # showed up at all). The staggered scan below can easily take
@@ -425,6 +445,8 @@ class UpdateManagerCoordinator:
         state = self.hass.states.get(entity_id)
         if state is None:
             self.cache.pop(entity_id, None)
+            if self._available_since.pop(entity_id, None) is not None:
+                await self._available_since_store.async_save(self._available_since)
             return
 
         # HA's own update entities are always exactly "on" (an update is
@@ -469,6 +491,28 @@ class UpdateManagerCoordinator:
             return
         await self._async_cache_active(entity_id, state, current, latest)
 
+    async def _async_get_available_since(self, entity_id: str, latest_version: str) -> datetime:
+        """The authoritative "when did `latest_version` first become this
+        entity's latest_version", read from self._available_since (see
+        __init__'s own comment) whenever it already has a record for this
+        exact version, so a later restart/availability blip/integration
+        reload can never quietly re-derive a different answer for a
+        version we've already anchored. Only falls through to
+        _async_available_since's best-effort recorder lookup the first
+        time this entity/version pair is ever seen, then remembers that
+        result from here on: a one-time backfill, not a lookup repeated
+        on every refresh."""
+        record = self._available_since.get(entity_id)
+        if record is not None and record.get("version") == latest_version:
+            parsed = dt_util.parse_datetime(record.get("since", ""))
+            if parsed is not None:
+                return parsed
+
+        available_since = await _async_available_since(self.hass, entity_id, latest_version)
+        self._available_since[entity_id] = {"version": latest_version, "since": available_since.isoformat()}
+        await self._available_since_store.async_save(self._available_since)
+        return available_since
+
     async def _async_cache_active(self, entity_id: str, state: State, current: str, latest: str) -> None:
         size = classify_version_size(current, latest)
         now = dt_util.utcnow()
@@ -482,7 +526,7 @@ class UpdateManagerCoordinator:
         if configured_wait is None:
             available_since = now
         else:
-            available_since = await _async_available_since(self.hass, entity_id, latest)
+            available_since = await self._async_get_available_since(entity_id, latest)
         result = evaluate_staging(size, available_since, now, rules)
         # Some update entities (e.g. firmware that must be flashed manually)
         # only ever report that a newer version exists, with no install
