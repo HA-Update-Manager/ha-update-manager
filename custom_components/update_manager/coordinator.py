@@ -23,6 +23,7 @@ from homeassistant.helpers.event import EventStateChangedData, async_track_time_
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .community_verdict import CommunityVerdictManager
 from .const import (
     CONF_BIG_WAIT_DAYS,
     CONF_EXCLUDED_ENTITIES,
@@ -231,10 +232,21 @@ async def _async_available_since(hass: HomeAssistant, entity_id: str, current_la
 
 
 class UpdateManagerCoordinator:
-    def __init__(self, hass: HomeAssistant, rules: StagingRules, excluded_entities: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        rules: StagingRules,
+        excluded_entities: frozenset[str] = frozenset(),
+        community_verdict_manager: CommunityVerdictManager | None = None,
+    ) -> None:
         self.hass = hass
         self.rules = rules
         self.excluded_entities = excluded_entities
+        # None-able (unlike every other manager reference this coordinator
+        # holds) so this class still works standalone without it, e.g. in a
+        # future test, see community_verdict.py's own docstring for what
+        # this is for, purely read-only, no effect on staging status itself.
+        self._community_verdict_manager = community_verdict_manager
         # entity_id -> {"entity_id", "version_size", "status", "remaining_seconds", "installable"}
         self.cache: dict[str, dict] = {}
         # entity_id -> {"version", "since"}: the authoritative "when did
@@ -535,6 +547,11 @@ class UpdateManagerCoordinator:
         # auto-install must gate on this: never call update.install on an
         # entity that doesn't support it.
         installable = bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL)
+        community_verdict = None
+        if self._community_verdict_manager is not None:
+            community_verdict = await self._community_verdict_manager.async_get_verdict(
+                entity_id, state.attributes.get("release_url"), latest
+            )
         self.cache[entity_id] = {
             "entity_id": entity_id,
             "installed_version": current,
@@ -565,6 +582,11 @@ class UpdateManagerCoordinator:
             "hidden_by_update_manager": bool(
                 state.attributes.get("skipped_version") == latest and self._is_own_skip(entity_id, latest)
             ),
+            # None when not HACS-identified (see community_verdict.py) or
+            # not yet rated, never a placeholder/empty object. The panel
+            # renders no badge at all for either case, see FUTURE.md's own
+            # read-only-first scoping for this feature.
+            "community_verdict": community_verdict,
         }
 
     def _cache_skipped(self, entity_id: str, state: State, current: str, latest: str) -> None:
@@ -591,4 +613,9 @@ class UpdateManagerCoordinator:
             # ours (see _async_refresh_one). See _async_cache_active's own
             # comment for what this field is for.
             "hidden_by_update_manager": False,
+            # Not fetched for a skipped entity (this method isn't async, and
+            # a skipped/postponed row isn't this slice's target anyway),
+            # key still present so every cache entry has the same shape,
+            # see _async_cache_active's own comment.
+            "community_verdict": previous.get("community_verdict") if previous else None,
         }

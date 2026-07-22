@@ -36,6 +36,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import UpdateManagerCoordinator
+from .rollout_manager import RolloutManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,10 +110,21 @@ def _friendly_name(hass: HomeAssistant, entity_id: str) -> str:
 
 
 class InstallManager:
-    def __init__(self, hass: HomeAssistant, coordinator: UpdateManagerCoordinator, rules: AutoInstallRules) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        coordinator: UpdateManagerCoordinator,
+        rules: AutoInstallRules,
+        rollout_manager: RolloutManager,
+    ) -> None:
         self.hass = hass
         self._coordinator = coordinator
         self._rules = rules
+        # Gates every auto-install dispatch below, a no-op for anything
+        # that isn't part of an active multi-device Zigbee rollout (see
+        # rollout_manager.py's own docstring), so this is invisible for the
+        # overwhelming majority of updates.
+        self._rollout_manager = rollout_manager
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._pending: dict[str, PendingAnnouncement] = {}
         # entity_id -> the to_version the user explicitly cancelled -- stays
@@ -373,18 +385,30 @@ class InstallManager:
         # installed anyway.
         await self._async_remove(entity_id)
 
+        state = self.hass.states.get(entity_id)
+        supported_features = state.attributes.get("supported_features", 0) if state else 0
+        service_data: dict[str, Any] = {"entity_id": entity_id}
+        if supported_features & UpdateEntityFeature.BACKUP:
+            service_data["backup"] = True
+
+        # A no-op ("dispatch") for anything that isn't part of an active
+        # multi-device Zigbee rollout, see rollout_manager.py's own
+        # docstring. "queued" means a sibling device from the same network/
+        # model/version is already installing right now; RolloutManager
+        # will call update.install for this one itself once it's this
+        # entity's turn (see its own _async_dispatch), and will call
+        # mark_recently_executed below at that point so was_auto_installed()
+        # still attributes it correctly, nothing further to do here.
+        result = await self._rollout_manager.async_request_install(entity_id, to_version, service_data, is_auto=True)
+        if result == "queued":
+            return
+
         # Recorded before dispatching, not after it resolves (see
         # _async_run_install's own task) -- was_auto_installed() needs this
         # in place by the time coordinator.py's install-listener notices
         # installed_version actually changed, which can happen well before
         # the update.install call itself finishes.
         self._recently_executed[entity_id] = to_version
-
-        state = self.hass.states.get(entity_id)
-        supported_features = state.attributes.get("supported_features", 0) if state else 0
-        service_data: dict[str, Any] = {"entity_id": entity_id}
-        if supported_features & UpdateEntityFeature.BACKUP:
-            service_data["backup"] = True
         # Its own task, not awaited inline: an install can take a while
         # (e.g. firmware download/flash), and one slow/failing entity
         # shouldn't hold up evaluating every other entity in the same tick.
@@ -394,6 +418,17 @@ class InstallManager:
         # generic unhandled-task-exception log with no mention of
         # Update Manager at all.
         self.hass.async_create_task(self._async_run_install(entity_id, to_version, service_data))
+
+    def mark_recently_executed(self, entity_id: str, to_version: str) -> None:
+        """Called by rollout_manager.py (via the setter it's given in
+        __init__.py) when it dispatches a queued, auto-install-originated
+        entry itself, once that entity's own turn in a Zigbee rollout
+        finally comes: _async_execute above already does this directly
+        for the immediately-dispatched (not queued at all) case; this
+        covers the "was deferred, RolloutManager pressed the button later"
+        case, so was_auto_installed() still attributes it correctly either
+        way."""
+        self._recently_executed[entity_id] = to_version
 
     def was_auto_installed(self, entity_id: str, to_version: str) -> bool:
         """Consumed once by __init__.py's install-listener callback, fired

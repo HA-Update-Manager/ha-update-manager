@@ -2,6 +2,84 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+**Adds Zigbee/ZHA rollout pacing**
+Firmware installs across identical Zigbee devices (ZHA or Zigbee2MQTT, same model and target
+version) are now paced one at a time instead of all at once, protecting mesh stability. A queue only
+ever appears once a second device from the same group is asked to install while one is already in
+flight; there's no manual override to jump the line, whether from the dialog's Install button,
+auto-install, or Update All. Survives a restart: an install genuinely in flight gets re-dispatched, one
+that actually finished while Home Assistant was down advances immediately.
+
+**Adds a read-only community verdict**
+Pending updates for HACS-identified entities (via their `release_url` attribute) now show a badge with
+the community's healthy/problematic vote counts on the Updates tab, and their own dedicated section
+(with more detail, a fuller sentence, and room for a future vote button) in the per-entity dialog, when
+one exists. Sourced from the new
+[HA-Update-Manager/community-votes](https://github.com/HA-Update-Manager/community-votes) repo. Read
+only for now: no voting from within Update Manager yet, no settings toggle (always on, nothing is ever
+sent).
+
+**Redesigns the Settings and History pages**
+Settings now groups the master switch and visibility toggle into one General card up top, the
+Small/Medium/Big rules collapse by default, and repeated or oversized explanatory text has been
+trimmed throughout. History (both the tab and the per-entity dialog) groups entries into relative
+date sections, and every entry is now fully clickable: it either expands its changelog in place or
+opens the release page externally, whichever applies.
+
+**Fixes updates losing their wait progress after a restart**
+`available_since` is now persisted instead of recomputed from a recorder lookup on every refresh, so
+a restart, a brief unavailability, or an integration reload can no longer quietly reset how long an
+update has been waiting.
+
+**Adds an Enabled switch entity**
+The master pause switch is now also a real `switch` entity, not only a Settings-page toggle, so it can
+be controlled from a dashboard or an automation. Both stay in sync with each other.
+
+### Added
+- Zigbee/ZHA rollout pacing (`zigbee.py`, `rollout_manager.py`): one-at-a-time device install queues,
+  surfaced on the Updates tab as their own "queue" section per network, reactive only (no queue shown
+  for a lone device).
+- A read-only community verdict (`community_verdict.py`, `hacs_identity.py`): a badge on the Updates
+  tab, and its own section in the per-entity dialog, showing healthy/problematic vote counts from the
+  new community-votes repo on any HACS-identified pending update.
+- A `switch.update_manager_enabled`-style entity mirroring the master pause switch, staying in sync
+  with the Settings page's own toggle either way.
+- A distinct "Update failed" notification when an auto-install actually fails, instead of only a log
+  entry with nothing user-visible at all.
+
+### Changed
+- "Update all" now dispatches each entity through the same `update_manager/install` path as the
+  dialog's own Install button, instead of one raw batched `update.install` service call, so it respects
+  the rollout queue too.
+- The "balanced" profile's default wait days: medium 7 → 1, big 30 → 3 (small stays 0).
+- "Hide postponed updates" now defaults to on instead of off.
+- Settings page: merged the master-switch and visibility cards into one "General" card, made the
+  per-size sections collapsible by default, and trimmed several oversized or repeated explanations.
+  The Small/Medium/Big size descriptions now show the real current year/month in their calendar-version
+  examples instead of a fixed date.
+- History tab and dialog: entries are grouped into cards with a consistent width/grid matching the
+  other two tabs, and every entry is clickable (expand the changelog in place, or open the release
+  page) instead of a mix of separate small links and toggles.
+- The auto-install "this was automatic" indicator is now icon-only with a tooltip, instead of an icon
+  plus a repeated text label on every row.
+
+### Fixed
+- An auto-install already in flight (dispatched, not yet resolved) could be evaluated again on the
+  next tick and dispatched a second time, occasionally misattributing a genuine auto-install as manual
+  in the install log when the redundant attempt's own failure cleared the original attempt's record.
+- The `InstallManager`'s own periodic tick had no lock against overlapping runs, unlike
+  `staging_skip.py`'s equivalent, which could very rarely duplicate an announcement.
+- The sidebar panel showed a back arrow instead of the menu (hamburger) icon, since `mainPage` was
+  never set on `hass-tabs-subpage`.
+- The community verdict lookup only matched `release_url`'s canonical `releases/tag/<tag>` shape,
+  missing the shorter `releases/<tag>` form some update entities (including this project's own) use, and
+  didn't normalize a leading `v` in the tag, so a real vote cast without the prefix never matched.
+- A "not yet rated" result was cached until the entity's own version changed, the same as
+  `available_since`, but unlike that fact, a vote count can keep climbing while a device is still sitting
+  on the same pending version: the cache is now time-based (an hour) instead.
+
 ## [0.1.0] - 2026-07-17
 
 Update Manager's first release: helps you decide *when* to install a Home Assistant update, and can

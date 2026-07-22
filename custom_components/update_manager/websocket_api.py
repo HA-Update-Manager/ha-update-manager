@@ -107,7 +107,18 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
                 ),
             }
         )
-    connection.send_result(msg["id"], {"updates": updates})
+    connection.send_result(
+        msg["id"],
+        {
+            "updates": updates,
+            # Only ever non-empty once a *second* device from the same
+            # Zigbee network/model/version is asked to install while one is
+            # already in flight, see rollout_manager.py's own docstring.
+            # The panel renders these as their own queue card(s), above the
+            # normal ready/waiting/blocked groups.
+            "rollout_groups": data["rollout_manager"].rollout_groups_snapshot(),
+        },
+    )
 
 
 @callback
@@ -179,7 +190,24 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     service_data: dict[str, Any] = {"entity_id": entity_id}
     if msg.get("backup"):
         service_data["backup"] = True
-    hass.async_create_task(hass.services.async_call("update", "install", service_data, blocking=True))
+
+    # A no-op for anything that isn't part of an active multi-device Zigbee
+    # rollout (see rollout_manager.py's own docstring): queued means a
+    # sibling device from the same network/model/version is already
+    # installing right now; RolloutManager calls update.install for this
+    # one itself once it's this entity's turn, so this handler must not
+    # also dispatch it here. is_auto=False: a real, user-initiated click,
+    # never attributed as "auto_installed" in install_log.py even if it
+    # ends up dispatched later by RolloutManager instead of immediately.
+    to_version = state.attributes.get("latest_version") if state else None
+    queued = False
+    if data and to_version:
+        result = await data["rollout_manager"].async_request_install(
+            entity_id, to_version, service_data, is_auto=False
+        )
+        queued = result == "queued"
+    if not queued:
+        hass.async_create_task(hass.services.async_call("update", "install", service_data, blocking=True))
     if data:
         # Awaited, not left to the state_changed event clear_skipped above
         # already schedules on its own -- that's a background task HA
@@ -188,7 +216,7 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
         # re-fetches (same race already fixed once this session for
         # save_settings/staging_skip.py's own skip/unskip calls).
         await data["coordinator"].async_refresh_one(entity_id)
-    connection.send_result(msg["id"])
+    connection.send_result(msg["id"], {"queued": queued})
 
 
 @websocket_api.require_admin

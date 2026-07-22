@@ -77,6 +77,12 @@ const ICON_CHEVRON_DOWN = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,
 // detail" signal, e.g. _buildListRow) doesn't actually say "leaves the
 // app" the way this universally-recognized external-link glyph does.
 const ICON_OPEN_IN_NEW = "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z";
+// mdiThumbUp/mdiAlert, verified against api.iconify.design (2026-07-22): the
+// community-verdict badge (see verdictBadge), read-only slice, no vote UI
+// yet. Thumb-up for zero problematic reports, alert for one or more.
+const ICON_THUMB_UP =
+  "M23 10a2 2 0 0 0-2-2h-6.32l.96-4.57c.02-.1.03-.21.03-.32c0-.41-.17-.79-.44-1.06L14.17 1L7.59 7.58C7.22 7.95 7 8.45 7 9v10a2 2 0 0 0 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73zM1 21h4V9H1z";
+const ICON_ALERT = "M13 14h-2V9h2m0 9h-2v-2h2M1 21h22L12 2z";
 
 // hass.language-driven, same convention this project family's other files
 // use (see cover-media-card.js's TRANSLATIONS/_tr) -- flat keys, English as
@@ -186,6 +192,7 @@ const TRANSLATIONS = {
     col_impact: "Impact",
     dialog_current_version: "Installed version",
     dialog_new_version: "Latest version",
+    dialog_community_verdict: "Community verdict",
     dialog_release_announcement: "Release announcement",
     dialog_history_heading: "History",
     dialog_history_auto: "Automatically updated",
@@ -220,6 +227,25 @@ const TRANSLATIONS = {
     group_waiting: "Postponed",
     group_blocked: "Discouraged",
     update_all: "Update all",
+    // Rollout-pacing queue cards (see rollout_manager.py): one Zigbee
+    // firmware install at a time per network, not several at once (real
+    // radio traffic that can destabilize the mesh). Only ever shown once a
+    // second device from the same network/model/version is asked to
+    // install while one is already in flight.
+    rollout_queue_title_zha: "ZHA update queue",
+    rollout_queue_title_z2m: "Zigbee2MQTT update queue",
+    rollout_queue_subtitle: "Installs one at a time to avoid overloading the Zigbee network.",
+    // Reused verbatim for the dialog's own Install button while an entity
+    // is queued (not yet its turn): no override, direct user feedback,
+    // the queue must stay authoritative, not something a hurried click can
+    // jump.
+    rollout_queue_waiting: (name) => `Waiting for ${name}`,
+    // Community-verdict badge tooltips (see verdictBadge), read-only slice
+    // added 2026-07-22: https://github.com/HA-Update-Manager/community-votes.
+    community_verdict_healthy: (count) =>
+      `${count} ${count === 1 ? "person" : "people"} reported this version as healthy`,
+    community_verdict_problematic: (count) =>
+      `${count} ${count === 1 ? "person" : "people"} reported this version as problematic`,
     // Count+pluralized, matching ha-config-section-updates.ts's own real
     // title_skipped/title_not_installable convention (confirmed against its
     // source: both are passed {count} and pluralize the same way
@@ -310,6 +336,7 @@ const TRANSLATIONS = {
     col_impact: "Impact",
     dialog_current_version: "Geïnstalleerde versie",
     dialog_new_version: "Nieuwste versie",
+    dialog_community_verdict: "Community-oordeel",
     dialog_release_announcement: "Release-aankondiging",
     dialog_history_heading: "Geschiedenis",
     dialog_history_auto: "Automatisch geüpdatet",
@@ -336,6 +363,14 @@ const TRANSLATIONS = {
     group_waiting: "Uitgesteld",
     group_blocked: "Afgeraden",
     update_all: "Alles updaten",
+    rollout_queue_title_zha: "ZHA-wachtrij",
+    rollout_queue_title_z2m: "Zigbee2MQTT-wachtrij",
+    rollout_queue_subtitle: "Installeert één voor één om het Zigbee-netwerk niet te overbelasten.",
+    rollout_queue_waiting: (name) => `Wacht op ${name}`,
+    community_verdict_healthy: (count) =>
+      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze versie als probleemloos`,
+    community_verdict_problematic: (count) =>
+      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze versie als problematisch`,
     group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,
     group_not_installable: (count) =>
       `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
@@ -583,6 +618,29 @@ function timerBadge(tr, u, settings, hass) {
     return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, u.pending_install.execute_at, hass)) };
   }
   return null;
+}
+
+// A second, independent pill (see _buildListRow's own verdictBadgeInfo
+// parameter), read from community_verdict.py's read-only community-votes
+// lookup (https://github.com/HA-Update-Manager/community-votes, added
+// 2026-07-22). No badge at all when null (not HACS-identified, or not yet
+// rated): a neutral pill on every single row would be more clutter than
+// signal for the common "nobody's voted yet" case.
+function verdictBadge(tr, u) {
+  const verdict = u.community_verdict;
+  if (!verdict || (verdict.healthy_count === 0 && verdict.problematic_count === 0)) return null;
+  if (verdict.problematic_count > 0) {
+    return {
+      icon: ICON_ALERT,
+      text: String(verdict.problematic_count),
+      title: tr.community_verdict_problematic(verdict.problematic_count),
+    };
+  }
+  return {
+    icon: ICON_THUMB_UP,
+    text: String(verdict.healthy_count),
+    title: tr.community_verdict_healthy(verdict.healthy_count),
+  };
 }
 
 // Grouped by status, not by domain/category (changed 2026-07-16, direct
@@ -858,6 +916,7 @@ class UpdateManagerPanel extends HTMLElement {
     this._tab = "updates";
     this._route = null;
     this._updates = null;
+    this._rolloutGroups = [];
     this._installLog = null;
     this._settings = null;
     this._profiles = null;
@@ -961,6 +1020,7 @@ class UpdateManagerPanel extends HTMLElement {
         this._hass.callWS({ type: "update_manager/get_settings" }),
       ]);
       this._updates = updatesResp.updates;
+      this._rolloutGroups = updatesResp.rollout_groups || [];
       this._installLog = logResp.entries.slice().reverse();
       this._settings = settingsResp.options;
       this._profiles = settingsResp.profiles;
@@ -1178,32 +1238,33 @@ class UpdateManagerPanel extends HTMLElement {
     }
   }
 
-  // Matches ha-config-section-updates.ts's own _updateAll exactly
-  // (confirmed against its real source, including data/update.ts's own
-  // installUpdates helper): a single batched update.install call with an
-  // array of entity_ids (HA's own services already support a list target
-  // for entity_id, not a loop of individual per-entity calls), fire-and-
-  // forget beyond a try/catch for the error toast -- no loading state of
-  // its own, no per-entity clear-skip handling either, since a "ready"
-  // entity is never skipped/postponed by our own grouping to begin with.
+  // Used to be a single batched update.install *service* call, matching
+  // ha-config-section-updates.ts's own _updateAll exactly (HA's own
+  // services already support a list target for entity_id). Changed
+  // 2026-07-22: that raw service call bypassed update_manager/install
+  // entirely, so a Zigbee rollout queue (see rollout_manager.py) had no
+  // way to gate "Update all" at all. One update_manager/install call per
+  // entity instead: each needs its own independent dispatch-or-queue
+  // decision, RolloutManager decides per entity_id, not per batch. Still
+  // fire-and-forget beyond a try/catch per entity for the error toast, no
+  // loading state of its own, no per-entity clear-skip handling either,
+  // since a "ready" entity is never skipped/postponed by our own grouping
+  // to begin with.
   async _updateAllInGroup(group) {
     const entityIds = group.entities
       .filter((u) => !updateIsInstalling(entityState(this._hass, u.entity_id)))
       .map((u) => u.entity_id);
     if (!entityIds.length) return;
-    try {
-      // notifyOnError=false, matching installUpdates -- HA's own
-      // hass.callService would otherwise show its own generic error toast
-      // in addition to the one built below.
-      await this._hass.callService("update", "install", { entity_id: entityIds }, undefined, false);
-    } catch (err) {
-      let message = (err && err.message) || String(err);
-      for (const entityId of entityIds) {
+    for (const entityId of entityIds) {
+      try {
+        await this._hass.callWS({ type: "update_manager/install", entity_id: entityId });
+      } catch (err) {
+        let message = (err && err.message) || String(err);
         if (message.includes(entityId)) {
           message = message.split(entityId).join(friendlyEntityName(this._hass, entityId));
         }
+        this._showToast(message);
       }
-      this._showToast(message);
     }
   }
 
@@ -1284,7 +1345,12 @@ class UpdateManagerPanel extends HTMLElement {
     pill.className = "timer-pill";
     const pillIcon = document.createElement("ha-svg-icon");
     pillIcon.path = timerBadgeInfo.icon;
-    if (!timerBadgeInfo.text) pillIcon.title = timerBadgeInfo.title || "";
+    // An explicit title always applies, text or not (added for
+    // verdictBadge: unlike the icon-only pills this was originally written
+    // for, a verdict pill shows a count AND wants a hover explanation of
+    // what that count means).
+    if (timerBadgeInfo.title) pillIcon.title = timerBadgeInfo.title;
+    else if (!timerBadgeInfo.text) pillIcon.title = "";
     pill.appendChild(pillIcon);
     if (timerBadgeInfo.text) {
       const pillText = document.createElement("span");
@@ -1304,7 +1370,11 @@ class UpdateManagerPanel extends HTMLElement {
   // feedback: the supporting-text line got simplified down to just the
   // version, so the "when does this actually happen" information needed
   // somewhere else to live, not just dropped.
-  _buildListRow(entityId, supportingText, onClick, timerBadgeInfo) {
+  // verdictBadgeInfo (see verdictBadge) is a second, independent trailing
+  // pill, left of timerBadgeInfo's own pill, so a row can show both a
+  // community verdict and a timer countdown at once instead of one
+  // replacing the other, read-only slice added 2026-07-22.
+  _buildListRow(entityId, supportingText, onClick, timerBadgeInfo, verdictBadgeInfo) {
     const row = document.createElement("ha-list-item-button");
     row.hasMeta = true;
 
@@ -1335,6 +1405,7 @@ class UpdateManagerPanel extends HTMLElement {
     if (timerBadgeInfo && timerBadgeInfo.installing) {
       end.appendChild(installingIndicatorNode(entityState(this._hass, entityId), this._tr));
     } else {
+      if (verdictBadgeInfo) end.appendChild(this._buildTimerPill(verdictBadgeInfo));
       if (timerBadgeInfo) end.appendChild(this._buildTimerPill(timerBadgeInfo));
       end.appendChild(document.createElement("ha-icon-next"));
     }
@@ -1342,6 +1413,76 @@ class UpdateManagerPanel extends HTMLElement {
 
     row.addEventListener("click", onClick);
     return row;
+  }
+
+  // One card per active Zigbee rollout group (see rollout_manager.py's own
+  // docstring: only ever appears once a second same-model/-version device
+  // is asked to install while one is already in flight, reactive not
+  // proactive: an untouched sibling still sitting in "Ready to update"
+  // shows no queue card at all). Same building blocks as the normal
+  // ready/waiting/blocked cards below (_buildListRow, installingIndicatorNode),
+  // just a different trailing state per row: the front entity gets the
+  // usual installing spinner, the rest get a "waiting for X" pill instead
+  // of a countdown, since there's nothing to count down, only "not yet".
+  _buildRolloutGroupCard(group) {
+    const tr = this._tr;
+    const card = document.createElement("ha-card");
+    card.outlined = true;
+
+    const content = document.createElement("div");
+    content.className = "card-content";
+
+    const header = document.createElement("div");
+    header.className = "card-header";
+    const title = document.createElement("div");
+    title.className = "title";
+    title.setAttribute("role", "heading");
+    title.textContent = group.network === "z2m" ? tr.rollout_queue_title_z2m : tr.rollout_queue_title_zha;
+    header.appendChild(title);
+    content.appendChild(header);
+
+    const subtitle = document.createElement("p");
+    subtitle.className = "hint";
+    subtitle.textContent = tr.rollout_queue_subtitle;
+    content.appendChild(subtitle);
+
+    // Always the *front* (currently installing) entity's name, not each
+    // row's own immediate predecessor: once the front entity finishes,
+    // every remaining entry shifts up and only the new front one is
+    // actually blocking progress, so it's the one accurate "waiting for"
+    // target regardless of how far back in line a given row sits.
+    const frontName = friendlyEntityName(this._hass, group.entities[0].entity_id);
+
+    const list = document.createElement("ha-list-base");
+    group.entities.forEach((entry) => {
+      const installing = entry.status === "installing";
+      list.appendChild(
+        this._buildListRow(
+          entry.entity_id,
+          [deviceAreaName(this._hass, entry.entity_id), group.to_version].filter(Boolean).join(" ⋅ "),
+          () => this._openDetailDialog(entry.entity_id),
+          installing ? { installing: true } : { icon: ICON_CLOCK_OUTLINE, text: tr.rollout_queue_waiting(frontName) }
+        )
+      );
+    });
+    content.appendChild(list);
+    card.appendChild(content);
+    return card;
+  }
+
+  // Looks up entityId inside this._rolloutGroups (see rollout_manager.py's
+  // own rollout_groups_snapshot), null if it isn't part of any active
+  // queue right now. Used both to exclude a queued/installing entity from
+  // its normal ready/waiting/blocked group (see _buildUpdatesList) and to
+  // swap the dialog's Install button for the same "waiting for X" state
+  // (no-override decision, see rollout_manager.py's own docstring: a
+  // queued device can't jump the line from here either).
+  _rolloutStatusFor(entityId) {
+    for (const group of this._rolloutGroups) {
+      const entry = group.entities.find((e) => e.entity_id === entityId);
+      if (entry) return { status: entry.status, frontEntityId: group.entities[0].entity_id };
+    }
+    return null;
   }
 
   // Default sort: safest first (green, then orange, then red), see
@@ -1389,7 +1530,20 @@ class UpdateManagerPanel extends HTMLElement {
       return outer;
     }
 
-    const groups = groupUpdates(tr, this._updates);
+    // Active rollout-queue cards go above the normal ready/waiting/blocked
+    // groups (see _buildRolloutGroupCard): any entity shown there is
+    // excluded from its normal group in the same pass below, no duplicate
+    // row for the same entity in two places at once.
+    const queuedEntityIds = new Set();
+    this._rolloutGroups.forEach((group) => {
+      outer.appendChild(this._buildRolloutGroupCard(group));
+      group.entities.forEach((e) => queuedEntityIds.add(e.entity_id));
+    });
+
+    const remainingUpdates = this._updates.filter((u) => !queuedEntityIds.has(u.entity_id));
+    if (!remainingUpdates.length) return outer;
+
+    const groups = groupUpdates(tr, remainingUpdates);
 
     const wrap = document.createElement("div");
     wrap.className = "update-groups";
@@ -1455,7 +1609,8 @@ class UpdateManagerPanel extends HTMLElement {
                 .filter(Boolean)
                 .join(" ⋅ "),
               () => this._openDetailDialog(u.entity_id),
-              timerBadge(tr, u, this._settings, this._hass)
+              timerBadge(tr, u, this._settings, this._hass),
+              verdictBadge(tr, u)
             )
           );
         });
@@ -1776,6 +1931,34 @@ class UpdateManagerPanel extends HTMLElement {
         body.appendChild(row);
       }
 
+      // Its own section, own heading, own divider, not folded into the rows
+      // above: direct user feedback, 2026-07-22, this is also where a
+      // future vote button belongs once voting itself is built (not this
+      // read-only slice), so it needs a real home now rather than being
+      // squeezed into the version/impact rows.
+      const dialogVerdictInfo = verdictBadge(tr, u);
+      if (dialogVerdictInfo) {
+        body.appendChild(document.createElement("hr"));
+        const communityHeading = document.createElement("h3");
+        communityHeading.textContent = tr.dialog_community_verdict;
+        body.appendChild(communityHeading);
+
+        // Same friendly sentence the list badge's own tooltip already uses
+        // (see verdictBadge/community_verdict_healthy/_problematic), not a
+        // terser "N healthy, N problematic": direct user feedback,
+        // 2026-07-22, a full sentence reads better once it has its own
+        // section, not just a compact hover hint.
+        const communityContent = document.createElement("div");
+        communityContent.className = "dialog-community";
+        const communityIcon = document.createElement("ha-svg-icon");
+        communityIcon.path = dialogVerdictInfo.icon;
+        communityContent.appendChild(communityIcon);
+        const communityText = document.createElement("span");
+        communityText.textContent = dialogVerdictInfo.title;
+        communityContent.appendChild(communityText);
+        body.appendChild(communityContent);
+      }
+
       // Release notes. UpdateEntityFeature.RELEASE_NOTES = 16
       // (homeassistant/components/update/const.py): entities that support
       // it generate notes on demand (e.g. fetched from a changelog API),
@@ -2025,10 +2208,19 @@ class UpdateManagerPanel extends HTMLElement {
       }
 
       if (u.installable) {
+        // A queued (not yet dispatched) Zigbee rollout entry can't jump
+        // the line from here either (no-override decision, see
+        // rollout_manager.py's own docstring): same "waiting for X" text
+        // the queue card itself shows, button disabled instead of a
+        // working Install.
+        const rolloutStatus = this._rolloutStatusFor(entityId);
+        const isQueued = !!(rolloutStatus && rolloutStatus.status === "queued");
         const installBtn = document.createElement("ha-progress-button");
         installBtn.appearance = "filled";
-        installBtn.label = tr.dialog_install;
-        installBtn.disabled = updateButtonIsDisabled(this._dialogLastState);
+        installBtn.label = isQueued
+          ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId))
+          : tr.dialog_install;
+        installBtn.disabled = isQueued || updateButtonIsDisabled(this._dialogLastState);
         installBtn.progress = updateIsInstalling(this._dialogLastState);
         this._dialogInstallBtn = installBtn;
         // Fire-and-forget, not awaited before reacting -- matches
@@ -2574,6 +2766,7 @@ class UpdateManagerPanel extends HTMLElement {
         font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color);
       }
       .dialog-content hr { border-color: var(--divider-color); border-bottom: none; margin: 0; }
+      .dialog-community { display: flex; align-items: center; gap: var(--ha-space-2, 8px); color: var(--primary-text-color); }
       /* Empty (and invisible) whenever nothing's installing -- only ever
          holds a single ha-progress-bar, inserted/removed live by
          _updateDialogProgress, same spot more-info-update.ts's own

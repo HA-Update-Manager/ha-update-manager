@@ -1,5 +1,5 @@
 """Exposes the master pause switch (const.py's CONF_ENABLED) as a real
-switch entity, not only a Settings-panel toggle -- direct user feedback:
+switch entity, not only a Settings-panel toggle, direct user feedback:
 wanted to control/automate this from a dashboard or an automation, not
 only from the panel. Both stay in sync regardless of which one changes
 it: this entity reads/writes the exact same coordinator.master_enabled
@@ -78,6 +78,6 @@ class UpdateManagerEnabledSwitch(SwitchEntity):
         # _handle_save_settings, this call should reflect the real,
         # already-applied state by the time it returns, not a stale one.
         # Also what fires this entity's own state update, via the
-        # coordinator listener registered in async_added_to_hass -- no
+        # coordinator listener registered in async_added_to_hass, no
         # separate self.async_write_ha_state() call needed here.
         await async_apply_options(self.hass, options)

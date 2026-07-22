@@ -5,11 +5,13 @@ import asyncio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, State, callback
 
+from .community_verdict import CommunityVerdictManager
 from .const import CONF_ENABLED, CONF_HIDE_POSTPONED, DOMAIN
 from .coordinator import UpdateManagerCoordinator, excluded_entities_from_options, rules_from_options
 from .install_log import InstallLog
 from .install_manager import InstallManager, auto_install_rules_from_options
 from .panel import async_register_update_manager_panel
+from .rollout_manager import RolloutManager
 from .staging_skip import StagingSkipManager
 from .websocket_api import async_apply_options, async_setup_websocket_api
 
@@ -19,10 +21,26 @@ PLATFORMS: list[str] = ["sensor", "switch"]
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     options = dict(entry.options)
     rules = rules_from_options(options)
-    coordinator = UpdateManagerCoordinator(hass, rules, excluded_entities_from_options(options))
+    # Constructed before the coordinator: it takes a reference to this (see
+    # community_verdict.py's own docstring), and this manager itself needs
+    # nothing but hass, so there's no reason to reach for a setter/callback
+    # like rollout_manager.py's own set_recently_executed_setter does for a
+    # genuine two-way dependency.
+    community_verdict_manager = CommunityVerdictManager(hass)
+    coordinator = UpdateManagerCoordinator(hass, rules, excluded_entities_from_options(options), community_verdict_manager)
     install_log = InstallLog(hass)
-    install_manager = InstallManager(hass, coordinator, auto_install_rules_from_options(options))
-    staging_skip_manager = StagingSkipManager(hass, coordinator)
+    # Constructed before InstallManager/StagingSkipManager: both take a
+    # reference to it (see rollout_manager.py's own docstring: gates every
+    # install dispatch, and staging_skip.py hides a queued entry the same
+    # way it already hides a plain "waiting" one).
+    rollout_manager = RolloutManager(hass, coordinator)
+    install_manager = InstallManager(hass, coordinator, auto_install_rules_from_options(options), rollout_manager)
+    staging_skip_manager = StagingSkipManager(hass, coordinator, rollout_manager)
+    # The reverse direction: only wireable once install_manager exists, see
+    # rollout_manager.py's own set_recently_executed_setter docstring for
+    # why this is a setter/callback rather than a constructor argument on
+    # either side (avoids an import cycle between the two modules).
+    rollout_manager.set_recently_executed_setter(install_manager.mark_recently_executed)
     # The single shared master-enabled flag (see coordinator.py's own
     # set_master_enabled) -- set once, here, before either manager's
     # async_start() runs; both read it directly off the coordinator from
@@ -52,6 +70,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator.async_start(),
         install_log.async_load(),
         install_manager.async_load(),
+        rollout_manager.async_load(),
+        community_verdict_manager.async_load(),
     )
 
     @callback
@@ -76,12 +96,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator.async_add_install_listener(_on_install)
     install_manager.async_start()
     staging_skip_manager.async_start(bool(options.get(CONF_HIDE_POSTPONED, True)))
+    rollout_manager.async_start()
 
     hass.data[DOMAIN] = {
         "coordinator": coordinator,
         "install_log": install_log,
         "install_manager": install_manager,
         "staging_skip_manager": staging_skip_manager,
+        "rollout_manager": rollout_manager,
+        "community_verdict_manager": community_verdict_manager,
     }
     async_setup_websocket_api(hass)
     await async_register_update_manager_panel(hass)
@@ -91,6 +114,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(coordinator.async_stop)
     entry.async_on_unload(install_manager.async_stop)
     entry.async_on_unload(staging_skip_manager.async_stop)
+    entry.async_on_unload(rollout_manager.async_stop)
     return True
 
 

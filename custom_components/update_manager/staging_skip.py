@@ -28,6 +28,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
+from .rollout_manager import RolloutManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,9 +37,14 @@ STORAGE_KEY = f"{DOMAIN}_staging_skip"
 
 
 class StagingSkipManager:
-    def __init__(self, hass: HomeAssistant, coordinator: UpdateManagerCoordinator) -> None:
+    def __init__(self, hass: HomeAssistant, coordinator: UpdateManagerCoordinator, rollout_manager: RolloutManager) -> None:
         self.hass = hass
         self._coordinator = coordinator
+        # A device waiting its turn in a Zigbee rollout queue (see
+        # rollout_manager.py) is the same kind of "not actually actionable
+        # right now" state this whole module already hides for a plain
+        # "waiting" update, see _async_evaluate_one's own use of this.
+        self._rollout_manager = rollout_manager
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         # entity_id -> the to_version *we* skipped it for -- never anyone
         # else's skip, see this module's own docstring.
@@ -235,7 +241,11 @@ class StagingSkipManager:
         skipped_version = state.attributes.get("skipped_version") if state else None
         latest_version = cached["latest_version"]
 
-        if cached["status"] == "waiting":
+        # A "ready" entity can still not actually be actionable right now if
+        # it's waiting its turn behind a sibling device in a Zigbee rollout
+        # queue, treated the same as a plain "waiting" status below, same
+        # hide-until-actionable reasoning, same hide_postponed setting.
+        if cached["status"] == "waiting" or self._rollout_manager.is_queued(entity_id):
             if recorded == latest_version:
                 if skipped_version == latest_version:
                     return False  # still exactly as we left it
