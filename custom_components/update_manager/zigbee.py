@@ -20,14 +20,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
 
-def is_zha_device(hass: HomeAssistant, device: dr.DeviceEntry) -> bool:
-    for entry_id in device.config_entries:
-        entry = hass.config_entries.async_get_entry(entry_id)
-        if entry and entry.domain == "zha":
-            return True
-    return False
-
-
 def is_zigbee2mqtt_device(hass: HomeAssistant, device: dr.DeviceEntry) -> bool:
     if not device.via_device_id:
         return False

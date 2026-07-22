@@ -547,10 +547,21 @@ class UpdateManagerCoordinator:
         # auto-install must gate on this: never call update.install on an
         # entity that doesn't support it.
         installable = bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL)
-        community_verdict = None
+        # Whatever's already known, synchronously, no fetch: found by
+        # review, this used to await the real lookup right here, serializing
+        # a network round-trip (on a cache miss/expiry) into every single
+        # entity's staging-status write below, even though the verdict is
+        # purely cosmetic and never gates this decision. A real refresh (if
+        # needed) is fired as its own background task instead, see
+        # _async_refresh_community_verdict.
+        community_verdict = (
+            self._community_verdict_manager.peek_cached_verdict(entity_id)
+            if self._community_verdict_manager is not None
+            else None
+        )
         if self._community_verdict_manager is not None:
-            community_verdict = await self._community_verdict_manager.async_get_verdict(
-                entity_id, state.attributes.get("release_url"), latest
+            self.hass.async_create_task(
+                self._async_refresh_community_verdict(entity_id, state.attributes.get("release_url"), latest)
             )
         self.cache[entity_id] = {
             "entity_id": entity_id,
@@ -588,6 +599,19 @@ class UpdateManagerCoordinator:
             # read-only-first scoping for this feature.
             "community_verdict": community_verdict,
         }
+
+    async def _async_refresh_community_verdict(self, entity_id: str, release_url: str | None, latest: str) -> None:
+        """Its own task, not awaited inline by _async_cache_active (see that
+        method's own comment): patches this entity's cache entry once the
+        real lookup resolves, but only if that entry still exists and still
+        refers to the exact same version, entity_id's own cache entry may
+        have moved on (a newer version, or no longer pending at all) by the
+        time this background fetch finishes."""
+        assert self._community_verdict_manager is not None
+        verdict = await self._community_verdict_manager.async_get_verdict(entity_id, release_url, latest)
+        cached = self.cache.get(entity_id)
+        if cached is not None and cached.get("latest_version") == latest:
+            cached["community_verdict"] = verdict
 
     def _cache_skipped(self, entity_id: str, state: State, current: str, latest: str) -> None:
         # No staging computation here (state itself is "off", not "on" --

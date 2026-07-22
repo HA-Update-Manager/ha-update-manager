@@ -41,6 +41,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # why this is a setter/callback rather than a constructor argument on
     # either side (avoids an import cycle between the two modules).
     rollout_manager.set_recently_executed_setter(install_manager.mark_recently_executed)
+    # Same reasoning, see rollout_manager.py's own set_failure_handler
+    # docstring: a queued entry's install can fail too, once this module is
+    # the one dispatching it, and it needs the exact same cleanup/
+    # notification install_manager.py's own non-queued path already has.
+    rollout_manager.set_failure_handler(install_manager.handle_install_failure)
     # The single shared master-enabled flag (see coordinator.py's own
     # set_master_enabled) -- set once, here, before either manager's
     # async_start() runs; both read it directly off the coordinator from

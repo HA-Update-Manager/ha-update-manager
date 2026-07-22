@@ -59,15 +59,23 @@ class ParsedVersion(NamedTuple):
     patch: int
 
 
-def _strip_version_prefix(version: str) -> str:
-    """Trims whitespace and an optional leading "v"/"V" (e.g. "v1.2.3") --
-    shared by every shape check/parser below so a version only ever needs
-    to be normalized once, the same way regardless of which scheme it turns
-    out to match."""
+_V_PREFIX_RE = re.compile(r"^[vV](\d.*)$")
+
+
+def strip_version_prefix(version: str) -> str:
+    """Trims whitespace and a leading "v"/"V" immediately before a digit
+    (e.g. "v1.2.3"), shared by every shape check/parser below so a version
+    only ever needs to be normalized once, the same way regardless of which
+    scheme it turns out to match. Only a v/V directly before a digit counts
+    as a version-tag prefix, not e.g. a real version that happens to start
+    with a word beginning in v (a "v"-then-non-digit fails every shape
+    regex below either way, so this was always behaviorally equivalent for
+    every call site here; made explicit so hacs_identity.py's own,
+    previously-duplicated version of this same rule can reuse it directly
+    instead of drifting out of sync)."""
     candidate = version.strip()
-    if candidate.startswith(("v", "V")):
-        candidate = candidate[1:]
-    return candidate
+    match = _V_PREFIX_RE.match(candidate)
+    return match.group(1) if match else candidate
 
 
 def parse_semver(version: str) -> ParsedVersion | None:
@@ -77,7 +85,7 @@ def parse_semver(version: str) -> ParsedVersion | None:
     versions (see is_calendar_version) and anything else that merely
     *looks* like it could be a version (2-part versions, non-numeric
     components, etc.)."""
-    candidate = _strip_version_prefix(version)
+    candidate = strip_version_prefix(version)
     if not _SEMVER_RE.match(candidate):
         return None
     core = candidate.split("-", 1)[0].split("+", 1)[0]
@@ -93,7 +101,7 @@ def is_calendar_version(version: str) -> bool:
     also being valid strict semver (e.g. a leading zero in the month/patch
     part), and vice versa a plain "2026.7.1" is valid strict semver too --
     this function is what actually excludes it from being treated as one."""
-    return bool(_CALENDAR_VERSION_RE.match(_strip_version_prefix(version)))
+    return bool(_CALENDAR_VERSION_RE.match(strip_version_prefix(version)))
 
 
 def is_git_commit_version(version: str) -> bool:
@@ -107,7 +115,7 @@ def _parse_calendar(version: str) -> ParsedVersion:
     shape parse_semver returns, so the jump-comparison logic below can be
     reused unchanged. Only meaningful once is_calendar_version has
     already confirmed the shape -- this doesn't re-validate it."""
-    candidate = _strip_version_prefix(version)
+    candidate = strip_version_prefix(version)
     year, month, patch = (int(part) for part in candidate.split("."))
     return ParsedVersion(year, month, patch)
 

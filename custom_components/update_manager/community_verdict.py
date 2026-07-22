@@ -1,17 +1,12 @@
-"""Reads (never writes) a community-computed verdict for a HACS-identified
-update, from the community-votes repo built and live-tested 2026-07-22 (see
+"""Reads (never writes) a community-computed verdict for an update entity,
+from the community-votes repo built and live-tested 2026-07-22 (see
 FUTURE.md): https://github.com/HA-Update-Manager/community-votes. Read-only
 slice only, no voting, no OAuth, no settings toggle (confirmed with the
 user: pure reading, nothing sent, always on).
 
-Identity comes from the update entity's own `release_url` attribute, not
-HACS-specific data, so any entity that happens to set a GitHub release URL
-can get a verdict, not only HACS-installed ones. That attribute is treated as
-an opaque string set by whatever integration backs the entity though, it is
-*expected* to look like a GitHub release URL for most real integrations, but
-nothing enforces that, so extraction is a tolerant regex with a silent
-"no verdict available" fallback on a non-match, never a crash or a visible
-error for entities that don't fit that shape.
+Identity resolution itself (which category, which path) lives in
+hacs_identity.py's own resolve_votes_path, kept pure/HA-independent and
+unit-tested there rather than here, same reasoning as semver.py/staging.py.
 
 Cache is time-based, not purely version-based like coordinator.py's own
 _async_get_available_since: found live 2026-07-22, testing against a real
@@ -33,7 +28,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .hacs_identity import extract_hacs_identity
+from .hacs_identity import resolve_votes_path
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -61,6 +56,19 @@ class CommunityVerdictManager:
     async def async_load(self) -> None:
         self._cache = await self._store.async_load() or {}
 
+    def peek_cached_verdict(self, entity_id: str) -> dict[str, Any] | None:
+        """Synchronous, no fetch: whatever verdict was last known for this
+        entity, stale or not, or None if it's never been looked up at all.
+        Found by review, 2026-07-22: coordinator.py's own bulk scan used to
+        await async_get_verdict inline, serializing a real HTTP round-trip
+        (on a cache miss/expiry) into every single entity's staging-status
+        write, even though the verdict is purely cosmetic and never gates
+        that decision. Coordinator now uses this for an entity's cache
+        entry immediately, and refreshes it in the background separately
+        (see coordinator.py's own _async_refresh_community_verdict)."""
+        record = self._cache.get(entity_id)
+        return record.get("verdict") if record else None
+
     def _fresh_cached_verdict(self, entity_id: str, latest_version: str) -> tuple[bool, Any]:
         record = self._cache.get(entity_id)
         if record is None or record.get("version") != latest_version:
@@ -76,7 +84,15 @@ class CommunityVerdictManager:
             "verdict": verdict,
             "fetched_at": dt_util.utcnow().isoformat(),
         }
-        await self._store.async_save(self._cache)
+        # Delayed/coalesced, not an immediate async_save: found by review,
+        # this used to write the entire cache dict to disk on every single
+        # call, including the common non-HACS-identified case, one full
+        # write per entity instead of one for a whole burst. Unlike
+        # coordinator.py's own available_since store, there's no crash-
+        # safety story here to preserve: a lost write only costs one extra
+        # HTTP re-fetch next time, never a wrong user-visible decision, so
+        # this is safe to debounce.
+        self._store.async_delay_save(lambda: self._cache, 1.0)
 
     async def async_get_verdict(
         self, entity_id: str, release_url: str | None, latest_version: str
@@ -85,13 +101,12 @@ class CommunityVerdictManager:
         if is_fresh:
             return cached_verdict
 
-        identity = extract_hacs_identity(release_url)
-        if identity is None:
+        path = resolve_votes_path(entity_id, release_url, latest_version)
+        if path is None:
             await self._async_remember(entity_id, latest_version, None)
             return None
 
-        owner, repo, version = identity
-        url = f"{VOTES_REPO_RAW_BASE}/votes/hacs/{owner}/{repo}/{version}/_verdict.json"
+        url = f"{VOTES_REPO_RAW_BASE}/votes/{path}/_verdict.json"
         session = async_get_clientsession(self.hass)
         try:
             async with session.get(url, timeout=10) as response:

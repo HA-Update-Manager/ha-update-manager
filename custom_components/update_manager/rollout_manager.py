@@ -26,6 +26,7 @@ common non-Zigbee case.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any, Literal
@@ -78,6 +79,10 @@ class RolloutManager:
         # gets correctly attributed in install_log.py, see
         # set_recently_executed_setter's own docstring.
         self._mark_recently_executed: Callable[[str, str], None] | None = None
+        # Same reasoning/wiring as _mark_recently_executed above, see
+        # set_failure_handler's own docstring: a queued entry's install can
+        # fail too, once this module is the one dispatching it.
+        self._handle_install_failure: Callable[[str, str], None] | None = None
         self._unsub_install_listener: Callable[[], None] | None = None
 
     def set_recently_executed_setter(self, setter: Callable[[str, str], None]) -> None:
@@ -93,6 +98,16 @@ class RolloutManager:
         would create an import cycle, since install_manager.py is the one
         that calls into this module first)."""
         self._mark_recently_executed = setter
+
+    def set_failure_handler(self, handler: Callable[[str, str], None]) -> None:
+        """install_manager.py's own handle_install_failure does the exact
+        cleanup/notification a failed install already needs (see
+        _async_run_install's own except-branch): found by review, a queued
+        entry's install (dispatched by this module, not install_manager.py's
+        own _async_execute) had no failure path at all before this. Same
+        setter pattern, same import-cycle reasoning, as
+        set_recently_executed_setter above."""
+        self._handle_install_failure = handler
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -211,37 +226,61 @@ class RolloutManager:
     async def _async_dispatch(self, entry: _QueuedEntry) -> None:
         if entry.is_auto and self._mark_recently_executed is not None:
             self._mark_recently_executed(entry.entity_id, entry.to_version)
-        await self.hass.services.async_call("update", "install", entry.service_data, blocking=True)
+        try:
+            await self.hass.services.async_call("update", "install", entry.service_data, blocking=True)
+        except Exception:
+            # Found by review: previously unguarded, a real install failure
+            # here left the entry stuck at the front of its queue forever
+            # (the only thing that ever advances a queue is the install-
+            # completion event, which a failed install never fires), with
+            # every sibling device queued behind it blocked too and no
+            # failure notification anywhere, unlike a plain, non-queued
+            # auto-install's own path. Deliberately does NOT auto-advance
+            # past the failure: staying stuck (with a clear notification,
+            # not silent) is the safer default for a feature whose whole
+            # point is mesh stability, rather than guessing it's safe to
+            # move on to the next device.
+            _LOGGER.exception("Update Manager's queued install failed for %s", entry.entity_id)
+            if self._handle_install_failure is not None:
+                self._handle_install_failure(entry.entity_id, entry.to_version)
 
     async def _async_recover_after_restart(self) -> None:
+        """Different Zigbee groups (different networks, or different
+        device models on the same network) are fully independent of each
+        other, so recovered concurrently, not one at a time: a slow
+        firmware flash for one group's re-dispatch shouldn't hold up
+        checking/recovering every other unrelated group queued behind it."""
+        await asyncio.gather(*(self._async_recover_one(group_key) for group_key in list(self._queues)))
+
+    async def _async_recover_one(self, group_key: str) -> None:
         """Neither "the front entry is still genuinely mid-install" nor
         "it already finished" can be assumed after a restart, no task or
         callback survives one, and the install-listener event that would
         normally tell us either already fired while nothing was listening,
         or never got the chance to. Check the entity's real, current state
         against what it was queued for instead of guessing."""
-        for group_key, entries in list(self._queues.items()):
-            if not entries:
-                continue
-            front = entries[0]
-            state = self.hass.states.get(front.entity_id)
-            installed = state.attributes.get("installed_version") if state else None
-            if installed == front.to_version:
-                # Actually finished while HA was down (or in the gap
-                # between dispatch and this restart), advance now instead
-                # of waiting for an event that already happened.
-                await self._async_advance(group_key)
-            else:
-                # The previous restart interrupted the in-flight install
-                # itself. Re-dispatch rather than leaving the group stuck
-                # waiting forever for a completion that will never come:
-                # calling update.install again is expected to be a safe
-                # no-op in the (rarer) case it turns out the install did
-                # finish right at the restart boundary, same "calling it
-                # again is harmless" reasoning staging_skip.py already
-                # relies on for update.skip/clear_skipped, though worth a
-                # real live check during testing, not just assumed.
-                await self._async_dispatch(front)
+        entries = self._queues.get(group_key)
+        if not entries:
+            return
+        front = entries[0]
+        state = self.hass.states.get(front.entity_id)
+        installed = state.attributes.get("installed_version") if state else None
+        if installed == front.to_version:
+            # Actually finished while HA was down (or in the gap between
+            # dispatch and this restart), advance now instead of waiting
+            # for an event that already happened.
+            await self._async_advance(group_key)
+        else:
+            # The previous restart interrupted the in-flight install
+            # itself. Re-dispatch rather than leaving the group stuck
+            # waiting forever for a completion that will never come:
+            # calling update.install again is expected to be a safe no-op
+            # in the (rarer) case it turns out the install did finish
+            # right at the restart boundary, same "calling it again is
+            # harmless" reasoning staging_skip.py already relies on for
+            # update.skip/clear_skipped, though worth a real live check
+            # during testing, not just assumed.
+            await self._async_dispatch(front)
 
     def rollout_groups_snapshot(self) -> list[dict[str, Any]]:
         """Read by websocket_api.py's own _handle_updates to show the
@@ -252,7 +291,14 @@ class RolloutManager:
         for group_key, entries in self._queues.items():
             if len(entries) < 2:
                 continue
-            network = "z2m" if group_key.startswith("z2m:") else "zha"
+            # The network kind is whatever prefix zigbee_network_id itself
+            # chose (see _group_key_for: group_key's first "|"-separated
+            # segment is that same network_id verbatim), read back out here
+            # instead of re-hardcoding "z2m:" as a second, independent
+            # literal that would silently drift if zigbee.py's own prefix
+            # ever changed.
+            network_id = group_key.split("|", 1)[0]
+            network = network_id.split(":", 1)[0]
             groups.append(
                 {
                     "key": group_key,

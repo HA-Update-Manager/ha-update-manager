@@ -127,9 +127,7 @@ const TRANSLATIONS = {
     },
     size_medium_short: "Medium",
     size_medium_desc: () => {
-      const { year, month } = currentCalendarVersion();
-      const nextMonth = month === 12 ? 1 : month + 1;
-      const nextYear = month === 12 ? year + 1 : year;
+      const { year, month, nextYear, nextMonth } = currentCalendarVersion();
       return (
         `A minor release (e.g. 1.0.0 → 1.1.0), a new calendar month/year (e.g. ${year}.${month}.0 → ` +
         `${nextYear}.${nextMonth}.0), or a commit-hash update (e.g. 7sg82tw → 8dhw8wg).`
@@ -193,6 +191,8 @@ const TRANSLATIONS = {
     dialog_current_version: "Installed version",
     dialog_new_version: "Latest version",
     dialog_community_verdict: "Community verdict",
+    dialog_community_verdict_disclaimer:
+      "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
     dialog_release_announcement: "Release announcement",
     dialog_history_heading: "History",
     dialog_history_auto: "Automatically updated",
@@ -300,9 +300,7 @@ const TRANSLATIONS = {
     },
     size_medium_short: "Gemiddeld",
     size_medium_desc: () => {
-      const { year, month } = currentCalendarVersion();
-      const nextMonth = month === 12 ? 1 : month + 1;
-      const nextYear = month === 12 ? year + 1 : year;
+      const { year, month, nextYear, nextMonth } = currentCalendarVersion();
       return (
         `Een minor-release (bijv. 1.0.0 → 1.1.0), een nieuwe kalendermaand/-jaar (bijv. ${year}.${month}.0 → ` +
         `${nextYear}.${nextMonth}.0), of een commit-update (bijv. 7sg82tw → 8dhw8wg).`
@@ -337,6 +335,8 @@ const TRANSLATIONS = {
     dialog_current_version: "Geïnstalleerde versie",
     dialog_new_version: "Nieuwste versie",
     dialog_community_verdict: "Community-oordeel",
+    dialog_community_verdict_disclaimer:
+      "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
     dialog_release_announcement: "Release-aankondiging",
     dialog_history_heading: "Geschiedenis",
     dialog_history_auto: "Automatisch geüpdatet",
@@ -705,10 +705,18 @@ function _breakdown(tr, abs) {
 // otherwise silently go stale (e.g. "2026.7" still shown as the calendar-
 // versioning example long after that month has passed). Used by
 // TRANSLATIONS' own size_small_desc/size_medium_desc, direct user
-// feedback. month is already 1-indexed (getMonth() + 1).
+// feedback. month is already 1-indexed (getMonth() + 1). Also includes the
+// following month/year (found by review, 2026-07-22: this exact rollover
+// arithmetic was independently duplicated in both the en and nl
+// size_medium_desc entries), so both locales can just consume the values
+// instead of each re-deriving them.
 function currentCalendarVersion() {
   const now = new Date();
-  return { year: now.getFullYear(), month: now.getMonth() + 1 };
+  const year = now.getFullYear();
+  const month = now.getMonth() + 1;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear = month === 12 ? year + 1 : year;
+  return { year, month, nextYear, nextMonth };
 }
 
 // HA's own relative-time display is a live-updating component
@@ -1255,17 +1263,24 @@ class UpdateManagerPanel extends HTMLElement {
       .filter((u) => !updateIsInstalling(entityState(this._hass, u.entity_id)))
       .map((u) => u.entity_id);
     if (!entityIds.length) return;
-    for (const entityId of entityIds) {
-      try {
-        await this._hass.callWS({ type: "update_manager/install", entity_id: entityId });
-      } catch (err) {
-        let message = (err && err.message) || String(err);
-        if (message.includes(entityId)) {
-          message = message.split(entityId).join(friendlyEntityName(this._hass, entityId));
-        }
-        this._showToast(message);
+    // Dispatched concurrently, not one at a time: each entity's own
+    // dispatch-or-queue decision is fully independent (RolloutManager's own
+    // gate already provides correct ordering for anything Zigbee-paced, see
+    // rollout_manager.py), so serializing these on the client would only
+    // slow "Update all" down for no correctness benefit.
+    const results = await Promise.allSettled(
+      entityIds.map((entityId) => this._hass.callWS({ type: "update_manager/install", entity_id: entityId }))
+    );
+    results.forEach((result, i) => {
+      if (result.status !== "rejected") return;
+      const entityId = entityIds[i];
+      const err = result.reason;
+      let message = (err && err.message) || String(err);
+      if (message.includes(entityId)) {
+        message = message.split(entityId).join(friendlyEntityName(this._hass, entityId));
       }
-    }
+      this._showToast(message);
+    });
   }
 
   // Reloads our own data and rebuilds this same dialog in place, instead
@@ -1424,8 +1439,12 @@ class UpdateManagerPanel extends HTMLElement {
   // just a different trailing state per row: the front entity gets the
   // usual installing spinner, the rest get a "waiting for X" pill instead
   // of a countdown, since there's nothing to count down, only "not yet".
-  _buildRolloutGroupCard(group) {
-    const tr = this._tr;
+  // Shared by this and _buildUpdatesList's own group-card loop below
+  // (found by review, 2026-07-22: the two had independently duplicated the
+  // exact same ha-card/.card-content/.card-header/.title shell). Callers
+  // append their own body content to the returned `content`, and any extra
+  // header content (e.g. an "Update all" button) to `header`.
+  _buildCardShell(titleText) {
     const card = document.createElement("ha-card");
     card.outlined = true;
 
@@ -1437,9 +1456,19 @@ class UpdateManagerPanel extends HTMLElement {
     const title = document.createElement("div");
     title.className = "title";
     title.setAttribute("role", "heading");
-    title.textContent = group.network === "z2m" ? tr.rollout_queue_title_z2m : tr.rollout_queue_title_zha;
+    title.textContent = titleText;
     header.appendChild(title);
     content.appendChild(header);
+    card.appendChild(content);
+
+    return { card, content, header };
+  }
+
+  _buildRolloutGroupCard(group) {
+    const tr = this._tr;
+    const { card, content } = this._buildCardShell(
+      group.network === "z2m" ? tr.rollout_queue_title_z2m : tr.rollout_queue_title_zha
+    );
 
     const subtitle = document.createElement("p");
     subtitle.className = "hint";
@@ -1466,7 +1495,6 @@ class UpdateManagerPanel extends HTMLElement {
       );
     });
     content.appendChild(list);
-    card.appendChild(content);
     return card;
   }
 
@@ -1549,19 +1577,7 @@ class UpdateManagerPanel extends HTMLElement {
     wrap.className = "update-groups";
 
     groups.forEach((group) => {
-      const card = document.createElement("ha-card");
-      card.outlined = true;
-
-      const content = document.createElement("div");
-      content.className = "card-content";
-
-      const header = document.createElement("div");
-      header.className = "card-header";
-      const title = document.createElement("div");
-      title.className = "title";
-      title.setAttribute("role", "heading");
-      title.textContent = group.title;
-      header.appendChild(title);
+      const { card, content, header } = this._buildCardShell(group.title);
       // Only the "ready" group -- matches real HA's own placement
       // (ha-config-section-updates.ts's own showUpdateAll), and direct
       // user feedback specifically asked for it there, not for postponed/
@@ -1580,7 +1596,6 @@ class UpdateManagerPanel extends HTMLElement {
         updateAllBtn.addEventListener("click", () => this._updateAllInGroup(group));
         header.appendChild(updateAllBtn);
       }
-      content.appendChild(header);
 
       const list = document.createElement("ha-list-base");
       group.entities
@@ -1615,7 +1630,6 @@ class UpdateManagerPanel extends HTMLElement {
           );
         });
       content.appendChild(list);
-      card.appendChild(content);
       wrap.appendChild(card);
     });
 
@@ -1957,6 +1971,17 @@ class UpdateManagerPanel extends HTMLElement {
         communityText.textContent = dialogVerdictInfo.title;
         communityContent.appendChild(communityText);
         body.appendChild(communityContent);
+
+        // Found by review, 2026-07-22: FUTURE.md's own disclaimer
+        // requirement for this feature ("a clear, unavoidable disclaimer
+        // with every verdict, not just in the README") had no visible text
+        // anywhere in this UI at all. Placed here, not just the badge's
+        // hover tooltip: unlike a tooltip, this is always visible whenever
+        // a verdict is shown, no hover needed.
+        const communityDisclaimer = document.createElement("p");
+        communityDisclaimer.className = "hint";
+        communityDisclaimer.textContent = tr.dialog_community_verdict_disclaimer;
+        body.appendChild(communityDisclaimer);
       }
 
       // Release notes. UpdateEntityFeature.RELEASE_NOTES = 16

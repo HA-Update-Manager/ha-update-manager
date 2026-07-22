@@ -79,6 +79,23 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
 - A "not yet rated" result was cached until the entity's own version changed, the same as
   `available_since`, but unlike that fact, a vote count can keep climbing while a device is still sitting
   on the same pending version: the cache is now time-based (an hour) instead.
+- A queued (not yet dispatched) Zigbee rollout device had its pending-install record cleared without
+  ever being marked in flight, so it was silently re-announced with a fresh notification on every
+  subsequent cycle until its actual turn in the queue came.
+- A failed install for a queued Zigbee device left the whole rollout group stuck forever (every sibling
+  device behind it blocked too), with no failure notification anywhere; it's now caught, logged, and
+  surfaces the same "Update failed" notification a plain auto-install failure already gets.
+- An exception while checking the Zigbee rollout queue during auto-install could abort the whole
+  evaluation tick before its dirty state was saved; now caught and logged per entity instead.
+- The community verdict lookup filed every entity under the `hacs` category regardless of what kind of
+  update it actually was, so a Home Assistant Core/Supervisor/OS update's real GitHub release URL would
+  have been looked up under the wrong path instead of the category community-votes reserves for it.
+- The community verdict badge/dialog section had no disclaimer text anywhere in the UI, only in the
+  separate community-votes repo's own README.
+- The community verdict lookup was awaited inline during each entity's staging-status computation,
+  serializing a real network round-trip into Update Manager's own startup scan; it's now fetched in the
+  background and patched in once resolved, and its own cache write no longer hits disk on every single
+  lookup.
 
 ## [0.1.0] - 2026-07-17
 

@@ -13,6 +13,25 @@ semver = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(semver)
 
 
+class TestStripVersionPrefix:
+    def test_basic(self):
+        assert semver.strip_version_prefix("v1.2.3") == "1.2.3"
+        assert semver.strip_version_prefix("V1.2.3") == "1.2.3"
+
+    def test_no_prefix_unchanged(self):
+        assert semver.strip_version_prefix("1.2.3") == "1.2.3"
+
+    def test_whitespace_trimmed(self):
+        assert semver.strip_version_prefix("  v1.2.3  ") == "1.2.3"
+
+    def test_v_not_before_a_digit_left_untouched(self):
+        # Made public and shared with hacs_identity.py 2026-07-22
+        # specifically so a real version that happens to start with a word
+        # beginning in v isn't mangled: only v/V directly before a digit
+        # counts as a version-tag prefix.
+        assert semver.strip_version_prefix("vNext-2026.1") == "vNext-2026.1"
+
+
 class TestParseSemver:
     def test_basic(self):
         assert semver.parse_semver("1.2.3") == (1, 2, 3)

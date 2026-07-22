@@ -109,6 +109,13 @@ def _friendly_name(hass: HomeAssistant, entity_id: str) -> str:
     return state.name if state else entity_id
 
 
+def _localized_strings(hass: HomeAssistant, strings_by_language: dict[str, dict[str, str]]) -> dict[str, str]:
+    """hass.config.language, falling back to English, shared by both
+    notification-string lookups above instead of repeating the same
+    fallback at each call site."""
+    return strings_by_language.get(hass.config.language, strings_by_language["en"])
+
+
 class InstallManager:
     def __init__(
         self,
@@ -316,6 +323,21 @@ class InstallManager:
             # one still running.
             return
 
+        if self._rollout_manager.is_queued(entity_id):
+            # Found by review, 2026-07-22: a queued (not yet dispatched)
+            # Zigbee rollout entry isn't in self._recently_executed (see
+            # _async_execute's own "queued" branch, deliberately not set
+            # until RolloutManager actually dispatches it, so
+            # was_auto_installed() still attributes the real install
+            # correctly whenever that turns out to be). Without this guard,
+            # every subsequent tick sees no pending record either (already
+            # cleared at the start of _async_execute) and treats it as a
+            # brand-new, never-announced update, re-announcing it and
+            # spawning a fresh persistent_notification with a new target
+            # time every single announce cycle for as long as it sits
+            # behind its sibling in the queue.
+            return
+
         cached = self._coordinator.cache.get(entity_id)
         current_to_version = cached["latest_version"] if cached else None
 
@@ -366,7 +388,7 @@ class InstallManager:
 
         name = _friendly_name(self.hass, entity_id)
         when = dt_util.as_local(announcement.execute_at).strftime("%d-%m-%Y %H:%M")
-        strings = _NOTIFICATION_STRINGS.get(self.hass.config.language, _NOTIFICATION_STRINGS["en"])
+        strings = _localized_strings(self.hass, _NOTIFICATION_STRINGS)
         persistent_notification.async_create(
             self.hass,
             strings["body"].format(name=name, to_version=to_version, when=when, url=_PANEL_UPDATES_URL),
@@ -399,7 +421,22 @@ class InstallManager:
         # entity's turn (see its own _async_dispatch), and will call
         # mark_recently_executed below at that point so was_auto_installed()
         # still attributes it correctly, nothing further to do here.
-        result = await self._rollout_manager.async_request_install(entity_id, to_version, service_data, is_auto=True)
+        #
+        # Wrapped in its own try/except, found by review: this call sits
+        # inside _async_tick's own asyncio.gather with no
+        # return_exceptions=True, so an unguarded exception here (e.g. a
+        # Store I/O error inside RolloutManager) would otherwise abort the
+        # whole tick before self._dirty state gets saved, and propagate to
+        # whatever awaited _async_tick (e.g. a settings save). self._pending
+        # was already cleared above, so simply logging and returning here
+        # leaves the entity to be re-evaluated fresh next tick, same
+        # natural retry _async_run_install's own except-branch already
+        # relies on for the actual install call.
+        try:
+            result = await self._rollout_manager.async_request_install(entity_id, to_version, service_data, is_auto=True)
+        except Exception:
+            _LOGGER.exception("Update Manager couldn't check the rollout queue for %s", entity_id)
+            return
         if result == "queued":
             return
 
@@ -457,27 +494,38 @@ class InstallManager:
             await self.hass.services.async_call("update", "install", service_data, blocking=True)
         except Exception:
             _LOGGER.exception("Update Manager's auto-install failed for %s", entity_id)
-            # Otherwise this stays recorded forever (was_auto_installed is
-            # the only other place that clears it, and it's never called if
-            # installed_version never actually changes) -- a later, wholly
-            # unrelated install of this entity to the exact same to_version
-            # (a manual retry, say) would then be wrongly attributed to us.
-            # Also, since _async_evaluate_one now treats any entity_id
-            # still in self._recently_executed as "install in flight" (see
-            # its own comment), leaving this in place after a real failure
-            # would permanently freeze the entity out of ever being
-            # re-announced.
-            if self._recently_executed.get(entity_id) == to_version:
-                del self._recently_executed[entity_id]
+            self.handle_install_failure(entity_id, to_version)
 
-            name = _friendly_name(self.hass, entity_id)
-            strings = _FAILURE_NOTIFICATION_STRINGS.get(self.hass.config.language, _FAILURE_NOTIFICATION_STRINGS["en"])
-            persistent_notification.async_create(
-                self.hass,
-                strings["body"].format(name=name, to_version=to_version, url=_PANEL_UPDATES_URL),
-                title=strings["title"],
-                notification_id=f"{_FAILURE_NOTIFICATION_ID_PREFIX}{entity_id}",
-            )
+    def handle_install_failure(self, entity_id: str, to_version: str) -> None:
+        """Shared by _async_run_install's own except-branch above and
+        rollout_manager.py (via the setter it's given in __init__.py, same
+        pattern as set_recently_executed_setter): a queued entry's install
+        is dispatched by RolloutManager itself once its turn comes, not by
+        this class directly, so a failure there needs the exact same
+        cleanup/notification, not a second, separately-maintained copy."""
+        # Otherwise this stays recorded forever (was_auto_installed is
+        # the only other place that clears it, and it's never called if
+        # installed_version never actually changes), a later, wholly
+        # unrelated install of this entity to the exact same to_version
+        # (a manual retry, say) would then be wrongly attributed to us.
+        # Also, since _async_evaluate_one now treats any entity_id
+        # still in self._recently_executed as "install in flight" (see
+        # its own comment), leaving this in place after a real failure
+        # would permanently freeze the entity out of ever being
+        # re-announced. A no-op for a queued entry that was never auto-
+        # install's own doing in the first place (never set in
+        # self._recently_executed to begin with).
+        if self._recently_executed.get(entity_id) == to_version:
+            del self._recently_executed[entity_id]
+
+        name = _friendly_name(self.hass, entity_id)
+        strings = _localized_strings(self.hass, _FAILURE_NOTIFICATION_STRINGS)
+        persistent_notification.async_create(
+            self.hass,
+            strings["body"].format(name=name, to_version=to_version, url=_PANEL_UPDATES_URL),
+            title=strings["title"],
+            notification_id=f"{_FAILURE_NOTIFICATION_ID_PREFIX}{entity_id}",
+        )
 
     async def _async_remove(self, entity_id: str) -> None:
         if entity_id in self._pending:
