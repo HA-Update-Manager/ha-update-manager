@@ -8,8 +8,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+from homeassistant.components.frontend import async_register_built_in_panel
 from homeassistant.components.http import StaticPathConfig
-from homeassistant.components.panel_custom import async_register_panel
 from homeassistant.core import HomeAssistant
 
 from .const import DOMAIN
@@ -18,7 +18,7 @@ PANEL_URL_PATH = "update-manager"
 _STATIC_URL_PATH = "/update_manager_panel"
 _PANEL_DIR = Path(__file__).parent / "panel"
 _PANEL_JS_PATH = _PANEL_DIR / "update-manager-panel.js"
-_PANEL_REGISTERED = f"{DOMAIN}_panel_registered"
+_STATIC_PATH_REGISTERED = f"{DOMAIN}_static_path_registered"
 
 
 def _panel_js_cache_key() -> str:
@@ -35,22 +35,49 @@ def _panel_js_cache_key() -> str:
 
 
 async def async_register_update_manager_panel(hass: HomeAssistant) -> None:
-    """Idempotent: safe to call again on entry reload (e.g. after saving
-    settings) -- registering the same frontend_url_path twice raises."""
-    if hass.data.get(_PANEL_REGISTERED):
-        return
-    hass.data[_PANEL_REGISTERED] = True
+    """Re-registers the panel with a fresh module_url on every call (e.g.
+    every integration reload), not idempotent for that part anymore --
+    found live, 2026-07-22: the previous version registered the panel
+    exactly once per HA process (guarded the same way the static path
+    registration below still is), which meant _panel_js_cache_key's own
+    hash was captured a single time and then frozen until a full HA
+    restart. Only a genuine process restart, not a reload and not a
+    browser refresh, ever picked up a JS file change after that first
+    registration -- during a long live-testing session this silently kept
+    serving stale panel JS while looking, from the outside, exactly like
+    "the fix didn't work".
 
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(_STATIC_URL_PATH, str(_PANEL_DIR), True)]
-    )
-    await async_register_panel(
+    panel_custom.async_register_panel (the wrapper normally used for this)
+    has no update path of its own -- it always raises ValueError on a
+    second call for the same frontend_url_path -- so this calls
+    frontend.async_register_built_in_panel directly instead, with
+    update=True, replicating panel_custom's own config shape (verified
+    against its real source, home-assistant/core stable tag 2026.7.3).
+
+    The static path registration itself doesn't have this problem (the
+    file is served fresh on every single request already, StaticPathConfig
+    isn't a one-time snapshot); only registering the *route* needs to
+    happen exactly once, so that part keeps its own separate guard."""
+    if not hass.data.get(_STATIC_PATH_REGISTERED):
+        hass.data[_STATIC_PATH_REGISTERED] = True
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(_STATIC_URL_PATH, str(_PANEL_DIR), True)]
+        )
+
+    async_register_built_in_panel(
         hass,
-        frontend_url_path=PANEL_URL_PATH,
-        webcomponent_name="update-manager-panel",
+        component_name="custom",
         sidebar_title="Update Manager",
         sidebar_icon="mdi:update",
-        module_url=f"{_STATIC_URL_PATH}/update-manager-panel.js?v={_panel_js_cache_key()}",
-        embed_iframe=False,
+        frontend_url_path=PANEL_URL_PATH,
+        config={
+            "_panel_custom": {
+                "name": "update-manager-panel",
+                "embed_iframe": False,
+                "trust_external": False,
+                "module_url": f"{_STATIC_URL_PATH}/update-manager-panel.js?v={_panel_js_cache_key()}",
+            }
+        },
         require_admin=True,
+        update=True,
     )

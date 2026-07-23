@@ -4,6 +4,26 @@ All notable changes to this project are documented here. Format loosely follows 
 
 ## [Unreleased]
 
+**Adds community voting**
+Link your GitHub account (a new Community card in Settings, via device flow: a short code entered on
+GitHub's own site, no password shared with Update Manager, no separate app to install), then vote on a
+specific version from either the Updates tab or the History tab. The two read differently on purpose:
+a still-*pending* update (Updates tab) only offers reporting an issue that's knowable before installing
+at all, straight from the release notes (a breaking change, a dev/pre-release build, requiring a newer
+HA version), no "healthy" button, since nobody's actually run it yet; an *installed* (or downgraded-to)
+version, opened from the History tab, gets the full healthy/problematic vote, with "problematic" adding
+two more, only-after-running reasons ("broken functionality", "other"). Every vote dialog asks which
+version it's about in plain language ("How's version X treating you?"), and a successful vote shows an
+immediate, optimistic confirmation rather than waiting on community-votes' own processing to reflect it.
+Covers every update category community-votes has a schema for: HACS (only entities actually installed
+through HACS itself, verified against its own entity registry, not just anything whose release_url
+happens to look like a GitHub link -- a real, live mix-up hit with an ESPHome device otherwise), Home
+Assistant Core/Supervisor/OS, real vendor device firmware (Zigbee, via ZHA or Zigbee2MQTT, regardless
+of which one manages the device), and Supervisor add-ons. Self-compiled/user-flashed firmware (ESPHome,
+Tasmota) is deliberately never identifiable this way: two installs' "same board" can run completely
+different, incomparable firmware there. Anything not covered gets a clear "can't be identified yet"
+message (or no vote controls at all) instead of a silent failure.
+
 **Adds Zigbee/ZHA rollout pacing**
 Firmware installs across identical Zigbee devices (ZHA or Zigbee2MQTT, same model and target
 version) are now paced one at a time instead of all at once, protecting mesh stability. A queue only
@@ -12,14 +32,11 @@ flight; there's no manual override to jump the line, whether from the dialog's I
 auto-install, or Update All. Survives a restart: an install genuinely in flight gets re-dispatched, one
 that actually finished while Home Assistant was down advances immediately.
 
-**Adds a read-only community verdict**
-Pending updates for HACS-identified entities (via their `release_url` attribute) now show a badge with
-the community's healthy/problematic vote counts on the Updates tab, and their own dedicated section
-(with more detail, a fuller sentence, and room for a future vote button) in the per-entity dialog, when
-one exists. Sourced from the new
-[HA-Update-Manager/community-votes](https://github.com/HA-Update-Manager/community-votes) repo. Read
-only for now: no voting from within Update Manager yet, no settings toggle (always on, nothing is ever
-sent).
+**Adds a community verdict badge**
+Pending updates for identifiable entities (see community voting above for which ones) now show a badge
+with the community's healthy/problematic vote counts on the Updates tab. Sourced from the new
+[HA-Update-Manager/community-votes](https://github.com/HA-Update-Manager/community-votes) repo. No
+settings toggle: always on, nothing is ever sent just by looking.
 
 **Redesigns the Settings and History pages**
 Settings now groups the master switch and visibility toggle into one General card up top, the
@@ -38,16 +55,28 @@ The master pause switch is now also a real `switch` entity, not only a Settings-
 be controlled from a dashboard or an automation. Both stay in sync with each other.
 
 ### Added
+- GitHub account linking (`github_auth.py`): a "Link GitHub account" button in Settings using OAuth
+  device flow, no client secret involved anywhere.
+- Community voting (`community_vote.py`, `vote_issue_body.py`, `device_identity.py`): vote buttons in
+  the update dialog's own Community section, scoped to the exact version being viewed (a pending
+  update's own latest version, or a specific History entry's), submitted as a community-votes issue
+  using the linked account. Identity resolution now covers all four community-votes categories:
+  HACS/Core/Supervisor/OS (HACS gated on the entity actually being HACS-owned via entity_registry, not
+  release_url's shape alone), plus real vendor Zigbee device firmware (manufacturer/model, via
+  ZHA/Zigbee2MQTT) and Supervisor add-ons (via the add-on's own device-registry slug).
 - Zigbee/ZHA rollout pacing (`zigbee.py`, `rollout_manager.py`): one-at-a-time device install queues,
   surfaced on the Updates tab as their own "queue" section per network, reactive only (no queue shown
   for a lone device).
-- A read-only community verdict (`community_verdict.py`, `hacs_identity.py`): a badge on the Updates
-  tab, and its own section in the per-entity dialog, showing healthy/problematic vote counts from the
-  new community-votes repo on any HACS-identified pending update.
+- A community verdict badge (`community_verdict.py`, `hacs_identity.py`): shows healthy/problematic
+  vote counts from the new community-votes repo on the Updates tab, for any identifiable pending
+  update.
 - A `switch.update_manager_enabled`-style entity mirroring the master pause switch, staying in sync
   with the Settings page's own toggle either way.
 - A distinct "Update failed" notification when an auto-install actually fails, instead of only a log
   entry with nothing user-visible at all.
+- Recognizes your own past vote (`my_votes.py`): the verdict line reads "You [and N others] reported
+  this version as..." instead of a bare count when it matches your own vote, and re-voting on a version
+  you already rated now shows "Vote updated to..." instead of the usual first-time confirmation.
 
 ### Changed
 - "Update all" now dispatches each entity through the same `update_manager/install` path as the
@@ -66,6 +95,35 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
   plus a repeated text label on every row.
 
 ### Fixed
+- Identity resolution for a HACS vote used whatever version was embedded in `release_url`'s own tag
+  instead of the version the vote/verdict lookup was actually for, so a vote cast for one version could
+  silently land under a different one whenever `release_url` didn't happen to match (found live: a
+  HACS entity's release_url isn't guaranteed to be *for* the exact version being voted on, e.g. it can
+  still point at the newest available release while resolving an older, already-installed History
+  entry). The requested version now always wins; `release_url` is only ever used to find the owner/repo.
+- After a successful vote, the button's own spinner kept spinning forever instead of settling: verified
+  against `ha-progress-button`'s real source, `actionSuccess()`/`actionError()` only ever show a
+  temporary 2-second checkmark/alert, they never reset `progress` themselves, and every other caller of
+  this pattern happened to rebuild/replace its own button within that window so nobody had noticed.
+- The dialog's Community section's "hidden until identifiable" logic never actually took effect:
+  `.dialog-community-section`'s own CSS rule (`display: flex`) had the exact same specificity as the
+  browser's built-in `[hidden]` rule and came later in the cascade, so it silently won regardless of the
+  element's own `hidden` attribute. Every unidentifiable entity (e.g. an ESPHome device, self-flashed
+  firmware never intended to be votable) kept showing the "not yet rated" placeholder text forever, with
+  no vote controls underneath it -- looking identifiable without actually being so. Same underlying
+  cause for a stray gap of empty space in front of the verdict text once a real verdict *did* exist:
+  `ha-svg-icon`'s own shadow-DOM styles set `display: inline-flex` unconditionally too, so its `hidden`
+  attribute never collapsed it either, just left an empty, icon-sized box sitting there. Fixed by
+  scoping the section's own CSS to `:not([hidden])` and by only ever creating the icon element once
+  there's a real badge to show, instead of relying on `hidden` for either of them.
+- The sidebar panel only ever registered itself once per Home Assistant process: the panel's own
+  cache-busting `module_url` (a hash of the JS file's current contents, added specifically so browsers
+  don't keep serving a stale cached copy after an edit) was captured on that first registration and
+  never recomputed afterward, since `panel_custom`'s own registration helper raises if called again for
+  the same URL. Every JS change made after that first registration kept being served from the browser's
+  cache regardless of a reload or even a hard refresh, only a full Home Assistant restart ever picked
+  it up. Registers directly against `frontend.async_register_built_in_panel` with `update=True` now, so
+  a plain integration reload (not just a full restart) refreshes it.
 - An auto-install already in flight (dispatched, not yet resolved) could be evaluated again on the
   next tick and dispatched a second time, occasionally misattributing a genuine auto-install as manual
   in the install log when the redundant attempt's own failure cleared the original attempt's record.

@@ -32,12 +32,11 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant, State, callback
-from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
-from .zigbee import zigbee_network_id
+from .zigbee import device_for_entity, zigbee_network_id
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -153,10 +152,7 @@ class RolloutManager:
         """None if this entity isn't a Zigbee device at all (or its device
         can't be resolved), meaning it's never paced, the overwhelmingly
         common case."""
-        entity_entry = er.async_get(self.hass).async_get(entity_id)
-        if entity_entry is None or entity_entry.device_id is None:
-            return None
-        device = dr.async_get(self.hass).async_get(entity_entry.device_id)
+        device = device_for_entity(self.hass, entity_id)
         if device is None:
             return None
         network_id = zigbee_network_id(self.hass, device)

@@ -37,8 +37,13 @@ from .const import (
     DOMAIN,
     PROFILE_PRESETS,
 )
+from .community_verdict import async_fetch_verdict_uncached
+from .community_vote import async_submit_vote
 from .coordinator import excluded_entities_from_options, hard_excluded_entity_ids, rules_from_options
+from .device_identity import resolve_full_identity
+from .hacs_identity import ResolvedIdentity
 from .install_manager import auto_install_rules_from_options
+from .vote_issue_body import REASON_CATEGORIES
 
 _WS_REGISTERED = f"{DOMAIN}_ws_registered"
 
@@ -339,6 +344,176 @@ async def _handle_save_settings(hass: HomeAssistant, connection: websocket_api.A
     connection.send_result(msg["id"])
 
 
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command({vol.Required("type"): "update_manager/github_link_start"})
+async def _handle_github_link_start(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    data = hass.data.get(DOMAIN)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    result = await data["github_auth_manager"].async_start_device_flow()
+    connection.send_result(msg["id"], result)
+
+
+@callback
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): "update_manager/github_link_status"})
+def _handle_github_link_status(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    data = hass.data.get(DOMAIN)
+    status = data["github_auth_manager"].link_status() if data else {"status": "idle", "username": None}
+    connection.send_result(msg["id"], status)
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command({vol.Required("type"): "update_manager/github_unlink"})
+async def _handle_github_unlink(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    data = hass.data.get(DOMAIN)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    await data["github_auth_manager"].async_unlink()
+    connection.send_result(msg["id"])
+
+
+def _release_url_for_version(hass: HomeAssistant, data: dict, entity_id: str, version: str) -> str | None:
+    """The release_url that applies to this exact (entity_id, version) pair,
+    the single place that decides this instead of trusting each caller to
+    reconstruct it correctly (found by review, 2026-07-22: a first version
+    of this had the frontend supply release_url itself, fragile, easy for a
+    future caller to get subtly wrong or stale). Checked in two places:
+    install_log.py's own entries (a specific past install, e.g. voting from
+    the History tab, its own release_url captured at that exact time) first,
+    since that's authoritative for a version that isn't the entity's current
+    one; the entity's live state second, for the still-pending, not-yet-
+    installed case, where no install_log entry exists yet."""
+    for entry in reversed(data["install_log"].entries):
+        if entry["entity_id"] == entity_id and entry["to_version"] == version:
+            return entry.get("release_url")
+    state = hass.states.get(entity_id)
+    if state is not None and state.attributes.get("latest_version") == version:
+        return state.attributes.get("release_url")
+    return None
+
+
+def _resolve_identity_for_version(
+    hass: HomeAssistant, data: dict, entity_id: str, version: str
+) -> ResolvedIdentity | None:
+    """_release_url_for_version + resolve_full_identity, the one pairing
+    both _handle_verdict_for_version and _handle_vote need, resolved once
+    instead of each handler repeating both steps on its own (found by
+    review: resolve_full_identity does a device_registry lookup, worth not
+    duplicating)."""
+    release_url = _release_url_for_version(hass, data, entity_id, version)
+    return resolve_full_identity(hass, entity_id, release_url, version)
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/verdict_for_version",
+        vol.Required("entity_id"): str,
+        vol.Required("version"): str,
+    }
+)
+async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    data = hass.data.get(DOMAIN)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    # Reported separately from "verdict", not left for the frontend to infer
+    # from a null verdict alone: found by review, 2026-07-22, many update
+    # entities (every Zigbee/ZHA device firmware update, for one, the exact
+    # category this project's own rollout-pacing feature paces) have no
+    # release_url at all and can never be identified, "not yet rated" and
+    # "can never be rated" look identical as a bare null verdict otherwise.
+    # The panel uses this to hide vote controls entirely for these, instead
+    # of offering a button that would always fail.
+    identity = _resolve_identity_for_version(hass, data, msg["entity_id"], msg["version"])
+    # Deliberately always the uncached fetch, never CommunityVerdictManager's
+    # own time-cached entry (tried once, reverted live 2026-07-22): that
+    # cache is fine for the passive Updates-tab badge, up to an hour stale
+    # is invisible there, but a user opening this exact dialog to check on a
+    # vote they just cast found it showing that same up-to-an-hour-old
+    # cached answer even after clicking the panel's own refresh button,
+    # since nothing about a manual dialog open invalidates that cache
+    # early. One extra live HTTP GET per dialog open is the right,
+    # deliberate price for "always tell the truth right now" on an
+    # interactive, user-initiated check.
+    verdict = await async_fetch_verdict_uncached(hass, identity) if identity is not None else None
+    # Locally tracked, not derived from `verdict` itself: community-votes'
+    # own aggregate never distinguishes "your vote" from anyone else's, and
+    # can lag behind a vote actually being submitted (found live,
+    # 2026-07-22: right after voting, the fetched count still read as if
+    # nobody had). The panel uses this to say "you and N others" instead of
+    # a bare count.
+    my_verdict = data["my_votes_manager"].my_verdict(identity.votes_path) if identity is not None else None
+    connection.send_result(
+        msg["id"], {"verdict": verdict, "identifiable": identity is not None, "my_verdict": my_verdict}
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/vote",
+        vol.Required("entity_id"): str,
+        # The exact version being voted on, either a specific install_log
+        # entry (the History tab) or the entity's own current pending
+        # version, see _release_url_for_version's own docstring for how the
+        # matching release_url is resolved from just this.
+        vol.Required("version"): str,
+        vol.Required("verdict"): vol.In(["healthy", "problematic"]),
+        vol.Optional("reason_category"): vol.In(REASON_CATEGORIES),
+        vol.Optional("notes"): str,
+        vol.Optional("link"): str,
+    }
+)
+async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    data = hass.data.get(DOMAIN)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+
+    identity = _resolve_identity_for_version(hass, data, msg["entity_id"], msg["version"])
+    if identity is None:
+        connection.send_error(msg["id"], "not_identifiable", "This update can't be identified for voting yet")
+        return
+
+    access_token = await data["github_auth_manager"].async_get_valid_access_token()
+    if access_token is None:
+        connection.send_error(msg["id"], "not_linked", "Link your GitHub account first")
+        return
+
+    # Checked before submitting, not derived from the vote itself: this is
+    # the one place that already knows whether you voted on this exact
+    # version before (my_votes.py), so the panel can say "updated" instead
+    # of "submitted" -- community-votes' own process-vote.yml now replaces
+    # a repeat vote from the same person instead of rejecting it as a
+    # duplicate (2026-07-23, direct user feedback: changing your mind about
+    # an update you already rated is a completely normal thing to want).
+    is_vote_update = data["my_votes_manager"].my_verdict(identity.votes_path) is not None
+
+    try:
+        await async_submit_vote(
+            hass,
+            access_token,
+            identity,
+            msg["verdict"],
+            msg.get("reason_category"),
+            msg.get("notes"),
+            msg.get("link"),
+        )
+    except Exception:
+        connection.send_error(msg["id"], "vote_failed", "Couldn't submit the vote, try again")
+        return
+    await data["my_votes_manager"].async_remember(identity.votes_path, msg["verdict"])
+    connection.send_result(msg["id"], {"updated": is_vote_update})
+
+
 def async_setup_websocket_api(hass: HomeAssistant) -> None:
     """Registers the commands once. Safe to call again on entry reload
     (e.g. after saving settings) -- HA raises on a duplicate registration,
@@ -354,3 +529,8 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _handle_unskip)
     websocket_api.async_register_command(hass, _handle_get_settings)
     websocket_api.async_register_command(hass, _handle_save_settings)
+    websocket_api.async_register_command(hass, _handle_github_link_start)
+    websocket_api.async_register_command(hass, _handle_github_link_status)
+    websocket_api.async_register_command(hass, _handle_github_unlink)
+    websocket_api.async_register_command(hass, _handle_vote)
+    websocket_api.async_register_command(hass, _handle_verdict_for_version)

@@ -190,9 +190,35 @@ const TRANSLATIONS = {
     col_impact: "Impact",
     dialog_current_version: "Installed version",
     dialog_new_version: "Latest version",
-    dialog_community_verdict: "Community verdict",
     dialog_community_verdict_disclaimer:
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
+    community_not_yet_rated: "Not yet rated by others",
+    community_vote_link_prompt: "Link your GitHub account in Settings to vote.",
+    community_vote_prompt: (version) => `How's version ${version} treating you?`,
+    community_report_toggle: "Report a known issue",
+    community_report_intro:
+      "Already know this update will cause problems, e.g. from the release notes? Report it before installing, so others are warned before they update too.",
+    community_vote_healthy: "Mark as healthy",
+    community_vote_problematic: "Report as problematic",
+    community_vote_submit: "Submit",
+    // `updated` (see websocket_api.py's own is_vote_update): a repeat vote
+    // on the same version now replaces your earlier one instead of being
+    // rejected, 2026-07-23, direct user feedback ("kan ik wel mijn stem
+    // wijzigen?") -- said plainly here instead of leaving the previous
+    // vote's confirmation text up as if this were the first time.
+    community_vote_confirmed_healthy: (updated) =>
+      updated ? "Vote updated to healthy." : "Marked as healthy. Thanks for helping others decide.",
+    community_vote_confirmed_problematic: (reason, updated) =>
+      updated ? `Vote updated to problematic: ${reason}.` : `Reported: ${reason}. Thanks for the heads-up.`,
+    community_vote_reason_required: "Pick a reason first.",
+    vote_field_reason_category: "Reason",
+    vote_field_notes: "Notes (optional)",
+    vote_field_link: "Issue or changelog link (optional)",
+    vote_reason_broken: "Broken functionality",
+    vote_reason_requires_newer: "Requires a newer HA version",
+    vote_reason_dev_build: "Dev/pre-release build",
+    vote_reason_breaking_change: "Breaking change",
+    vote_reason_other: "Other",
     dialog_release_announcement: "Release announcement",
     dialog_history_heading: "History",
     dialog_history_auto: "Automatically updated",
@@ -209,6 +235,16 @@ const TRANSLATIONS = {
     // and "Auto-update" (the auto-install mechanism's own details) below
     // it.
     enabled_section_title: "General",
+    community_section_title: "Community",
+    community_section_desc:
+      "Link your GitHub account to vote on whether an update turned out healthy or problematic, helping others decide.",
+    community_link: "Link GitHub account",
+    community_unlink: "Unlink",
+    community_linked_as: (username) => `Linked as @${username}`,
+    community_link_instructions: "Go to the page below and enter this code:",
+    community_link_waiting: "Waiting for you to approve on GitHub...",
+    community_link_timed_out: "The linking code expired before it was approved, try again.",
+    community_link_failed: "Linking failed or was declined, try again.",
     field_enabled: "Enabled",
     field_enabled_helper:
       "Pauses every automatic action below: no announcements, no automatic installs, and postponed updates stop being hidden from Home Assistant's own update count. Everything you've configured stays saved, it just isn't applied until you turn this back on.",
@@ -246,6 +282,19 @@ const TRANSLATIONS = {
       `${count} ${count === 1 ? "person" : "people"} reported this version as healthy`,
     community_verdict_problematic: (count) =>
       `${count} ${count === 1 ? "person" : "people"} reported this version as problematic`,
+    // Shown instead of the two above whenever this HA instance itself
+    // already voted (see my_votes.py), direct user feedback, 2026-07-22:
+    // "I can't see that I voted myself" -- `others` is the count minus your
+    // own vote, floored at 0 for the common case where community-votes
+    // hasn't processed it into the aggregate yet.
+    community_verdict_you_healthy: (others) =>
+      others === 0
+        ? "You reported this version as healthy"
+        : `You and ${others} ${others === 1 ? "other person" : "other people"} reported this version as healthy`,
+    community_verdict_you_problematic: (others) =>
+      others === 0
+        ? "You reported this version as problematic"
+        : `You and ${others} ${others === 1 ? "other person" : "other people"} reported this version as problematic`,
     // Count+pluralized, matching ha-config-section-updates.ts's own real
     // title_skipped/title_not_installable convention (confirmed against its
     // source: both are passed {count} and pluralize the same way
@@ -334,9 +383,30 @@ const TRANSLATIONS = {
     col_impact: "Impact",
     dialog_current_version: "Geïnstalleerde versie",
     dialog_new_version: "Nieuwste versie",
-    dialog_community_verdict: "Community-oordeel",
     dialog_community_verdict_disclaimer:
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
+    community_not_yet_rated: "Nog niet beoordeeld door anderen",
+    community_vote_link_prompt: "Koppel je GitHub-account in Instellingen om te stemmen.",
+    community_vote_prompt: (version) => `Hoe bevalt versie ${version} je?`,
+    community_report_toggle: "Meld een bekend probleem",
+    community_report_intro:
+      "Weet je al dat deze update problemen gaat geven, bijvoorbeeld via de release notes? Meld dat vast voordat je 'm installeert, zodat anderen gewaarschuwd zijn voordat ze zelf updaten.",
+    community_vote_healthy: "Markeer als probleemloos",
+    community_vote_problematic: "Meld als problematisch",
+    community_vote_submit: "Versturen",
+    community_vote_confirmed_healthy: (updated) =>
+      updated ? "Stem gewijzigd naar probleemloos." : "Gemarkeerd als probleemloos. Bedankt dat je anderen hiermee helpt.",
+    community_vote_confirmed_problematic: (reason, updated) =>
+      updated ? `Stem gewijzigd naar problematisch: ${reason}.` : `Gemeld: ${reason}. Bedankt voor de tip.`,
+    community_vote_reason_required: "Kies eerst een reden.",
+    vote_field_reason_category: "Reden",
+    vote_field_notes: "Toelichting (optioneel)",
+    vote_field_link: "Issue- of changelog-link (optioneel)",
+    vote_reason_broken: "Functionaliteit kapot",
+    vote_reason_requires_newer: "Vereist nieuwere HA-versie",
+    vote_reason_dev_build: "Dev/pre-release-build",
+    vote_reason_breaking_change: "Breaking change",
+    vote_reason_other: "Anders",
     dialog_release_announcement: "Release-aankondiging",
     dialog_history_heading: "Geschiedenis",
     dialog_history_auto: "Automatisch geüpdatet",
@@ -345,6 +415,16 @@ const TRANSLATIONS = {
     dialog_more_info: "Meer info",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
     enabled_section_title: "Algemeen",
+    community_section_title: "Community",
+    community_section_desc:
+      "Koppel je GitHub-account om te stemmen of een update probleemloos of problematisch bleek, en help zo anderen.",
+    community_link: "GitHub-account koppelen",
+    community_unlink: "Ontkoppelen",
+    community_linked_as: (username) => `Gekoppeld als @${username}`,
+    community_link_instructions: "Ga naar onderstaande pagina en voer deze code in:",
+    community_link_waiting: "Wachten tot je akkoord geeft op GitHub...",
+    community_link_timed_out: "De koppelcode is verlopen voordat 'm werd goedgekeurd, probeer het opnieuw.",
+    community_link_failed: "Koppelen is mislukt of geweigerd, probeer het opnieuw.",
     field_enabled: "Ingeschakeld",
     field_enabled_helper:
       "Pauzeert alle automatische acties hieronder: geen aankondigingen, geen automatische installaties, en uitgestelde updates worden niet langer verborgen voor Home Assistants eigen update-telling. Alles wat je hebt ingesteld blijft opgeslagen, het wordt alleen niet toegepast totdat je dit weer aanzet.",
@@ -371,6 +451,14 @@ const TRANSLATIONS = {
       `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze versie als probleemloos`,
     community_verdict_problematic: (count) =>
       `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze versie als problematisch`,
+    community_verdict_you_healthy: (others) =>
+      others === 0
+        ? "Jij meldde deze versie als probleemloos"
+        : `Jij en ${others} ${others === 1 ? "ander" : "anderen"} meldden deze versie als probleemloos`,
+    community_verdict_you_problematic: (others) =>
+      others === 0
+        ? "Jij meldde deze versie als problematisch"
+        : `Jij en ${others} ${others === 1 ? "ander" : "anderen"} meldden deze versie als problematisch`,
     group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,
     group_not_installable: (count) =>
       `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
@@ -428,6 +516,31 @@ function tabForPath(relativePath) {
 // time -- the section title itself (tr.size_*, shown once per size, with
 // its explanation) is what would otherwise have needed repeating.
 const SIZES = ["small", "medium", "big"];
+
+// vote_reason_* translation keys, one shared source of truth (see
+// _buildVoteControls): found by review, two independently hand-written
+// {value, label} arrays used to duplicate this mapping with inconsistent
+// relative order. Journey A (pending update, not yet installed) only
+// offers a filtered, reordered subset -- breaking change listed first
+// there, since a known breaking change (from the release notes) is the
+// whole reason that journey exists (direct user feedback, 2026-07-22).
+// Journey B (History tab, already installed) offers all five in the same
+// order community-votes' own vote.yml dropdown uses.
+const _VOTE_REASON_LABEL_KEYS = {
+  "broken functionality": "vote_reason_broken",
+  "requires a newer HA version": "vote_reason_requires_newer",
+  "is a dev/pre-release build": "vote_reason_dev_build",
+  "breaking change": "vote_reason_breaking_change",
+  other: "vote_reason_other",
+};
+const _JOURNEY_B_REASON_ORDER = [
+  "broken functionality",
+  "requires a newer HA version",
+  "is a dev/pre-release build",
+  "breaking change",
+  "other",
+];
+const _JOURNEY_A_REASON_ORDER = ["breaking change", "requires a newer HA version", "is a dev/pre-release build"];
 
 function fieldKind(name) {
   for (const size of SIZES) {
@@ -641,6 +754,36 @@ function verdictBadge(tr, u) {
     text: String(verdict.healthy_count),
     title: tr.community_verdict_healthy(verdict.healthy_count),
   };
+}
+
+// The dialog's own verdict line (icon + full sentence, see
+// _buildCommunitySection), folding in whether *this* HA instance already
+// voted (my_votes.py: community-votes' own aggregate never distinguishes
+// "your vote" from anyone else's, and can lag behind a vote actually being
+// submitted -- direct user feedback, 2026-07-22, "ik kan ook niet zien dat
+// ik zelf iets heb gestemd"). Only switches to the "you" wording when your
+// vote matches the leading direction shown (or nothing's leading yet, your
+// own vote just hasn't been counted): if you voted the opposite of what's
+// currently shown, the plain aggregate sentence is shown as-is rather than
+// guessing whether you're already one of that number.
+function communityVerdictLine(tr, verdict, myVerdict) {
+  const counts = verdict || { healthy_count: 0, problematic_count: 0 };
+  const leadingVerdict = counts.problematic_count > 0 ? "problematic" : counts.healthy_count > 0 ? "healthy" : null;
+
+  if (myVerdict && (leadingVerdict === null || leadingVerdict === myVerdict)) {
+    const total = myVerdict === "problematic" ? counts.problematic_count : counts.healthy_count;
+    const others = Math.max(0, total - 1);
+    return {
+      icon: myVerdict === "problematic" ? ICON_ALERT : ICON_THUMB_UP,
+      text:
+        myVerdict === "problematic"
+          ? tr.community_verdict_you_problematic(others)
+          : tr.community_verdict_you_healthy(others),
+    };
+  }
+
+  const badge = verdictBadge(tr, { community_verdict: verdict });
+  return badge ? { icon: badge.icon, text: badge.title } : { icon: null, text: tr.community_not_yet_rated };
 }
 
 // Grouped by status, not by domain/category (changed 2026-07-16, direct
@@ -906,6 +1049,17 @@ function escapeHtml(value) {
 // install/save) -- each one flips the button into its progress state,
 // awaits its own action, then reports success/error via the button's own
 // real API instead of hand-rolling the same try/catch four times.
+//
+// progress is reset in a `finally`, always, not only on error -- verified
+// against ha-progress-button's own real source (home-assistant/frontend,
+// stable tag 20260624.6): actionSuccess()/actionError() only ever toggle a
+// temporary 2-second checkmark/alert overlay, they never touch `progress`
+// itself, which alone drives the underlying ha-button's own spinner
+// (`.loading=${this.progress}`). Every other caller of this helper never
+// noticed, since cancel/skip/unskip/link/unlink all rebuild/replace the
+// button within that 2-second window -- but a vote button that stays in
+// place spun forever once the checkmark faded and `progress` was still
+// true underneath it (found live, 2026-07-22).
 async function _runProgressAction(btn, fn) {
   btn.progress = true;
   try {
@@ -913,6 +1067,7 @@ async function _runProgressAction(btn, fn) {
     btn.actionSuccess();
   } catch (err) {
     btn.actionError();
+  } finally {
     btn.progress = false;
   }
 }
@@ -1148,6 +1303,10 @@ class UpdateManagerPanel extends HTMLElement {
     dialog.addEventListener("closed", () => {
       dialog.open = false;
       this._dialogEntityId = null;
+      // Found by review: this used to leave a stale historyEntry behind,
+      // harmless today (every read of it is guarded by _dialogEntityId
+      // first) but dead state that's an easy trap for a future reader.
+      this._dialogHistoryEntry = null;
     });
     this.shadowRoot.appendChild(dialog);
     this._dialogEl = dialog;
@@ -1294,12 +1453,29 @@ class UpdateManagerPanel extends HTMLElement {
   // close/reopen flicker.
   async _afterDialogAction(entityId) {
     await this._loadAll();
-    if (this._dialogEntityId === entityId) this._openDetailDialog(entityId);
+    // this._dialogHistoryEntry, not a bare entityId re-open: found by
+    // review, this used to drop back to Journey A scope (the entity's own
+    // current pending version) even if the dialog was actually opened for
+    // a specific History entry (Journey B) -- u is looked up by entityId
+    // alone in _openDetailDialog, so an entity with both a past history
+    // entry *and* a new pending update would silently lose which version
+    // was actually being voted on the moment any action button re-rendered
+    // the dialog.
+    if (this._dialogEntityId === entityId) this._openDetailDialog(entityId, this._dialogHistoryEntry);
     this._renderContent();
   }
 
   _renderContent() {
     if (!this._contentEl) return;
+    // Found by review: the device-flow poll (_buildCommunityCard) used to
+    // only ever get cleared by rebuilding the Settings card itself, so
+    // switching to another tab mid-poll (waiting for GitHub approval) left
+    // it running against a now-detached statusContainer, still popping a
+    // "timed out"/"failed" toast on whatever tab the user navigated to.
+    if (this._tab !== "settings" && this._communityLinkPollTimer) {
+      clearInterval(this._communityLinkPollTimer);
+      this._communityLinkPollTimer = null;
+    }
     const hasData = this._updates !== null;
     this._contentEl.innerHTML = "";
     // All three tabs now share the same centered/padded page grid (changed
@@ -1684,7 +1860,7 @@ class UpdateManagerPanel extends HTMLElement {
         const row = this._buildListRow(
           entry.entity_id,
           supporting,
-          () => this._openDetailDialog(entry.entity_id),
+          () => this._openDetailDialog(entry.entity_id, entry),
           badge
         );
         const card = document.createElement("ha-card");
@@ -1714,7 +1890,7 @@ class UpdateManagerPanel extends HTMLElement {
   // ha-more-info-state-header.ts's layout), status uses ha-alert (real
   // color/left-border treatment, not a plain paragraph), and version facts
   // use the same key/value ".row" pattern more-info-update.ts itself uses.
-  _openDetailDialog(entityId) {
+  _openDetailDialog(entityId, historyEntry = null) {
     const tr = this._tr;
     const dialog = this._dialogEl;
     // Tracks which entity the dialog is currently showing -- lets an
@@ -1722,6 +1898,11 @@ class UpdateManagerPanel extends HTMLElement {
     // if the dialog closes or gets reopened for a different entity before
     // it resolves.
     this._dialogEntityId = entityId;
+    this._dialogHistoryEntry = historyEntry;
+    // Shared by every async fetch this method kicks off (release notes,
+    // verdict_for_version, github_link_status) instead of each repeating
+    // the same `this._dialogEntityId !== entityId` check inline.
+    const isDialogStale = () => this._dialogEntityId !== entityId;
     // Live-updated by _updateDialogProgress (see set hass) as real
     // state_changed pushes stream in, exactly like more-info-update.ts's
     // own reactive stateObj -- not something this one-shot render call
@@ -1739,6 +1920,18 @@ class UpdateManagerPanel extends HTMLElement {
     const state = entityState(this._hass, entityId);
     const u = this._updates.find((x) => x.entity_id === entityId);
     const sizeShort = u ? tr[`size_${u.version_size}_short`] || u.version_size : null;
+
+    // Built here (rather than inline further down) so it can be inserted
+    // at the right spot below regardless of which branch that turns out to
+    // be: right after the release-link row for a pending update, or right
+    // after the header for a purely historical entity with no pending
+    // update at all. Direct user feedback, 2026-07-22: sitting below the
+    // release notes/summary felt wrong, and the section itself felt
+    // cluttered -- this now reads as one more "quick fact" alongside
+    // current/new version and the release link, and starts collapsed
+    // (hidden) until the identifiable check resolves, same reasoning as
+    // before.
+    const communitySection = this._buildCommunitySection(tr, entityId, historyEntry, u, isDialogStale);
 
     // state-info + a right-aligned ".state" value, in a
     // ".horizontal.justified.layout" row -- not hand-laid-out, this is the
@@ -1789,6 +1982,14 @@ class UpdateManagerPanel extends HTMLElement {
         header.appendChild(stateValue);
       }
       body.appendChild(header);
+    }
+
+    // No pending update at all (a purely historical entity opened from the
+    // History tab): nothing else precedes this, so it goes right after the
+    // header. The `u` case below places it further down instead, among the
+    // other quick facts.
+    if (!u && communitySection) {
+      body.appendChild(communitySection);
     }
 
     if (u) {
@@ -1945,44 +2146,7 @@ class UpdateManagerPanel extends HTMLElement {
         body.appendChild(row);
       }
 
-      // Its own section, own heading, own divider, not folded into the rows
-      // above: direct user feedback, 2026-07-22, this is also where a
-      // future vote button belongs once voting itself is built (not this
-      // read-only slice), so it needs a real home now rather than being
-      // squeezed into the version/impact rows.
-      const dialogVerdictInfo = verdictBadge(tr, u);
-      if (dialogVerdictInfo) {
-        body.appendChild(document.createElement("hr"));
-        const communityHeading = document.createElement("h3");
-        communityHeading.textContent = tr.dialog_community_verdict;
-        body.appendChild(communityHeading);
-
-        // Same friendly sentence the list badge's own tooltip already uses
-        // (see verdictBadge/community_verdict_healthy/_problematic), not a
-        // terser "N healthy, N problematic": direct user feedback,
-        // 2026-07-22, a full sentence reads better once it has its own
-        // section, not just a compact hover hint.
-        const communityContent = document.createElement("div");
-        communityContent.className = "dialog-community";
-        const communityIcon = document.createElement("ha-svg-icon");
-        communityIcon.path = dialogVerdictInfo.icon;
-        communityContent.appendChild(communityIcon);
-        const communityText = document.createElement("span");
-        communityText.textContent = dialogVerdictInfo.title;
-        communityContent.appendChild(communityText);
-        body.appendChild(communityContent);
-
-        // Found by review, 2026-07-22: FUTURE.md's own disclaimer
-        // requirement for this feature ("a clear, unavoidable disclaimer
-        // with every verdict, not just in the README") had no visible text
-        // anywhere in this UI at all. Placed here, not just the badge's
-        // hover tooltip: unlike a tooltip, this is always visible whenever
-        // a verdict is shown, no hover needed.
-        const communityDisclaimer = document.createElement("p");
-        communityDisclaimer.className = "hint";
-        communityDisclaimer.textContent = tr.dialog_community_verdict_disclaimer;
-        body.appendChild(communityDisclaimer);
-      }
+      if (communitySection) body.appendChild(communitySection);
 
       // Release notes. UpdateEntityFeature.RELEASE_NOTES = 16
       // (homeassistant/components/update/const.py): entities that support
@@ -2005,7 +2169,7 @@ class UpdateManagerPanel extends HTMLElement {
             // Stale by the time it resolves (dialog closed, or reopened
             // for a different entity) -- drop it rather than inserting
             // into a container nobody's looking at anymore.
-            if (this._dialogEntityId !== entityId || !notes) return;
+            if (isDialogStale() || !notes) return;
             const markdown = document.createElement("ha-markdown");
             markdown.content = notes;
             notesContainer.appendChild(markdown);
@@ -2021,7 +2185,6 @@ class UpdateManagerPanel extends HTMLElement {
         }
       }
 
-      body.appendChild(document.createElement("hr"));
     }
 
     // Skipped entirely when there's no history at all, not shown with an
@@ -2411,7 +2574,371 @@ class UpdateManagerPanel extends HTMLElement {
     // see _scheduleAutosave), direct user feedback: "kunnen we niet direct
     // saven bij elke edit ipv via een losse button?".
 
+    wrap.appendChild(this._buildCommunityCard(tr));
+
     return wrap;
+  }
+
+  // Account linking only (read-only slice, 2026-07-22): no voting UI yet,
+  // just "is a GitHub account linked or not". Device Flow, not the usual
+  // OAuth redirect: no client secret needed anywhere, matching this whole
+  // feature's own "no hosted server" principle (see FUTURE.md/
+  // github_auth.py). this._communityLinkPollTimer is cleared unconditionally
+  // up front, not just on success/failure: rebuilding this card (a tab
+  // switch, any other settings re-render) must never leave a previous
+  // card's poll loop running detached in the background.
+  _buildCommunityCard(tr) {
+    if (this._communityLinkPollTimer) {
+      clearInterval(this._communityLinkPollTimer);
+      this._communityLinkPollTimer = null;
+    }
+
+    const card = document.createElement("ha-card");
+    card.outlined = true;
+    card.header = tr.community_section_title;
+
+    const body = document.createElement("div");
+    body.className = "card-content";
+
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = tr.community_section_desc;
+    body.appendChild(hint);
+
+    const statusContainer = document.createElement("div");
+    body.appendChild(statusContainer);
+    card.appendChild(body);
+
+    const renderNotLinked = () => {
+      if (this._communityLinkPollTimer) {
+        clearInterval(this._communityLinkPollTimer);
+        this._communityLinkPollTimer = null;
+      }
+      statusContainer.innerHTML = "";
+      const linkBtn = document.createElement("ha-progress-button");
+      linkBtn.appearance = "filled";
+      linkBtn.label = tr.community_link;
+      linkBtn.addEventListener("click", () =>
+        _runProgressAction(linkBtn, async () => {
+          const result = await this._hass.callWS({ type: "update_manager/github_link_start" });
+          renderPending(result);
+        })
+      );
+      statusContainer.appendChild(linkBtn);
+    };
+
+    const renderLinked = (username) => {
+      statusContainer.innerHTML = "";
+      const linkedText = document.createElement("p");
+      linkedText.textContent = tr.community_linked_as(username);
+      statusContainer.appendChild(linkedText);
+      const unlinkBtn = document.createElement("ha-progress-button");
+      unlinkBtn.appearance = "plain";
+      unlinkBtn.label = tr.community_unlink;
+      unlinkBtn.addEventListener("click", () =>
+        _runProgressAction(unlinkBtn, async () => {
+          await this._hass.callWS({ type: "update_manager/github_unlink" });
+          renderNotLinked();
+        })
+      );
+      statusContainer.appendChild(unlinkBtn);
+    };
+
+    const renderPending = (result) => {
+      statusContainer.innerHTML = "";
+      const instructions = document.createElement("p");
+      instructions.textContent = tr.community_link_instructions;
+      statusContainer.appendChild(instructions);
+
+      const codeEl = document.createElement("p");
+      codeEl.className = "community-link-code";
+      codeEl.textContent = result.user_code;
+      statusContainer.appendChild(codeEl);
+
+      const link = document.createElement("a");
+      link.href = result.verification_uri;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = result.verification_uri;
+      statusContainer.appendChild(link);
+
+      const waiting = document.createElement("p");
+      waiting.className = "hint";
+      waiting.textContent = tr.community_link_waiting;
+      statusContainer.appendChild(waiting);
+
+      const deadline = Date.now() + result.expires_in * 1000;
+      this._communityLinkPollTimer = setInterval(async () => {
+        if (Date.now() > deadline) {
+          renderNotLinked();
+          this._showToast(tr.community_link_timed_out);
+          return;
+        }
+        const status = await this._hass.callWS({ type: "update_manager/github_link_status" });
+        if (status.status === "linked") {
+          renderLinked(status.username);
+        } else if (status.status === "failed") {
+          renderNotLinked();
+          this._showToast(tr.community_link_failed);
+        }
+      }, 3000);
+    };
+
+    this._hass.callWS({ type: "update_manager/github_link_status" }).then((status) => {
+      if (status.status === "linked") renderLinked(status.username);
+      else renderNotLinked();
+    });
+
+    return card;
+  }
+
+  // The dialog's own Community section: a compact verdict readout plus
+  // vote controls, scoped to whichever version applies -- a specific
+  // History entry (Journey B, votingVersion = historyEntry.to_version) or
+  // the entity's own current pending one (Journey A, votingVersion =
+  // u.latest_version). Returns null (nothing to build or insert) if
+  // neither applies. Built as a standalone element rather than appended
+  // inline, so _openDetailDialog can insert it wherever it currently
+  // belongs among the dialog's other content instead of this method
+  // deciding that itself.
+  //
+  // Hidden until the identifiable check below resolves, so an
+  // unidentifiable entity (e.g. a Zigbee device update with no release_url
+  // and no recognized vendor device firmware) never flashes content it's
+  // then immediately hidden again. The disclaimer that used to be its own
+  // permanent paragraph is now the row's own `title` tooltip instead --
+  // direct user feedback, 2026-07-22: the section read as cluttered, and a
+  // sentence that's the same for every single vote didn't need to always
+  // cost its own line.
+  _buildCommunitySection(tr, entityId, historyEntry, u, isDialogStale) {
+    const votingVersion = historyEntry ? historyEntry.to_version : u ? u.latest_version : null;
+    if (!votingVersion) return null;
+
+    const section = document.createElement("div");
+    section.className = "dialog-community-section";
+    section.hidden = true;
+    section.appendChild(document.createElement("hr"));
+
+    // The question and the verdict readout share their own tight-gapped
+    // group, separate from the section's own wider gap to the action
+    // controls below -- direct user feedback, 2026-07-22: uniform spacing
+    // throughout made the whole section read as one dense stack, with no
+    // visual cue that the top two lines are "information" and what's below
+    // is "things you can do about it".
+    const infoGroup = document.createElement("div");
+    infoGroup.className = "dialog-community-info";
+    section.appendChild(infoGroup);
+
+    if (historyEntry) {
+      // A friendly question, not a dry "voting on version X" statement --
+      // direct user feedback, 2026-07-22: still names the exact version
+      // (the whole reason this line exists at all), just asked like a
+      // person would rather than stated like a system log. Normal text
+      // weight, not `.hint`: this is the section's own lead line now, not
+      // a secondary detail.
+      const scopeLine = document.createElement("p");
+      scopeLine.textContent = tr.community_vote_prompt(historyEntry.to_version);
+      infoGroup.appendChild(scopeLine);
+    }
+
+    // Icon + sentence, not a separate heading plus a separate disclaimer
+    // paragraph on top -- reuses verdictBadge (the exact same function the
+    // Updates-tab row's own pill already calls) so the icon/wording match
+    // exactly, instead of re-deriving the healthy/problematic branch here.
+    // The icon is only ever appended once there's a real badge to show, not
+    // created upfront and toggled via .hidden -- found live, 2026-07-22:
+    // ha-svg-icon's own shadow-DOM styles set `:host { display: inline-flex
+    // }` unconditionally, with no `:host([hidden])` override, so the
+    // `hidden` attribute never actually collapsed it, only left an empty,
+    // pathless icon-sized gap sitting in front of the text.
+    const verdictRow = document.createElement("div");
+    verdictRow.className = "dialog-community-verdict-line";
+    verdictRow.title = tr.dialog_community_verdict_disclaimer;
+    const verdictText = document.createElement("span");
+    verdictText.textContent = tr.community_not_yet_rated;
+    verdictRow.appendChild(verdictText);
+    infoGroup.appendChild(verdictRow);
+
+    const controlsContainer = document.createElement("div");
+    controlsContainer.className = "dialog-vote";
+    section.appendChild(controlsContainer);
+
+    (async () => {
+      let result;
+      try {
+        result = await this._hass.callWS({
+          type: "update_manager/verdict_for_version",
+          entity_id: entityId,
+          version: votingVersion,
+        });
+      } catch {
+        return;
+      }
+      // Stale by the time it resolves (dialog closed, or reopened for a
+      // different entity) -- same staleness guard the release-notes fetch
+      // uses.
+      if (isDialogStale() || !result.identifiable) return;
+      section.hidden = false;
+      const line = communityVerdictLine(tr, result.verdict, result.my_verdict);
+      verdictText.textContent = line.text;
+      if (line.icon) {
+        const verdictIcon = document.createElement("ha-svg-icon");
+        verdictIcon.path = line.icon;
+        verdictRow.insertBefore(verdictIcon, verdictText);
+      }
+
+      const status = await this._hass.callWS({ type: "update_manager/github_link_status" });
+      if (isDialogStale()) return;
+      if (status.status !== "linked") {
+        const prompt = document.createElement("p");
+        prompt.className = "hint";
+        prompt.textContent = tr.community_vote_link_prompt;
+        controlsContainer.appendChild(prompt);
+        return;
+      }
+      this._buildVoteControls(controlsContainer, tr, entityId, votingVersion, !!historyEntry);
+    })();
+
+    return section;
+  }
+
+  // The dialog's own vote controls (see _openDetailDialog's Community
+  // section), only ever built once the caller already confirmed the
+  // account is linked and this exact version is identifiable. Two journeys,
+  // asked for by direct user feedback (2026-07-22) after a careful think-
+  // through of the actual user flows involved:
+  //
+  // - Journey A, allowHealthy=false (opened from the Updates tab, for a
+  //   still-*pending* update): there's no firsthand experience to report
+  //   yet, so no "healthy" button, and the mini-form is collapsed behind a
+  //   toggle (same collapse mechanism Journey B's own "problematic" form
+  //   already uses, see toggleBtn below) -- direct user feedback,
+  //   2026-07-22: an always-open 3-field form made this dialog feel
+  //   cluttered for what's a rare, optional action. Limited to the three
+  //   reasons knowable before installing at all -- already-documented
+  //   release-notes issues (breaking change, requires a newer HA version,
+  //   a dev/pre-release build). Letting someone warn others about a known
+  //   breaking change before anyone actually has to eat it was the whole
+  //   point of adding this: direct user feedback was that requiring an
+  //   install-first, break-first, warn-only-after approach would be a
+  //   strange way to handle a problem that's already documented in the
+  //   release notes ahead of time.
+  // - Journey B, allowHealthy=true (opened from the History tab, for a
+  //   specific *installed* -- or downgraded-to -- version): full voting,
+  //   "healthy" is a single click, "problematic" expands the same mini-form
+  //   with all five reasons, matching the real community-votes issue
+  //   form's own full set.
+  //
+  // A successful vote replaces `container`'s own contents with a plain
+  // confirmation line, not a toast alone -- direct user feedback,
+  // 2026-07-22: community-votes' own verdict count only updates once its
+  // Action has actually processed the new issue, which can take a moment,
+  // and re-fetching right after voting almost always still showed the
+  // pre-vote count/"not yet rated" text, reading as if the vote hadn't
+  // registered at all. This is a deliberately optimistic, local
+  // confirmation of what was just submitted, not a claim about the real,
+  // external vote count (that still updates the normal way, next time this
+  // dialog is opened fresh). Every failure surfaces the backend's own
+  // specific reason via _showToast (not_linked/not_identifiable/
+  // vote_failed, see websocket_api.py's own _handle_vote) instead.
+  _buildVoteControls(container, tr, entityId, version, allowHealthy) {
+    const showConfirmed = (text) => {
+      container.innerHTML = "";
+      const confirmed = document.createElement("p");
+      confirmed.className = "dialog-community-confirmed";
+      confirmed.textContent = text;
+      container.appendChild(confirmed);
+    };
+
+    const submitVote = async (verdict, extra) => {
+      try {
+        // Returns whether this replaced an earlier vote of yours (see
+        // websocket_api.py's own is_vote_update), not derived here --
+        // community-votes' own process-vote.yml now updates a repeat vote
+        // in place instead of rejecting it as a duplicate (2026-07-23).
+        return await this._hass.callWS({ type: "update_manager/vote", entity_id: entityId, version, verdict, ...extra });
+      } catch (err) {
+        this._showToast((err && err.message) || String(err));
+        throw err;
+      }
+    };
+
+    const formContainer = document.createElement("div");
+    formContainer.hidden = true;
+
+    if (allowHealthy) {
+      const healthyBtn = document.createElement("ha-progress-button");
+      healthyBtn.appearance = "filled";
+      healthyBtn.label = tr.community_vote_healthy;
+      healthyBtn.addEventListener("click", () =>
+        _runProgressAction(healthyBtn, async () => {
+          const result = await submitVote("healthy", {});
+          showConfirmed(tr.community_vote_confirmed_healthy(result.updated));
+        })
+      );
+      container.appendChild(healthyBtn);
+    }
+
+    const toggleBtn = document.createElement("ha-button");
+    toggleBtn.appearance = "plain";
+    toggleBtn.textContent = allowHealthy ? tr.community_vote_problematic : tr.community_report_toggle;
+    toggleBtn.addEventListener("click", () => {
+      formContainer.hidden = !formContainer.hidden;
+    });
+    container.appendChild(toggleBtn);
+    container.appendChild(formContainer);
+
+    if (!allowHealthy) {
+      const intro = document.createElement("p");
+      intro.className = "hint";
+      intro.textContent = tr.community_report_intro;
+      formContainer.appendChild(intro);
+    }
+
+    // Reason options limited to the three release-notes-knowable ones for
+    // Journey A (see this method's own docstring above) -- "broken
+    // functionality" and "other" both require having actually run the
+    // version, which Journey A's caller never has.
+    const reasonOptions = (allowHealthy ? _JOURNEY_B_REASON_ORDER : _JOURNEY_A_REASON_ORDER).map((value) => ({
+      value,
+      label: tr[_VOTE_REASON_LABEL_KEYS[value]],
+    }));
+
+    const formData = { reason_category: "", notes: "", link: "" };
+    const form = document.createElement("ha-form");
+    form.hass = this._hass;
+    form.schema = [
+      { name: "reason_category", selector: { select: { options: reasonOptions } } },
+      { name: "notes", selector: { text: { multiline: true } } },
+      { name: "link", selector: { text: {} } },
+    ];
+    form.data = formData;
+    form.computeLabel = (s) => tr[`vote_field_${s.name}`];
+    form.addEventListener("value-changed", (e) => {
+      Object.assign(formData, e.detail.value);
+      form.data = { ...formData };
+    });
+    formContainer.appendChild(form);
+
+    const submitBtn = document.createElement("ha-progress-button");
+    submitBtn.appearance = "filled";
+    submitBtn.label = tr.community_vote_submit;
+    submitBtn.addEventListener("click", () =>
+      _runProgressAction(submitBtn, async () => {
+        if (!formData.reason_category) {
+          this._showToast(tr.community_vote_reason_required);
+          throw new Error("reason_category required");
+        }
+        const result = await submitVote("problematic", {
+          reason_category: formData.reason_category,
+          notes: formData.notes || undefined,
+          link: formData.link || undefined,
+        });
+        const reasonLabel = tr[_VOTE_REASON_LABEL_KEYS[formData.reason_category]];
+        showConfirmed(tr.community_vote_confirmed_problematic(reasonLabel, result.updated));
+      })
+    );
+    formContainer.appendChild(submitBtn);
   }
 
   // "Update rules": plain and functional -- the earlier "Stoplicht"/
@@ -2791,7 +3318,44 @@ class UpdateManagerPanel extends HTMLElement {
         font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color);
       }
       .dialog-content hr { border-color: var(--divider-color); border-bottom: none; margin: 0; }
-      .dialog-community { display: flex; align-items: center; gap: var(--ha-space-2, 8px); color: var(--primary-text-color); }
+      /* :not([hidden]), not a bare .dialog-community-section selector --
+         found live, 2026-07-22: a bare class selector has the exact same
+         specificity as the UA's own [hidden] rule, and since this one comes
+         later in the cascade it was winning, silently keeping the section's
+         "not yet rated" placeholder text visible even for an entity that
+         turned out not identifiable at all (section.hidden = true was never
+         actually taking effect). :not([hidden]) only matches while the
+         attribute is absent, so [hidden] governs cleanly on its own once
+         it's set. */
+      /* A wider gap than infoGroup's own (see below) between the divider,
+         the info group, and the action controls -- three distinct blocks,
+         not one uniform stack. */
+      .dialog-community-section:not([hidden]) { display: flex; flex-direction: column; gap: var(--ha-space-3, 12px); }
+      .dialog-community-section p { margin: 0; }
+      /* Tight, not the section's own wider gap: the question and the
+         verdict readout read as one connected pair of facts, found live,
+         2026-07-22 -- see _buildCommunitySection's own comment. */
+      .dialog-community-info { display: flex; flex-direction: column; gap: var(--ha-space-1, 4px); }
+      .dialog-community-verdict-line { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
+      .dialog-community-verdict-line ha-svg-icon { --mdc-icon-size: 18px; flex-shrink: 0; }
+      .dialog-vote { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ha-space-2, 8px); }
+      .dialog-vote > div { width: 100%; }
+      /* :not(:first-child), not an unconditional margin-top -- found live,
+         2026-07-22: Journey B's form has no intro paragraph before it (it's
+         formContainer's own first child there), so this used to double up
+         with .dialog-vote's own flex gap above it, one gap too many between
+         the buttons and the form. Journey A's intro paragraph still gets
+         this same spacing below it, since ha-form isn't the first child
+         there. */
+      .dialog-vote ha-form:not(:first-child) { margin-top: var(--ha-space-2, 8px); }
+      .dialog-vote ha-form { display: block; }
+      .dialog-community-confirmed { color: var(--primary-text-color); }
+      /* Large and letter-spaced, meant to be read off a phone/laptop while
+         typing it into GitHub's own device page, see _buildCommunityCard. */
+      .community-link-code {
+        font-family: var(--ha-font-family-code, monospace); font-size: var(--ha-font-size-2xl, 28px);
+        letter-spacing: 0.15em; margin: var(--ha-space-2, 8px) 0;
+      }
       /* Empty (and invisible) whenever nothing's installing -- only ever
          holds a single ha-progress-bar, inserted/removed live by
          _updateDialogProgress, same spot more-info-update.ts's own

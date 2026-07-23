@@ -5,8 +5,10 @@ slice only, no voting, no OAuth, no settings toggle (confirmed with the
 user: pure reading, nothing sent, always on).
 
 Identity resolution itself (which category, which path) lives in
-hacs_identity.py's own resolve_votes_path, kept pure/HA-independent and
-unit-tested there rather than here, same reasoning as semver.py/staging.py.
+hacs_identity.py's own resolve_identity (pure, unit-tested, no homeassistant
+import) plus device_identity.py's resolve_full_identity on top of it (the
+two categories -- devices, apps -- that need a real hass to look up a
+device_registry entry), not here.
 
 Cache is time-based, not purely version-based like coordinator.py's own
 _async_get_available_since: found live 2026-07-22, testing against a real
@@ -28,7 +30,8 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .hacs_identity import resolve_votes_path
+from .device_identity import resolve_full_identity
+from .hacs_identity import ResolvedIdentity
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,6 +44,23 @@ VOTES_REPO_RAW_BASE = "https://raw.githubusercontent.com/HA-Update-Manager/commu
 # fresh vote or an updated count is noticed within an hour without refetching
 # on every single ~15-minute coordinator refresh tick either.
 _REFRESH_INTERVAL = timedelta(hours=1)
+
+
+async def _fetch_verdict_json(hass: HomeAssistant, votes_path: str) -> dict[str, Any] | None:
+    """Raw fetch, no caching: shared by async_get_verdict and
+    async_fetch_verdict_uncached below (found by review: both had copied
+    the same 404/raise_for_status/json(content_type=None) block). None only
+    for a confirmed 404 (not yet rated) -- everything else (timeout, 5xx,
+    DNS hiccup) is re-raised, since the two callers handle a transient
+    failure differently (one falls back to a stale cached value, the other
+    just treats it as a miss)."""
+    url = f"{VOTES_REPO_RAW_BASE}/votes/{votes_path}/_verdict.json"
+    session = async_get_clientsession(hass)
+    async with session.get(url, timeout=10) as response:
+        if response.status == 404:
+            return None
+        response.raise_for_status()
+        return await response.json(content_type=None)
 
 
 class CommunityVerdictManager:
@@ -101,28 +121,42 @@ class CommunityVerdictManager:
         if is_fresh:
             return cached_verdict
 
-        path = resolve_votes_path(entity_id, release_url, latest_version)
-        if path is None:
+        identity = resolve_full_identity(self.hass, entity_id, release_url, latest_version)
+        if identity is None:
             await self._async_remember(entity_id, latest_version, None)
             return None
 
-        url = f"{VOTES_REPO_RAW_BASE}/votes/{path}/_verdict.json"
-        session = async_get_clientsession(self.hass)
         try:
-            async with session.get(url, timeout=10) as response:
-                if response.status == 404:
-                    await self._async_remember(entity_id, latest_version, None)
-                    return None
-                response.raise_for_status()
-                verdict = await response.json(content_type=None)
+            verdict = await _fetch_verdict_json(self.hass, identity.votes_path)
         except Exception:
             # Transient (timeout, 5xx, DNS hiccup): logged, not surfaced as a
             # visible error. Falls back to whatever was last known for this
             # entity (even a stale record, so a badge doesn't flash on and
             # off just because one fetch hiccupped) instead of blanking it.
-            _LOGGER.debug("Couldn't fetch community verdict for %s from %s", entity_id, url, exc_info=True)
+            _LOGGER.debug("Couldn't fetch community verdict for %s", entity_id, exc_info=True)
             record = self._cache.get(entity_id)
             return record.get("verdict") if record else None
 
         await self._async_remember(entity_id, latest_version, verdict)
         return verdict
+
+
+async def async_fetch_verdict_uncached(hass: HomeAssistant, identity: ResolvedIdentity) -> dict[str, Any] | None:
+    """A direct, uncached lookup for an arbitrary already-resolved identity,
+    not necessarily the entity's own current pending version, e.g. reading/
+    voting from a specific History entry. Deliberately NOT
+    CommunityVerdictManager's own cache (keyed only by entity_id, one
+    record per entity, meant for the Updates-tab badge): reusing that here
+    would let a historical lookup silently overwrite that entity's own
+    "current pending version" cache entry, corrupting the badge. No caching
+    here at all, this is a rare, user-initiated, one-off lookup (opening a
+    History dialog), not a hot path worth optimizing. Takes the identity
+    directly rather than (entity_id, release_url, version): callers already
+    had to resolve it once to decide whether to call this at all (see
+    websocket_api.py's own _resolve_identity_for_version), no reason to
+    resolve it a second time here."""
+    try:
+        return await _fetch_verdict_json(hass, identity.votes_path)
+    except Exception:
+        _LOGGER.debug("Couldn't fetch community verdict for %s", identity.votes_path, exc_info=True)
+        return None

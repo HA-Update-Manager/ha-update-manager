@@ -15,9 +15,16 @@ time to be noticed and fixed before you commit to it.
   waiting period before it counts as ready.
 * **Auto-install, opt-in:** announced first with a cancellable countdown before anything installs,
   with an automatic backup when supported. Core, Supervisor, and OS updates always stay manual.
-* **Master pause switch:** pauses all of Update Manager's automatic behavior at once.
+* **Master pause switch:** pauses all of Update Manager's automatic behavior at once, also available
+  as a real switch entity for dashboards and automations.
 * **Hide postponed updates:** optionally keeps still-waiting updates out of Home Assistant's own
   sidebar update count until they're actually ready.
+* **Zigbee rollout pacing:** identical Zigbee devices (ZHA or Zigbee2MQTT) update one at a time instead
+  of all at once, protecting mesh stability.
+* **Community verdict and voting:** link your GitHub account to see whether other users found a
+  specific update version healthy or problematic, and cast your own vote from the Updates or History
+  tab. Covers HACS integrations, Home Assistant Core/Supervisor/OS, real vendor Zigbee device firmware,
+  and Supervisor add-ons.
 * **Sidebar panel:** an Updates tab with live install progress and an "update all" button, a History
   tab with changelogs, and an autosaving Settings tab.
 

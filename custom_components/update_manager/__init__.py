@@ -8,8 +8,10 @@ from homeassistant.core import HomeAssistant, State, callback
 from .community_verdict import CommunityVerdictManager
 from .const import CONF_ENABLED, CONF_HIDE_POSTPONED, DOMAIN
 from .coordinator import UpdateManagerCoordinator, excluded_entities_from_options, rules_from_options
+from .github_auth import GitHubAuthManager
 from .install_log import InstallLog
 from .install_manager import InstallManager, auto_install_rules_from_options
+from .my_votes import MyVotesManager
 from .panel import async_register_update_manager_panel
 from .rollout_manager import RolloutManager
 from .staging_skip import StagingSkipManager
@@ -27,6 +29,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # like rollout_manager.py's own set_recently_executed_setter does for a
     # genuine two-way dependency.
     community_verdict_manager = CommunityVerdictManager(hass)
+    # Same reasoning as community_verdict_manager just above: needs only
+    # hass, nothing else holds a reference into it (yet, a future voting
+    # feature will read it for a valid access token, not the other way
+    # around), so no setter/callback wiring needed here either.
+    github_auth_manager = GitHubAuthManager(hass)
+    # Same reasoning again: needs only hass, read by websocket_api.py's own
+    # verdict_for_version handler, written by its vote handler.
+    my_votes_manager = MyVotesManager(hass)
     coordinator = UpdateManagerCoordinator(hass, rules, excluded_entities_from_options(options), community_verdict_manager)
     install_log = InstallLog(hass)
     # Constructed before InstallManager/StagingSkipManager: both take a
@@ -77,6 +87,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         install_manager.async_load(),
         rollout_manager.async_load(),
         community_verdict_manager.async_load(),
+        github_auth_manager.async_load(),
+        my_votes_manager.async_load(),
     )
 
     @callback
@@ -110,6 +122,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "staging_skip_manager": staging_skip_manager,
         "rollout_manager": rollout_manager,
         "community_verdict_manager": community_verdict_manager,
+        "github_auth_manager": github_auth_manager,
+        "my_votes_manager": my_votes_manager,
     }
     async_setup_websocket_api(hass)
     await async_register_update_manager_panel(hass)

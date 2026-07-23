@@ -18,6 +18,19 @@ from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
+
+
+def device_for_entity(hass: HomeAssistant, entity_id: str) -> dr.DeviceEntry | None:
+    """The device_registry entry backing entity_id, or None if it has no
+    device at all. Shared by rollout_manager.py's own grouping and
+    device_identity.py's devices/apps identity resolution, both of which
+    otherwise needed the exact same entity_registry -> device_id ->
+    device_registry two-step (found by review)."""
+    entry = er.async_get(hass).async_get(entity_id)
+    if entry is None or entry.device_id is None:
+        return None
+    return dr.async_get(hass).async_get(entry.device_id)
 
 
 def is_zigbee2mqtt_device(hass: HomeAssistant, device: dr.DeviceEntry) -> bool:
