@@ -1542,14 +1542,14 @@ class UpdateManagerPanel extends HTMLElement {
   // close/reopen flicker.
   async _afterDialogAction(entityId) {
     await this._loadAll();
-    // this._dialogHistoryEntry, not a bare entityId re-open: found by
-    // review, this used to drop back to Journey A scope (the entity's own
-    // current pending version) even if the dialog was actually opened for
-    // a specific History entry (Journey B) -- u is looked up by entityId
-    // alone in _openDetailDialog, so an entity with both a past history
-    // entry *and* a new pending update would silently lose which version
-    // was actually being voted on the moment any action button re-rendered
-    // the dialog.
+    // this._dialogHistoryEntry, not a bare entityId re-open: preserves
+    // which History entry's card should stay expanded across this refresh
+    // (see _openDetailDialog's own entries.forEach/defaultExpandIndex,
+    // matched by installed_at+to_version, not object identity -- the
+    // this._loadAll() above just replaced this._installLog with a fresh
+    // array of fresh objects). Without this, any action button (Cancel/
+    // Skip/Unskip/etc succeeding) would silently reset back to the most
+    // recent entry instead of whichever one the user actually had open.
     if (this._dialogEntityId === entityId) this._openDetailDialog(entityId, this._dialogHistoryEntry);
     this._renderContent();
   }
@@ -2010,18 +2010,6 @@ class UpdateManagerPanel extends HTMLElement {
     const u = this._updates.find((x) => x.entity_id === entityId);
     const sizeShort = u ? tr[`size_${u.version_size}_short`] || u.version_size : null;
 
-    // Built here (rather than inline further down) so it can be inserted
-    // at the right spot below regardless of which branch that turns out to
-    // be: right after the release-link row for a pending update, or right
-    // after the header for a purely historical entity with no pending
-    // update at all. Direct user feedback, 2026-07-22: sitting below the
-    // release notes/summary felt wrong, and the section itself felt
-    // cluttered -- this now reads as one more "quick fact" alongside
-    // current/new version and the release link, and starts collapsed
-    // (hidden) until the identifiable check resolves, same reasoning as
-    // before.
-    const communitySection = this._buildCommunitySection(tr, entityId, historyEntry, u, isDialogStale);
-
     // state-info + a right-aligned ".state" value, in a
     // ".horizontal.justified.layout" row -- not hand-laid-out, this is the
     // real pair of components/classes state-card-update.ts itself uses for
@@ -2073,13 +2061,10 @@ class UpdateManagerPanel extends HTMLElement {
       body.appendChild(header);
     }
 
-    // No pending update at all (a purely historical entity opened from the
-    // History tab): nothing else precedes this, so it goes right after the
-    // header. The `u` case below places it further down instead, among the
-    // other quick facts.
-    if (!u && communitySection) {
-      body.appendChild(communitySection);
-    }
+    // A purely historical entity (no pending update at all) no longer gets
+    // a top-level community section here -- voting now lives inside each of
+    // its own History entries below instead (see the entries.forEach loop
+    // further down), consistently, whether or not something's pending.
 
     if (u) {
       // A live install-progress bar (indeterminate, or percentage-based
@@ -2244,7 +2229,16 @@ class UpdateManagerPanel extends HTMLElement {
         body.appendChild(row);
       }
 
-      if (communitySection) body.appendChild(communitySection);
+      // Journey A (report-only, no healthy button) unconditionally -- this
+      // is inherently about a not-yet-installed version, regardless of
+      // whatever History entry the dialog might also have been opened
+      // with (changed 2026-07-25: used to be derived from `!!historyEntry`,
+      // which could let a not-yet-installed version get voted "healthy" if
+      // a historyEntry also happened to be passed).
+      const pendingCommunitySection = this._buildCommunitySection(
+        tr, entityId, u.installed_version, u.latest_version, false, isDialogStale
+      );
+      if (pendingCommunitySection) body.appendChild(pendingCommunitySection);
 
       // Release notes. UpdateEntityFeature.RELEASE_NOTES = 16
       // (homeassistant/components/update/const.py): entities that support
@@ -2301,13 +2295,35 @@ class UpdateManagerPanel extends HTMLElement {
       // top-to-bottom as a timeline (newest first, same order the log
       // itself is already in). Each card is fully clickable when there's
       // anywhere to go (release notes to expand, or a release page to
-      // open), collapsed by default. Only the version jump + when +
-      // auto/manual pill is always visible, matching direct user feedback
-      // that a card should open to show its details rather than dumping
-      // everything inline.
+      // open). Only the version jump + when + auto/manual pill is always
+      // visible, matching direct user feedback that a card should open to
+      // show its details rather than dumping everything inline.
+      //
+      // Exactly one entry starts expanded, not all collapsed (changed
+      // 2026-07-25, direct user feedback: voting used to live in a single
+      // fixed section elsewhere in the dialog; now every entry gets its own
+      // vote section inline, so the single most relevant one should be
+      // visible immediately without a click). Defaults to the most recent
+      // entry (entries[0] -- this._installLog is already loaded newest-first,
+      // see _loadAll's own .slice().reverse()) unless the dialog was opened
+      // for one *specific* entry (historyEntry, from the History tab's own
+      // list), in which case that one starts expanded instead. Matched by
+      // installed_at+to_version, not object identity: _afterDialogAction
+      // reloads this._installLog (a fresh array of fresh objects) before
+      // re-opening the dialog with the same old historyEntry reference, so
+      // `===` would silently fail to re-match a structurally-identical entry
+      // after that reload.
+      const defaultExpandIndex = (() => {
+        if (!historyEntry) return 0;
+        const i = entries.findIndex(
+          (e) => e.installed_at === historyEntry.installed_at && e.to_version === historyEntry.to_version
+        );
+        return i !== -1 ? i : 0;
+      })();
+
       const list = document.createElement("div");
       list.className = "dialog-history";
-      entries.forEach((entry) => {
+      entries.forEach((entry, index) => {
         const card = document.createElement("ha-card");
         card.outlined = true;
 
@@ -2340,20 +2356,23 @@ class UpdateManagerPanel extends HTMLElement {
         end.slot = "end";
         end.className = "row-end";
         if (pill) end.appendChild(pill);
+        const isDefaultExpanded = index === defaultExpandIndex;
         const chevron = document.createElement("ha-svg-icon");
         chevron.path = ICON_CHEVRON_DOWN;
         chevron.className = "dialog-history-chevron";
+        chevron.classList.toggle("open", isDefaultExpanded);
         end.appendChild(chevron);
         row.appendChild(end);
         content.appendChild(row);
 
-        // Collapsed by default, toggled by hand (not ha-expansion-panel's
-        // own built-in toggle, see ICON_CHEVRON_DOWN's own comment) -- just
-        // a hidden attribute and a rotated icon, not a new component of its
-        // own.
+        // Toggled by hand (not ha-expansion-panel's own built-in toggle,
+        // see ICON_CHEVRON_DOWN's own comment) -- just a hidden attribute
+        // and a rotated icon, not a new component of its own. Collapsed by
+        // default, except for whichever one entry defaultExpandIndex above
+        // picked.
         const expandWrap = document.createElement("div");
         expandWrap.className = "dialog-history-notes-wrap";
-        expandWrap.hidden = true;
+        expandWrap.hidden = !isDefaultExpanded;
 
         // Same buildKeyValueRows the pending-update section above already
         // uses for installed/latest version + impact. Any fact this exact
@@ -2400,10 +2419,37 @@ class UpdateManagerPanel extends HTMLElement {
           expandWrap.appendChild(linkRow);
         }
 
+        // Built lazily, once, the first time this entry's card is expanded
+        // -- not eagerly for every entry when the dialog opens. Direct user
+        // feedback, 2026-07-25: voting moves here from a single fixed
+        // section elsewhere in the dialog, but websocket_api.py's own
+        // verdict_for_version handler is deliberately never cached ("one
+        // extra live HTTP GET... the right price for always tell the truth
+        // right now" -- see that handler's own docstring), so building this
+        // for every entry unconditionally would turn one dialog-open into N
+        // live outbound requests for an entity with N history entries.
+        // Always Journey B (allowHealthy=true): every entry here is, by
+        // definition, already installed. Never rebuilt again once built --
+        // re-collapsing and re-expanding the same entry just shows/hides
+        // the same content, no refetch.
+        let entryCommunitySection = null;
+        const ensureCommunitySection = () => {
+          if (entryCommunitySection) return;
+          entryCommunitySection = this._buildCommunitySection(
+            tr, entityId, entry.from_version, entry.to_version, true, isDialogStale
+          );
+          if (entryCommunitySection) {
+            expandWrap.appendChild(document.createElement("hr"));
+            expandWrap.appendChild(entryCommunitySection);
+          }
+        };
+        if (isDefaultExpanded) ensureCommunitySection();
+
         content.appendChild(expandWrap);
         row.addEventListener("click", () => {
           expandWrap.hidden = !expandWrap.hidden;
           chevron.classList.toggle("open", !expandWrap.hidden);
+          if (!expandWrap.hidden) ensureCommunitySection();
         });
 
         card.appendChild(content);
@@ -2756,14 +2802,23 @@ class UpdateManagerPanel extends HTMLElement {
   }
 
   // The dialog's own Community section: a compact verdict readout plus
-  // vote controls, scoped to whichever version applies -- a specific
-  // History entry (Journey B, votingVersion = historyEntry.to_version) or
-  // the entity's own current pending one (Journey A, votingVersion =
-  // u.latest_version). Returns null (nothing to build or insert) if
-  // neither applies. Built as a standalone element rather than appended
-  // inline, so _openDetailDialog can insert it wherever it currently
-  // belongs among the dialog's other content instead of this method
-  // deciding that itself.
+  // vote controls, scoped to the exact (fromVersion, toVersion) jump the
+  // caller supplies -- either the entity's own current pending jump
+  // (Journey A, `allowHealthy=false`, from _openDetailDialog's own `if (u)`
+  // block) or one specific History entry's own jump (Journey B,
+  // `allowHealthy=true`, from that entry's own expandable card, see the
+  // entries.forEach loop further down). Changed 2026-07-25: used to derive
+  // both the jump and the Journey from an ambient `historyEntry`/`u` pair
+  // (with `historyEntry` always winning), which only ever allowed one
+  // vote section per dialog and could let a not-yet-installed version get
+  // voted "healthy" if a historyEntry happened to also be passed --
+  // callers now supply everything explicitly, so this can be called once
+  // per History entry too, not just once per dialog. Returns null (nothing
+  // to build or insert) if either version is missing. Built as a
+  // standalone element rather than appended inline, so each caller can
+  // insert it wherever it belongs (among the pending-update's own facts,
+  // or inside one History entry's own expanded card) instead of this
+  // method deciding that itself.
   //
   // Hidden until the identifiable check below resolves, so an
   // unidentifiable entity (e.g. a Zigbee device update with no release_url
@@ -2773,18 +2828,8 @@ class UpdateManagerPanel extends HTMLElement {
   // direct user feedback, 2026-07-22: the section read as cluttered, and a
   // sentence that's the same for every single vote didn't need to always
   // cost its own line.
-  _buildCommunitySection(tr, entityId, historyEntry, u, isDialogStale) {
-    const votingVersion = historyEntry ? historyEntry.to_version : u ? u.latest_version : null;
-    // The version upgraded *from* -- a vote/verdict is about the exact jump
-    // (changed 2026-07-24, direct user feedback: going from 0.1.0 to 3.5.2
-    // is a different risk than going from 3.5.1 to 3.5.2, even though both
-    // land on the same version), not the destination version alone. Both
-    // journeys already have this in hand: historyEntry (Journey B) already
-    // carries its own from_version, u (Journey A) already carries its own
-    // installed_version, same as install_log.py/coordinator.py's own
-    // from_version/installed_version fields.
-    const fromVersion = historyEntry ? historyEntry.from_version : u ? u.installed_version : null;
-    if (!votingVersion || !fromVersion) return null;
+  _buildCommunitySection(tr, entityId, fromVersion, toVersion, allowHealthy, isDialogStale) {
+    if (!toVersion || !fromVersion) return null;
 
     const section = document.createElement("div");
     section.className = "dialog-community-section";
@@ -2812,7 +2857,7 @@ class UpdateManagerPanel extends HTMLElement {
     // jump, not just the destination -- see this method's own fromVersion
     // comment above for why that distinction matters.
     const scopeLine = document.createElement("p");
-    scopeLine.textContent = tr.community_vote_prompt(fromVersion, votingVersion);
+    scopeLine.textContent = tr.community_vote_prompt(fromVersion, toVersion);
     infoGroup.appendChild(scopeLine);
 
     // Icon + sentence, not a separate heading plus a separate disclaimer
@@ -2843,7 +2888,7 @@ class UpdateManagerPanel extends HTMLElement {
         result = await this._hass.callWS({
           type: "update_manager/verdict_for_version",
           entity_id: entityId,
-          version: votingVersion,
+          version: toVersion,
         });
       } catch {
         return;
@@ -2902,7 +2947,7 @@ class UpdateManagerPanel extends HTMLElement {
         controlsContainer.appendChild(prompt);
         return;
       }
-      this._buildVoteControls(controlsContainer, tr, entityId, votingVersion, !!historyEntry);
+      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy);
     })();
 
     return section;
@@ -3542,6 +3587,12 @@ class UpdateManagerPanel extends HTMLElement {
          component uses elsewhere in this file (Updates list), looking and
          feeling noticeably weaker by comparison. Direct user feedback. */
       .dialog-history-card ha-list-item-button { font-size: var(--ha-font-size-m, 14px); }
+      /* Same reset, same reasoning, for the community/vote section now
+         embedded per entry (2026-07-25): it's an action, not passive
+         changelog text, and should read the same size it does in the
+         pending-update dialog, not shrunk to this card's own compact
+         13px scope. */
+      .dialog-history-notes-wrap .dialog-community-section { font-size: var(--ha-font-size-m, 14px); }
       /* The chevron every history entry now has, expanding its own facts
          block (and changelog, if any) in place (see ICON_CHEVRON_DOWN/
          _openDetailDialog). Rotates on toggle the same way

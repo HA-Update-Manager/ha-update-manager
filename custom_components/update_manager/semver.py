@@ -52,6 +52,20 @@ _CALENDAR_VERSION_RE = re.compile(r"^20\d{2}\.(?:[1-9]|1[0-2])\.\d+$")
 # because every digit happens to also be a valid hex character.
 _GIT_COMMIT_RE = re.compile(r"^(?=.*[a-fA-F])[0-9a-fA-F]{6,40}$")
 
+# Exactly major.minor -- no patch component at all (e.g. "18.0", "18.1").
+# Distinct from strict semver (which requires all three) and from calendar
+# versioning (which requires a year-shaped first component): some
+# integrations/devices genuinely only ever report two numbers, with no
+# separate patch tier to be "small" against. Found live, 2026-07-25: this
+# used to silently fall through to "big" (the same conservative default any
+# genuinely unrecognized shape gets), even for as small a jump as 18.0 ->
+# 18.1.
+_SHORT_SEMVER_RE = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+
 
 class ParsedVersion(NamedTuple):
     major: int
@@ -110,6 +124,17 @@ def is_git_commit_version(version: str) -> bool:
     return bool(_GIT_COMMIT_RE.match(version.strip()))
 
 
+def is_short_semver_version(version: str) -> bool:
+    """True for a two-component major.minor version (no patch at all), e.g.
+    "18.1" -- checked independently of parse_semver/is_calendar_version,
+    same reasoning as those: a pure shape check, not tied to any one
+    entity/integration. A version that also happens to be valid strict
+    semver (three parts) never matches this too -- the trailing "$" anchor
+    means a third dot-separated component (even a valid one) fails the
+    match here, so there's no ambiguity between the two shapes."""
+    return bool(_SHORT_SEMVER_RE.match(strip_version_prefix(version)))
+
+
 def _parse_calendar(version: str) -> ParsedVersion:
     """Parses a calendar-style version (year.month.patch) into the same
     shape parse_semver returns, so the jump-comparison logic below can be
@@ -118,6 +143,18 @@ def _parse_calendar(version: str) -> ParsedVersion:
     candidate = strip_version_prefix(version)
     year, month, patch = (int(part) for part in candidate.split("."))
     return ParsedVersion(year, month, patch)
+
+
+def _parse_short_semver(version: str) -> ParsedVersion:
+    """Parses a two-component major.minor version into the same shape
+    parse_semver returns, patch fixed at 0 (there's no third component to
+    read) so the jump-comparison logic below can be reused unchanged. Only
+    meaningful once is_short_semver_version has already confirmed the
+    shape -- this doesn't re-validate it."""
+    candidate = strip_version_prefix(version)
+    core = candidate.split("-", 1)[0].split("+", 1)[0]
+    major, minor = (int(part) for part in core.split("."))
+    return ParsedVersion(major, minor, 0)
 
 
 def classify_version_size(previous: str, current: str) -> Size:
@@ -138,11 +175,21 @@ def classify_version_size(previous: str, current: str) -> Size:
     deliberately not "small", but a recognized, deliberate tracking choice
     rather than truly unknown either.
 
+    A two-component major.minor version (no patch at all, e.g. "18.0" ->
+    "18.1") on *both* sides is "medium" when the minor component changes,
+    same reasoning as the git-commit-hash case: there's no third, more
+    granular tier to call "small" against, so a real, ordered jump between
+    two recognized short-semver versions is a deliberately-tracked scheme,
+    not something to fall back to "big" for. Found live, 2026-07-25: this
+    used to be classified "big" purely for not being strict three-part
+    semver.
+
     "big" (treated conservatively, i.e. as if it might be a breaking change)
     covers everything else: either side not strict semver, exactly one side
-    (not both) using HA Core's calendar scheme or a commit hash, identical
-    hashes (no real jump to classify), or `current` not actually newer than
-    `previous` (e.g. a rollback or a re-announced identical version)."""
+    (not both) using HA Core's calendar scheme, a commit hash, or short
+    semver, identical hashes/versions (no real jump to classify), or
+    `current` not actually newer than `previous` (e.g. a rollback or a
+    re-announced identical version)."""
     prev_is_calendar = is_calendar_version(previous)
     curr_is_calendar = is_calendar_version(current)
     if prev_is_calendar and curr_is_calendar:
@@ -161,6 +208,19 @@ def classify_version_size(previous: str, current: str) -> Size:
     if prev_is_commit and curr_is_commit:
         return "big" if current == previous else "medium"
     if prev_is_commit or curr_is_commit:
+        return "big"
+
+    prev_is_short = is_short_semver_version(previous)
+    curr_is_short = is_short_semver_version(current)
+    if prev_is_short and curr_is_short:
+        prev = _parse_short_semver(previous)
+        curr = _parse_short_semver(current)
+        if curr <= prev:
+            return "big"
+        if curr.major != prev.major:
+            return "big"
+        return "medium"
+    if prev_is_short or curr_is_short:
         return "big"
 
     prev = parse_semver(previous)

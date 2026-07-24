@@ -119,6 +119,36 @@ class TestIsGitCommitVersion:
         assert not semver.is_git_commit_version("4c6e21g")
 
 
+class TestIsShortSemverVersion:
+    def test_matches_two_part_version(self):
+        assert semver.is_short_semver_version("18.1")
+        assert semver.is_short_semver_version("v18.1")
+
+    def test_does_not_match_three_part_version(self):
+        # No ambiguity between the two shapes: a third dot-separated
+        # component (even a valid one) fails the short-semver match.
+        assert not semver.is_short_semver_version("1.2.3")
+
+    def test_two_part_calendar_looking_version_still_matches(self):
+        # Purely a shape check, same as is_calendar_version/is_git_commit_version
+        # -- whether the numbers happen to look like a year is irrelevant, and
+        # is_calendar_version itself only ever recognizes the three-part
+        # year.month.patch shape, never a two-part one, so there's no real
+        # ambiguity between the two functions to guard against here.
+        assert semver.is_short_semver_version("2026.7")
+
+    def test_rejects_leading_zeros(self):
+        assert not semver.is_short_semver_version("1.02")
+        assert not semver.is_short_semver_version("01.2")
+
+    def test_rejects_non_numeric_component(self):
+        assert not semver.is_short_semver_version("1.x")
+
+    def test_prerelease_and_build_metadata_ignored(self):
+        assert semver.is_short_semver_version("18.1-beta.1")
+        assert semver.is_short_semver_version("18.1+build.5")
+
+
 class TestClassifyVersionSize:
     def test_small(self):
         assert semver.classify_version_size("1.2.3", "1.2.4") == "small"
@@ -185,3 +215,22 @@ class TestClassifyVersionSize:
     def test_mixed_commit_and_semver_is_big(self):
         assert semver.classify_version_size("4c6e21e", "1.2.3") == "big"
         assert semver.classify_version_size("1.2.3", "4c6e21e") == "big"
+
+    def test_short_semver_minor_change_is_medium(self):
+        # Found live, 2026-07-25: "18.0" -> "18.1" used to be "big" purely
+        # for not being strict three-part semver, despite being an ordered,
+        # clearly-tracked jump.
+        assert semver.classify_version_size("18.0", "18.1") == "medium"
+
+    def test_short_semver_major_change_is_big(self):
+        assert semver.classify_version_size("18.0", "19.0") == "big"
+
+    def test_short_semver_downgrade_is_big(self):
+        assert semver.classify_version_size("18.1", "18.0") == "big"
+
+    def test_identical_short_semver_is_big(self):
+        assert semver.classify_version_size("18.1", "18.1") == "big"
+
+    def test_mixed_short_semver_and_full_semver_is_big(self):
+        assert semver.classify_version_size("18.0", "1.2.3") == "big"
+        assert semver.classify_version_size("1.2.3", "18.0") == "big"

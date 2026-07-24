@@ -2,83 +2,47 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.2.0] - 2026-07-25
 
-**Adds community voting**
-Link your GitHub account (a new Community card in Settings, via device flow: a short code entered on
-GitHub's own site, no password shared with Update Manager, no separate app to install), then vote on a
-specific version from either the Updates tab or the History tab. The two read differently on purpose:
-a still-*pending* update (Updates tab) only offers reporting an issue that's knowable before installing
-at all, straight from the release notes (a breaking change, a dev/pre-release build, requiring a newer
-HA version), no "healthy" button, since nobody's actually run it yet; an *installed* (or downgraded-to)
-version, opened from the History tab, gets the full healthy/problematic vote, with "problematic" adding
-two more, only-after-running reasons ("broken functionality", "other"). Every vote dialog asks about the
-exact jump in plain language ("How's the jump from X to Y treating you?"), and a successful vote shows an
-immediate, optimistic confirmation rather than waiting on community-votes' own processing to reflect it.
-Covers every update category community-votes has a schema for: HACS (only entities actually installed
-through HACS itself, verified against its own entity registry, not just anything whose release_url
-happens to look like a GitHub link -- a real, live mix-up hit with an ESPHome device otherwise), Home
-Assistant Core/Supervisor/OS, real vendor device firmware (Zigbee, via ZHA or Zigbee2MQTT, regardless
-of which one manages the device), and Supervisor add-ons. Self-compiled/user-flashed firmware (ESPHome,
-Tasmota) is deliberately never identifiable this way: two installs' "same board" can run completely
-different, incomparable firmware there. Anything not covered gets a clear "can't be identified yet"
-message (or no vote controls at all) instead of a silent failure.
+## Community voting
 
-**Adds Zigbee/ZHA rollout pacing**
-Firmware installs across identical Zigbee devices (ZHA or Zigbee2MQTT, same model and target
-version) are now paced one at a time instead of all at once, protecting mesh stability. A queue only
-ever appears once a second device from the same group is asked to install while one is already in
-flight; there's no manual override to jump the line, whether from the dialog's Install button,
-auto-install, or Update All. Survives a restart: an install genuinely in flight gets re-dispatched, one
-that actually finished while Home Assistant was down advances immediately.
+See how other users rated a specific update before you install it, and share your own verdict once
+you have. Link your GitHub account (a quick one-time step: enter a short code on GitHub's own site, no
+password shared with Update Manager), then vote healthy or problematic on any update, from either the
+Updates tab (still pending) or the History tab (already installed).
 
-**Adds a community verdict badge**
-Pending updates for identifiable entities (see community voting above for which ones) now show a badge
-with the community's healthy/problematic vote counts on the Updates tab. Sourced from the new
-[HA-Update-Manager/community-votes](https://github.com/HA-Update-Manager/community-votes) repo. No
-settings toggle: always on, nothing is ever sent just by looking.
+A vote is about the exact jump you're taking, not just the version you land on: going from an old
+version to a brand-new one carries different risk than a small step from the version right before it,
+so both are tracked separately, and you can see how other jumps to the same version went too. Every
+History entry can be expanded to vote on it directly, with the most recent one already open.
 
-**Adds a trusted-voter auto-install override**
-A new "Trusted voters" setting (Auto-update card, a list of GitHub usernames) lets someone whose
-judgement you trust more than your own size-based rules override auto-install for a specific version
-jump, in either direction: if any of them rated it healthy, it auto-installs regardless of your own
-wait/toggle rules for that size; if any of them rated it problematic, auto-install is blocked outright,
-even if your own rules would otherwise allow it. If more than one is listed and they disagree on the
-same jump, a problematic vote always wins. A still-pending update blocked this way now says so
-directly, in its own dialog ("Auto-install held back: @username reported this version as
-problematic."), and every History entry now shows a full audit trail once expanded: when the update
-became available, when it was announced (if at all), when it was actually installed, and how (manual,
-your own rules, or a trusted vote, naming who).
+Covers HACS integrations, Home Assistant Core/Supervisor/OS, real vendor Zigbee device firmware, and
+Supervisor add-ons. Self-flashed firmware (ESPHome, Tasmota) isn't covered: there's no reliable way to
+compare installs of those. A community verdict badge (healthy/problematic counts) also shows up right
+on the Updates tab for anything votable.
 
-**Changes community voting to be about the exact version jump, not just the destination version**
-A verdict is now identified by both endpoints (the version you upgraded *from*, and the one you landed
-on), not the destination version alone: going from 0.1.0 to 3.5.2 (possibly skipping several breaking
-changes) is a fundamentally different risk than going from 3.5.1 to 3.5.2, even though both land on the
-same version, and treating them as one pool of votes hid that distinction. Every vote dialog now names
-both endpoints ("How's the jump from X to Y treating you?"), and shows which other jumps landing on the
-same destination version have been rated, if any, with your own jump always listed first. This is a
-breaking change to the community-votes repo's own on-disk schema (`votes/<category>/.../<to-version>.json`,
-one file per destination version holding every rated jump instead of one per version alone); there were
-no real votes yet to migrate, so the two existing test entries were removed outright rather than
-converted.
+**Trusted voters**: name one or more GitHub usernames whose verdict on a specific update overrides your
+own auto-install rules, in either direction. If they rated it healthy, it installs regardless of your
+own rules; if problematic, it's held back even if your rules would otherwise allow it.
 
-**Redesigns the Settings and History pages**
-Settings now groups the master switch and visibility toggle into one General card up top, the
-Small/Medium/Big rules collapse by default, and repeated or oversized explanatory text has been
-trimmed throughout. The Auto-update card (announcement notice, always-manual entities, trusted voters)
-is now always visible, not only once some size's own auto-install toggle is on. History (both the tab
-and the per-entity dialog) groups entries into relative date sections, and every entry is now fully
-expandable, showing its changelog (if any), a release-page link (if any), and the audit-trail facts
-above -- regardless of whether it has a changelog to show at all.
+**Also in this release:**
+
+**Zigbee/ZHA rollout pacing**
+Firmware installs across identical Zigbee devices now happen one at a time instead of all at once,
+protecting your mesh from the traffic spike of updating everything simultaneously.
+
+**Redesigned Settings and History pages**
+Settings groups related options together more clearly, and History now shows a full audit trail for
+every install: when it became available, when it was announced, when it was installed, and why (your
+own rules, a trusted vote, or a manual click).
 
 **Fixes updates losing their wait progress after a restart**
-`available_since` is now persisted instead of recomputed from a recorder lookup on every refresh, so
-a restart, a brief unavailability, or an integration reload can no longer quietly reset how long an
-update has been waiting.
+A postponed update no longer forgets how long it's been waiting after a restart, brief unavailability,
+or reload.
 
 **Adds an Enabled switch entity**
-The master pause switch is now also a real `switch` entity, not only a Settings-page toggle, so it can
-be controlled from a dashboard or an automation. Both stay in sync with each other.
+The master pause switch is now also a real switch entity, so it can be controlled from a dashboard or
+automation.
 
 ### Added
 - GitHub account linking (`github_auth.py`): a "Link GitHub account" button in Settings using OAuth
@@ -134,6 +98,11 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
   other two tabs, and every entry is now fully expandable (changelog if any, release-page link if any,
   and the audit-trail facts above), instead of a mix of separate small links, toggles, and one
   external-navigation-only case for a changelog-less entry.
+- Community voting now lives inside each History entry's own card, not a single fixed section elsewhere
+  in the dialog -- any past version jump for an entity is directly votable, not just whichever one the
+  dialog happened to open with. The most recent entry expands by default so its own vote section is
+  visible immediately; each entry's vote data is only fetched the first time its own card is expanded,
+  not eagerly for every entry when the dialog opens.
 - The auto-install "this was automatic" indicator is now icon-only with a tooltip, instead of an icon
   plus a repeated text label on every row; the tooltip itself now names the specific reason (your own
   rules, or a trusted vote from whoever) instead of a generic "Automatically updated".
@@ -149,6 +118,12 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
   race on the same file, which was never possible under the old one-file-per-voter layout.
 
 ### Fixed
+- A two-component major.minor version (no patch at all, e.g. "18.0" -> "18.1") was always classified as
+  "big" impact, the same conservative default any genuinely unrecognized version shape gets, since
+  `classify_version_size` only ever recognized strict three-part semver, HA Core's calendar versioning,
+  and git commit hashes. Now recognized as its own scheme (found live: an update entity reporting a real
+  minor-only jump showed as "Big" impact) -- a major-component change stays "big", a minor-component
+  change is "medium".
 - Identity resolution for a HACS vote used whatever version was embedded in `release_url`'s own tag
   instead of the version the vote/verdict lookup was actually for, so a vote cast for one version could
   silently land under a different one whenever `release_url` didn't happen to match (found live: a
