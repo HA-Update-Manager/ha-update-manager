@@ -33,7 +33,9 @@ from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant, State, callback
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
+from .announcer import AutoInstallContext
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
 from .zigbee import device_for_entity, zigbee_network_id
@@ -46,10 +48,39 @@ STORAGE_KEY = f"{DOMAIN}_rollout_queues"
 RequestResult = Literal["dispatch", "queued"]
 
 
-class _QueuedEntry:
-    __slots__ = ("entity_id", "to_version", "service_data", "is_auto")
+def _serialize_context(context: AutoInstallContext | None) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    return {
+        "to_version": context.to_version,
+        "reason": context.reason,
+        "trusted_voter_usernames": context.trusted_voter_usernames,
+        "announced_at": context.announced_at.isoformat() if context.announced_at is not None else None,
+    }
 
-    def __init__(self, entity_id: str, to_version: str, service_data: dict[str, Any], is_auto: bool) -> None:
+
+def _deserialize_context(data: dict[str, Any] | None) -> AutoInstallContext | None:
+    if data is None:
+        return None
+    return AutoInstallContext(
+        to_version=data["to_version"],
+        reason=data["reason"],
+        trusted_voter_usernames=data.get("trusted_voter_usernames", []),
+        announced_at=dt_util.parse_datetime(data["announced_at"]) if data.get("announced_at") else None,
+    )
+
+
+class _QueuedEntry:
+    __slots__ = ("entity_id", "to_version", "service_data", "is_auto", "context")
+
+    def __init__(
+        self,
+        entity_id: str,
+        to_version: str,
+        service_data: dict[str, Any],
+        is_auto: bool,
+        context: AutoInstallContext | None = None,
+    ) -> None:
         self.entity_id = entity_id
         self.to_version = to_version
         self.service_data = service_data
@@ -61,6 +92,12 @@ class _QueuedEntry:
         # never be misattributed as automatic just because this module was
         # the one that eventually pressed the button for it.
         self.is_auto = is_auto
+        # Only ever set (and meaningful) when is_auto is True -- the exact
+        # reason/timing install_manager.py's own _async_execute already
+        # captured when this was first requested, carried along so
+        # _async_dispatch can attribute it correctly whenever this entry's
+        # own turn in the queue actually comes, possibly much later.
+        self.context = context
 
 
 class RolloutManager:
@@ -77,14 +114,14 @@ class RolloutManager:
         # Told about by __init__.py so a queue-dispatched auto-install still
         # gets correctly attributed in install_log.py, see
         # set_recently_executed_setter's own docstring.
-        self._mark_recently_executed: Callable[[str, str], None] | None = None
+        self._mark_recently_executed: Callable[[str, AutoInstallContext], None] | None = None
         # Same reasoning/wiring as _mark_recently_executed above, see
         # set_failure_handler's own docstring: a queued entry's install can
         # fail too, once this module is the one dispatching it.
         self._handle_install_failure: Callable[[str, str], None] | None = None
         self._unsub_install_listener: Callable[[], None] | None = None
 
-    def set_recently_executed_setter(self, setter: Callable[[str, str], None]) -> None:
+    def set_recently_executed_setter(self, setter: Callable[[str, AutoInstallContext], None]) -> None:
         """install_manager.py's own _recently_executed dict is what
         was_auto_installed()/__init__.py's _on_install use to tell "this
         completed install was auto-install's doing" apart from a manual
@@ -112,7 +149,10 @@ class RolloutManager:
         data = await self._store.async_load() or {}
         self._queues = {
             group_key: [
-                _QueuedEntry(e["entity_id"], e["to_version"], e["service_data"], e["is_auto"]) for e in entries
+                _QueuedEntry(
+                    e["entity_id"], e["to_version"], e["service_data"], e["is_auto"], _deserialize_context(e.get("context"))
+                )
+                for e in entries
             ]
             for group_key, entries in data.items()
         }
@@ -126,6 +166,7 @@ class RolloutManager:
                         "to_version": e.to_version,
                         "service_data": e.service_data,
                         "is_auto": e.is_auto,
+                        "context": _serialize_context(e.context),
                     }
                     for e in entries
                 ]
@@ -161,7 +202,13 @@ class RolloutManager:
         return f"{network_id}|{device.manufacturer}|{device.model}|{to_version}"
 
     async def async_request_install(
-        self, entity_id: str, to_version: str, service_data: dict[str, Any], *, is_auto: bool
+        self,
+        entity_id: str,
+        to_version: str,
+        service_data: dict[str, Any],
+        *,
+        is_auto: bool,
+        context: AutoInstallContext | None = None,
     ) -> RequestResult:
         """The one shared gate every dispatch path (install_manager.py's own
         auto-install, websocket_api.py's single-entity Install, and the
@@ -170,7 +217,10 @@ class RolloutManager:
         proceeds exactly as it already does today) for anything that isn't
         part of an active multi-device Zigbee rollout, which is the
         overwhelming majority case, this module stays fully invisible
-        until there's actually more than one device to pace against."""
+        until there's actually more than one device to pace against.
+        `context` only ever comes from install_manager.py's own auto-install
+        path (is_auto=True); a manual dispatch has no reason/timing to
+        attribute at all."""
         group_key = self._group_key_for(entity_id, to_version)
         if group_key is None:
             return "dispatch"
@@ -183,7 +233,7 @@ class RolloutManager:
                     # same entity/version), whatever its current position
                     # already decided stands, don't add a second entry.
                     return "dispatch" if existing[0] is entry else "queued"
-            existing.append(_QueuedEntry(entity_id, to_version, service_data, is_auto))
+            existing.append(_QueuedEntry(entity_id, to_version, service_data, is_auto, context))
             await self._async_save()
             return "queued"
 
@@ -194,7 +244,7 @@ class RolloutManager:
         # to wait behind (the branch above). rollout_groups_snapshot/
         # is_queued below both deliberately ignore single-entry queues, so
         # this doesn't show any UI on its own yet.
-        self._queues[group_key] = [_QueuedEntry(entity_id, to_version, service_data, is_auto)]
+        self._queues[group_key] = [_QueuedEntry(entity_id, to_version, service_data, is_auto, context)]
         await self._async_save()
         return "dispatch"
 
@@ -221,7 +271,20 @@ class RolloutManager:
 
     async def _async_dispatch(self, entry: _QueuedEntry) -> None:
         if entry.is_auto and self._mark_recently_executed is not None:
-            self._mark_recently_executed(entry.entity_id, entry.to_version)
+            # entry.context is only ever None for an is_auto=True entry
+            # that was queued (and persisted) before this session's
+            # trusted-voter feature added the field at all -- found by
+            # review: an unconditional `and entry.context is not None` here
+            # would silently skip mark_recently_executed for exactly that
+            # entry, misattributing a genuinely automatic install as manual
+            # once its turn in the queue finally comes after upgrading.
+            # Falling back to a plain "rules" context (no trusted-voter
+            # detail, since none was ever recorded for it) keeps the
+            # is_auto=True marker meaningful either way.
+            context = entry.context or AutoInstallContext(
+                to_version=entry.to_version, reason="rules", trusted_voter_usernames=[], announced_at=None
+            )
+            self._mark_recently_executed(entry.entity_id, context)
         try:
             await self.hass.services.async_call("update", "install", entry.service_data, blocking=True)
         except Exception:

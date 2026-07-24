@@ -75,6 +75,10 @@ class InstallLog:
         release_summary: str | None,
         supported_features: int,
         auto_installed: bool,
+        auto_install_reason: str | None = None,
+        trusted_voter_usernames: list[str] | None = None,
+        announced_at: str | None = None,
+        available_since: str | None = None,
     ) -> None:
         release_notes = await _async_release_notes(self._hass, entity_id, supported_features)
         self._entries.append(
@@ -87,6 +91,15 @@ class InstallLog:
                 "release_summary": release_summary,
                 "release_notes": release_notes,
                 "auto_installed": auto_installed,
+                # None on a manual install, or on any entry logged before
+                # this field existed at all -- the panel hides these facts
+                # entirely rather than showing "unknown" when they're None
+                # (see FUTURE.md's own note on this, added alongside
+                # CONF_TRUSTED_VOTERS/effective_auto_install_state).
+                "auto_install_reason": auto_install_reason,
+                "trusted_voter_usernames": trusted_voter_usernames or [],
+                "announced_at": announced_at,
+                "available_since": available_since,
             }
         )
         if len(self._entries) > MAX_ENTRIES:

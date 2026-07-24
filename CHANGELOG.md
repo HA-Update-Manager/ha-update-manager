@@ -38,12 +38,26 @@ with the community's healthy/problematic vote counts on the Updates tab. Sourced
 [HA-Update-Manager/community-votes](https://github.com/HA-Update-Manager/community-votes) repo. No
 settings toggle: always on, nothing is ever sent just by looking.
 
+**Adds a trusted-voter auto-install override**
+A new "Trusted voters" setting (Auto-update card, a list of GitHub usernames) lets someone whose
+judgement you trust more than your own size-based rules override auto-install for a specific version,
+in either direction: if any of them rated it healthy, it auto-installs regardless of your own
+wait/toggle rules for that size; if any of them rated it problematic, auto-install is blocked outright,
+even if your own rules would otherwise allow it. If more than one is listed and they disagree on the
+same version, a problematic vote always wins. A still-pending update blocked this way now says so
+directly, in its own dialog ("Auto-install held back: @username reported this version as
+problematic."), and every History entry now shows a full audit trail once expanded: when the update
+became available, when it was announced (if at all), when it was actually installed, and how (manual,
+your own rules, or a trusted vote, naming who).
+
 **Redesigns the Settings and History pages**
 Settings now groups the master switch and visibility toggle into one General card up top, the
 Small/Medium/Big rules collapse by default, and repeated or oversized explanatory text has been
-trimmed throughout. History (both the tab and the per-entity dialog) groups entries into relative
-date sections, and every entry is now fully clickable: it either expands its changelog in place or
-opens the release page externally, whichever applies.
+trimmed throughout. The Auto-update card (announcement notice, always-manual entities, trusted voters)
+is now always visible, not only once some size's own auto-install toggle is on. History (both the tab
+and the per-entity dialog) groups entries into relative date sections, and every entry is now fully
+expandable, showing its changelog (if any), a release-page link (if any), and the audit-trail facts
+above -- regardless of whether it has a changelog to show at all.
 
 **Fixes updates losing their wait progress after a restart**
 `available_since` is now persisted instead of recomputed from a recorder lookup on every refresh, so
@@ -77,6 +91,18 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
 - Recognizes your own past vote (`my_votes.py`): the verdict line reads "You [and N others] reported
   this version as..." instead of a bare count when it matches your own vote, and re-voting on a version
   you already rated now shows "Vote updated to..." instead of the usual first-time confirmation.
+- A trusted-voter auto-install override (`CONF_TRUSTED_VOTERS`, `effective_auto_install_state` in
+  `announcer.py`, aggregated in `community_verdict.py`): a configurable list of GitHub usernames whose
+  own vote on a specific version overrides your own size-based rules for that exact version, healthy
+  overriding an otherwise-off/still-waiting auto-install, problematic blocking one that would otherwise
+  go ahead. Any trusted problematic vote wins outright over any trusted healthy one among the same list.
+- A full audit trail on every History entry (`install_log.py`'s new `auto_install_reason`,
+  `trusted_voter_usernames`, `announced_at`, `available_since` fields): expanding an entry now shows
+  when it became available, when it was announced (if it ever was), when it was actually installed, and
+  whether that install was manual, driven by your own rules, or a trusted vote (naming who).
+- An "Auto-install held back" alert on a still-pending update's own dialog, shown whenever a trusted
+  voter rated that exact version problematic, naming them directly instead of leaving the block
+  unexplained.
 
 ### Changed
 - "Update all" now dispatches each entity through the same `update_manager/install` path as the
@@ -89,10 +115,15 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
   The Small/Medium/Big size descriptions now show the real current year/month in their calendar-version
   examples instead of a fixed date.
 - History tab and dialog: entries are grouped into cards with a consistent width/grid matching the
-  other two tabs, and every entry is clickable (expand the changelog in place, or open the release
-  page) instead of a mix of separate small links and toggles.
+  other two tabs, and every entry is now fully expandable (changelog if any, release-page link if any,
+  and the audit-trail facts above), instead of a mix of separate small links, toggles, and one
+  external-navigation-only case for a changelog-less entry.
 - The auto-install "this was automatic" indicator is now icon-only with a tooltip, instead of an icon
-  plus a repeated text label on every row.
+  plus a repeated text label on every row; the tooltip itself now names the specific reason (your own
+  rules, or a trusted vote from whoever) instead of a generic "Automatically updated".
+- The Settings page's Community verdict section spacing/proportions were tightened, and its "not yet
+  rated" copy now reads "by others" instead of "by the community" (direct user feedback: read more
+  naturally once your own past vote is recognized separately).
 
 ### Fixed
 - Identity resolution for a HACS vote used whatever version was embedded in `release_url`'s own tag

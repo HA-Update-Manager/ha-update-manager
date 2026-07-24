@@ -29,6 +29,7 @@ from .const import (
     CONF_EXCLUDED_ENTITIES,
     CONF_MEDIUM_WAIT_DAYS,
     CONF_SMALL_WAIT_DAYS,
+    CONF_TRUSTED_VOTERS,
     DOMAIN,
     PROFILE_BALANCED,
     PROFILE_PRESETS,
@@ -136,6 +137,10 @@ def _is_excluded_from_auto_install(hass: HomeAssistant, entity_id: str, excluded
 
 def excluded_entities_from_options(options: dict) -> frozenset[str]:
     return frozenset(options.get(CONF_EXCLUDED_ENTITIES, []))
+
+
+def trusted_voters_from_options(options: dict) -> list[str]:
+    return list(options.get(CONF_TRUSTED_VOTERS, []))
 
 # Brief pause between recorder history lookups during the initial bulk
 # scan at startup -- a large instance can have 100+ update entities, and
@@ -559,6 +564,13 @@ class UpdateManagerCoordinator:
             if self._community_verdict_manager is not None
             else None
         )
+        # Same reasoning as community_verdict above: whatever's already
+        # known, synchronously, refreshed as its own background task below.
+        trusted_vote, trusted_voters_matched = (
+            self._community_verdict_manager.peek_cached_trusted_vote(entity_id, latest)
+            if self._community_verdict_manager is not None
+            else (None, [])
+        )
         if self._community_verdict_manager is not None:
             self.hass.async_create_task(
                 self._async_refresh_community_verdict(entity_id, state.attributes.get("release_url"), latest)
@@ -598,6 +610,15 @@ class UpdateManagerCoordinator:
             # renders no badge at all for either case, see FUTURE.md's own
             # read-only-first scoping for this feature.
             "community_verdict": community_verdict,
+            # (verdict, matched usernames) from the configured trusted-
+            # voters list (see const.py's CONF_TRUSTED_VOTERS), already
+            # aggregated -- (None, []) when nobody's configured, or none of
+            # them has voted on this exact version. install_manager.py's
+            # own effective_auto_install_state (announcer.py) reads
+            # trusted_vote to decide eligibility; the panel reads both to
+            # explain a block on the still-pending update itself.
+            "trusted_vote": trusted_vote,
+            "trusted_voters_matched": trusted_voters_matched,
         }
 
     async def _async_refresh_community_verdict(self, entity_id: str, release_url: str | None, latest: str) -> None:
@@ -606,12 +627,19 @@ class UpdateManagerCoordinator:
         real lookup resolves, but only if that entry still exists and still
         refers to the exact same version, entity_id's own cache entry may
         have moved on (a newer version, or no longer pending at all) by the
-        time this background fetch finishes."""
+        time this background fetch finishes. Patches trusted_vote/
+        trusted_voters_matched too -- async_get_verdict fetches and caches
+        both in the same call, see community_verdict.py's own docstring."""
         assert self._community_verdict_manager is not None
         verdict = await self._community_verdict_manager.async_get_verdict(entity_id, release_url, latest)
+        trusted_vote, trusted_voters_matched = self._community_verdict_manager.peek_cached_trusted_vote(
+            entity_id, latest
+        )
         cached = self.cache.get(entity_id)
         if cached is not None and cached.get("latest_version") == latest:
             cached["community_verdict"] = verdict
+            cached["trusted_vote"] = trusted_vote
+            cached["trusted_voters_matched"] = trusted_voters_matched
 
     def _cache_skipped(self, entity_id: str, state: State, current: str, latest: str) -> None:
         # No staging computation here (state itself is "off", not "on" --

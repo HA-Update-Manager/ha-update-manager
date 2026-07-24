@@ -34,12 +34,18 @@ from .const import (
     CONF_MEDIUM_WAIT_DAYS,
     CONF_SMALL_AUTO_INSTALL,
     CONF_SMALL_WAIT_DAYS,
+    CONF_TRUSTED_VOTERS,
     DOMAIN,
     PROFILE_PRESETS,
 )
-from .community_verdict import async_fetch_verdict_uncached
+from .community_verdict import async_fetch_my_vote, async_fetch_verdict_uncached
 from .community_vote import async_submit_vote
-from .coordinator import excluded_entities_from_options, hard_excluded_entity_ids, rules_from_options
+from .coordinator import (
+    excluded_entities_from_options,
+    hard_excluded_entity_ids,
+    rules_from_options,
+    trusted_voters_from_options,
+)
 from .device_identity import resolve_full_identity
 from .hacs_identity import ResolvedIdentity
 from .install_manager import auto_install_rules_from_options
@@ -78,6 +84,7 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
         rules_from_options(options), excluded_entities_from_options(options)
     )
     data["install_manager"].update_rules(auto_install_rules_from_options(options))
+    data["community_verdict_manager"].set_trusted_voters(trusted_voters_from_options(options))
 
     async def _apply_staging_skip() -> None:
         await data["staging_skip_manager"].async_update_enabled(options.get(CONF_HIDE_POSTPONED, True))
@@ -319,6 +326,7 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
                 vol.Required(CONF_ANNOUNCE_HOURS): vol.All(vol.Coerce(int), vol.Range(min=1, max=336)),
                 vol.Required(CONF_EXCLUDED_ENTITIES): [str],
                 vol.Required(CONF_HIDE_POSTPONED): bool,
+                vol.Required(CONF_TRUSTED_VOTERS): [str],
             },
             extra=vol.REMOVE_EXTRA,
         )
@@ -409,6 +417,31 @@ def _resolve_identity_for_version(
     return resolve_full_identity(hass, entity_id, release_url, version)
 
 
+async def _async_resolve_my_verdict(hass: HomeAssistant, data: dict, identity: ResolvedIdentity) -> str | None:
+    """Your own past verdict on this exact identity, local-cache-first
+    (my_votes.py, immediately available even just after voting, before
+    community-votes' own Action has processed it), falling back to your
+    real vote file on community-votes (one request, only when the local
+    record has nothing -- e.g. a vote cast before my_votes.py existed) and
+    backfilling the local record on success. The one place both
+    _handle_verdict_for_version ("what did I vote") and _handle_vote
+    ("is this a change of vote") need this exact lookup (found by review:
+    both used to repeat the same local-then-fallback-then-backfill steps
+    by hand, and the _handle_vote copy was missing the backfill, silently
+    paying the extra request again on every future check until an actual
+    vote was cast)."""
+    my_verdict = data["my_votes_manager"].my_verdict(identity.votes_path)
+    if my_verdict is not None:
+        return my_verdict
+    username = data["github_auth_manager"].linked_username
+    if not username:
+        return None
+    my_verdict = await async_fetch_my_vote(hass, identity, username)
+    if my_verdict is not None:
+        await data["my_votes_manager"].async_remember(identity.votes_path, my_verdict)
+    return my_verdict
+
+
 @websocket_api.require_admin
 @websocket_api.async_response
 @websocket_api.websocket_command(
@@ -443,13 +476,7 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     # deliberate price for "always tell the truth right now" on an
     # interactive, user-initiated check.
     verdict = await async_fetch_verdict_uncached(hass, identity) if identity is not None else None
-    # Locally tracked, not derived from `verdict` itself: community-votes'
-    # own aggregate never distinguishes "your vote" from anyone else's, and
-    # can lag behind a vote actually being submitted (found live,
-    # 2026-07-22: right after voting, the fetched count still read as if
-    # nobody had). The panel uses this to say "you and N others" instead of
-    # a bare count.
-    my_verdict = data["my_votes_manager"].my_verdict(identity.votes_path) if identity is not None else None
+    my_verdict = await _async_resolve_my_verdict(hass, data, identity) if identity is not None else None
     connection.send_result(
         msg["id"], {"verdict": verdict, "identifiable": identity is not None, "my_verdict": my_verdict}
     )
@@ -490,12 +517,14 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
 
     # Checked before submitting, not derived from the vote itself: this is
     # the one place that already knows whether you voted on this exact
-    # version before (my_votes.py), so the panel can say "updated" instead
-    # of "submitted" -- community-votes' own process-vote.yml now replaces
-    # a repeat vote from the same person instead of rejecting it as a
-    # duplicate (2026-07-23, direct user feedback: changing your mind about
-    # an update you already rated is a completely normal thing to want).
-    is_vote_update = data["my_votes_manager"].my_verdict(identity.votes_path) is not None
+    # version before, so the panel can say "updated" instead of "submitted"
+    # -- community-votes' own process-vote.yml now replaces a repeat vote
+    # from the same person instead of rejecting it as a duplicate
+    # (2026-07-23, direct user feedback: changing your mind about an update
+    # you already rated is a completely normal thing to want). Same
+    # local-then-fallback lookup _handle_verdict_for_version uses, so this
+    # reads correctly even for a vote cast before my_votes.py existed.
+    is_vote_update = await _async_resolve_my_verdict(hass, data, identity) is not None
 
     try:
         await async_submit_vote(

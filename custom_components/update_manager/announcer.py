@@ -32,12 +32,71 @@ class AutoInstallRules(NamedTuple):
     announce_wait: timedelta
 
 
+class AutoInstallContext(NamedTuple):
+    """Why + when a specific auto-install dispatch happened, attributed all
+    the way through to install_log.py's own history entry -- built once, in
+    install_manager.py's own _async_execute (right before the install is
+    actually dispatched, using effective_auto_install_state's own `reason`
+    above), and threaded through rollout_manager.py's own queue for a
+    Zigbee-paced install that doesn't actually dispatch until later."""
+
+    to_version: str
+    reason: str  # "rules" or "trusted_voter"
+    trusted_voter_usernames: list[str]  # only non-empty for that reason
+    announced_at: datetime | None  # None only if somehow executed with no announcement on record
+
+
 def size_auto_install_enabled(size: Size, rules: AutoInstallRules) -> bool:
     return {
         "small": rules.small_auto_install,
         "medium": rules.medium_auto_install,
         "big": rules.big_auto_install,
     }[size]
+
+
+def effective_auto_install_state(
+    *, status: str, size_enabled: bool, auto_install_excluded: bool, trusted_vote: str | None
+) -> tuple[bool, bool, str | None]:
+    """(is_ready, auto_install_enabled, reason) after folding in a trusted
+    voter's already-aggregated verdict for this exact pending version, if
+    any (see community_verdict.py's own async_get_verdict for how a list of
+    trusted usernames' individual votes becomes this single value -- this
+    function only ever sees the result, never the raw list). Direct user
+    feedback, 2026-07-23 ("installeer altijd automatisch als [klaptafel]
+    een update als healthy heeft beoordeeld, ongeacht mijn eigen rules" ->
+    confirmed symmetric while planning: a trusted "problematic" verdict
+    blocks just as firmly).
+
+    auto_install_excluded (Core/Supervisor/OS, plus anything the user
+    explicitly excluded) is a hard, unconditional gate either way -- a
+    trusted "healthy" vote never reaches past it, exactly like the size
+    toggle never does today. So is an explicit user skip (status ==
+    "skipped"): found by review, a bare trusted-healthy override that
+    ignored status entirely would silently un-skip a version the user
+    deliberately told Home Assistant to skip via update.skip, the moment
+    someone they trust rated it healthy -- a direct, deliberate user action
+    outranks an indirect trust setting, same reasoning as
+    auto_install_excluded. `installable` isn't a parameter here at all:
+    that's still install_manager.py's own separate, always-applies gate
+    (announcer.py has never known about it, decide_action takes it as its
+    own argument), unaffected by any of this.
+
+    A trusted "healthy" vote overrides *both* the size-based toggle and the
+    staging wait period (`is_ready`) for anything else -- the whole point of
+    naming someone more trusted than your own rules is that their
+    judgement can skip the wait, not just the toggle. A trusted
+    "problematic" vote blocks eligibility outright, even when status is
+    already "ready" and the size's own toggle is on: same reasoning, the
+    other direction. Neither changes how decide_action itself sequences
+    announce/execute -- only what feeds into it."""
+    is_ready = status == "ready"
+    if auto_install_excluded or status == "skipped":
+        return is_ready, False, None
+    if trusted_vote == "problematic":
+        return is_ready, False, None
+    if trusted_vote == "healthy":
+        return True, True, "trusted_voter"
+    return is_ready, size_enabled, ("rules" if size_enabled else None)
 
 
 class PendingAnnouncement(NamedTuple):

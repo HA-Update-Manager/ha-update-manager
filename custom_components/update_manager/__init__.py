@@ -7,7 +7,12 @@ from homeassistant.core import HomeAssistant, State, callback
 
 from .community_verdict import CommunityVerdictManager
 from .const import CONF_ENABLED, CONF_HIDE_POSTPONED, DOMAIN
-from .coordinator import UpdateManagerCoordinator, excluded_entities_from_options, rules_from_options
+from .coordinator import (
+    UpdateManagerCoordinator,
+    excluded_entities_from_options,
+    rules_from_options,
+    trusted_voters_from_options,
+)
 from .github_auth import GitHubAuthManager
 from .install_log import InstallLog
 from .install_manager import InstallManager, auto_install_rules_from_options
@@ -29,6 +34,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # like rollout_manager.py's own set_recently_executed_setter does for a
     # genuine two-way dependency.
     community_verdict_manager = CommunityVerdictManager(hass)
+    # Set once, here, before coordinator.async_start()'s own initial bulk
+    # scan below picks it up for the very first refresh -- same reasoning/
+    # timing as coordinator.set_master_enabled further down. Re-applied by
+    # async_apply_options on every settings save, no reload needed either.
+    community_verdict_manager.set_trusted_voters(trusted_voters_from_options(options))
     # Same reasoning as community_verdict_manager just above: needs only
     # hass, nothing else holds a reference into it (yet, a future voting
     # feature will read it for a valid access token, not the other way
@@ -97,7 +107,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # was_auto_installed() consumes (pops) install_manager's own record
         # of what it just dispatched, so it must be read at the moment this
         # callback fires, not whenever the scheduled task happens to run.
-        auto_installed = install_manager.was_auto_installed(entity_id, new_version)
+        # Same reasoning for reading coordinator.cache here rather than
+        # inside the task: verified live 2026-07-23, this install-listener
+        # fires synchronously from coordinator.py's own _handle_state_changed,
+        # strictly before its own cache recompute (a separate, scheduled
+        # task) has a chance to run, so this entity's cache entry still
+        # reflects the version that just finished installing, in particular
+        # its own available_since.
+        context = install_manager.was_auto_installed(entity_id, new_version)
+        reason = context.reason if context else None
+        trusted_voter_usernames = context.trusted_voter_usernames if context else None
+        announced_at = context.announced_at.isoformat() if context and context.announced_at else None
+        cached = coordinator.cache.get(entity_id)
         hass.async_create_task(
             install_log.async_log_install(
                 entity_id,
@@ -106,7 +127,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 release_url=new_state.attributes.get("release_url"),
                 release_summary=new_state.attributes.get("release_summary"),
                 supported_features=new_state.attributes.get("supported_features", 0),
-                auto_installed=auto_installed,
+                auto_installed=context is not None,
+                auto_install_reason=reason,
+                trusted_voter_usernames=trusted_voter_usernames,
+                announced_at=announced_at,
+                available_since=cached.get("available_since") if cached else None,
             )
         )
 

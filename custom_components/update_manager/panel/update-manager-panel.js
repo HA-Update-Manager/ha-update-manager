@@ -61,22 +61,17 @@ const ICON_AUTO_DOWNLOAD =
   "M22 17V19H11V17H22M19 4.5V9.5H22L16.5 15L11 9.5H14V4.5H19M10.7 15H8.8L8.1 13H4.9L4.2 15H2.3L5.5 6H7.5L10.7 15M7.65 11.65L6.5 8L5.35 11.65H7.65Z";
 const ICON_CLOCK_OUTLINE =
   "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
-// mdiChevronDown: the history dialog's own "expand this row's changelog"
-// chevron (see _openDetailDialog), rotated 180deg via .open instead of
-// relying on ha-expansion-panel's own built-in one: that component's row
-// looked visually distinct from the plain ha-list-item-button used for
-// entries with only a release_url (different padding/typography), which
-// read as inconsistent sitting side by side in the same timeline. Direct
-// user feedback. Both now render as the exact same ha-list-item-button
-// row; only the trailing icon (this rotating chevron vs. ICON_OPEN_IN_NEW
-// below) signals which of the two actually happens on click.
+// mdiChevronDown: the history dialog's own "expand this entry" chevron
+// (see _openDetailDialog), rotated 180deg via .open instead of relying on
+// ha-expansion-panel's own built-in one: that component's row looked
+// visually distinct from the plain ha-list-item-button used elsewhere in
+// this same timeline, which read as inconsistent sitting side by side.
+// Direct user feedback. Every history entry now expands the same way
+// (changed 2026-07-23: a release_url-only entry used to instead open
+// externally on click, and a changelog-less entry couldn't expand at all)
+// -- one row shape, one chevron, regardless of what a given entry has to
+// show once expanded.
 const ICON_CHEVRON_DOWN = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z";
-// mdiOpenInNew: the entries in that same history timeline whose row opens
-// an external release page instead of expanding in place. Direct user
-// feedback: ha-icon-next (a plain chevron, this file's usual "opens more
-// detail" signal, e.g. _buildListRow) doesn't actually say "leaves the
-// app" the way this universally-recognized external-link glyph does.
-const ICON_OPEN_IN_NEW = "M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z";
 // mdiThumbUp/mdiAlert, verified against api.iconify.design (2026-07-22): the
 // community-verdict badge (see verdictBadge), read-only slice, no vote UI
 // yet. Thumb-up for zero problematic reports, alert for one or more.
@@ -183,7 +178,11 @@ const TRANSLATIONS = {
     field_hide_postponed: "Hide postponed updates",
     field_hide_postponed_helper:
       "Marks a postponed update as skipped in Home Assistant itself until it's actually ready. Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
-    auto_install_section_desc: "Only applies to sizes where \"Update automatically\" is checked above.",
+    auto_install_section_desc:
+      "The postponement/auto-install rules above apply per size. Everything below (announcement notice, always-manual entities, trusted voters) applies regardless.",
+    field_trusted_voters: "Trusted voters",
+    field_trusted_voters_helper:
+      "GitHub usernames whose community vote (see the Community section in a version's own dialog) overrides your own rules for that exact version: healthy always auto-installs it, problematic always blocks auto-install, even if a size's own rules above say otherwise. If more than one is listed and they disagree on the same version, a problematic vote wins.",
     announce_hours_label: "Announcement notice (hours)",
     announce_hours_helper:
       "How long you have to cancel a scheduled automatic install (Updates tab) before it actually happens, once the postponement period is over.",
@@ -221,9 +220,20 @@ const TRANSLATIONS = {
     vote_reason_other: "Other",
     dialog_release_announcement: "Release announcement",
     dialog_history_heading: "History",
+    // No reason recorded at all: an entry logged before this field existed
+    // (2026-07-23) -- the generic fallback, not "unknown".
     dialog_history_auto: "Automatically updated",
     dialog_history_release_link: "Release page",
     dialog_history_changelog: "View changelog",
+    dialog_history_available_since: "Available since",
+    dialog_history_announced: "Announced",
+    dialog_history_installed_at: "Installed",
+    dialog_history_method_label: "Install method",
+    dialog_history_method_manual: "Manual",
+    dialog_history_method_rules: "Automatic, your own rules",
+    dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
+    list_and: "and",
+    dialog_auto_install_held_back: (names) => `Auto-install held back: ${names} reported this version as problematic.`,
     dialog_more_info: "More info",
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
     // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
@@ -373,7 +383,11 @@ const TRANSLATIONS = {
     field_wait_days: "Uitsteltermijn (dagen)",
     field_auto_install: "Automatisch updaten",
     auto_install_section_title: "Auto-update",
-    auto_install_section_desc: "Geldt alleen voor groottes waar hierboven \"Automatisch updaten\" aan staat.",
+    auto_install_section_desc:
+      "De uitstel-/auto-installatieregels hierboven gelden per grootte. Alles hieronder (aankondigingstermijn, altijd-handmatige entiteiten, vertrouwde stemmers) geldt sowieso.",
+    field_trusted_voters: "Vertrouwde stemmers",
+    field_trusted_voters_helper:
+      "GitHub-gebruikersnamen wiens community-stem (zie de sectie Community in de dialoog van een versie) je eigen regels overstemt voor precies die versie: gezond installeert 'm altijd automatisch, problematisch blokkeert auto-installatie altijd, ook als een grootte's eigen regels hierboven iets anders zeggen. Staan er meerdere in de lijst en zijn ze het niet eens over dezelfde versie, dan wint een problematische stem.",
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper:
       "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
@@ -412,6 +426,19 @@ const TRANSLATIONS = {
     dialog_history_auto: "Automatisch geüpdatet",
     dialog_history_release_link: "Release-pagina",
     dialog_history_changelog: "Changelog bekijken",
+    dialog_history_available_since: "Beschikbaar sinds",
+    dialog_history_announced: "Aangekondigd",
+    dialog_history_installed_at: "Geïnstalleerd",
+    dialog_history_method_label: "Installatiemethode",
+    dialog_history_method_manual: "Handmatig",
+    dialog_history_method_rules: "Automatisch, je eigen regels",
+    dialog_history_method_trusted: (names) => `Automatisch, vertrouwde stem van ${names}`,
+    list_and: "en",
+    // Passive voice ("door X beoordeeld als"), not "X beoordeelde" -- avoids
+    // needing separate singular/plural verb forms for a variable-length,
+    // possibly multi-name subject.
+    dialog_auto_install_held_back: (names) =>
+      `Auto-installatie tegengehouden: deze versie is door ${names} als problematisch beoordeeld.`,
     dialog_more_info: "Meer info",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
     enabled_section_title: "Algemeen",
@@ -558,7 +585,7 @@ function fieldKind(name) {
 // on both load and save means stale keys just quietly stop being sent,
 // instead of silently accumulating.
 function knownSettingsFields() {
-  const names = ["enabled", "announce_hours", "excluded_entities", "hide_postponed"];
+  const names = ["enabled", "announce_hours", "excluded_entities", "hide_postponed", "trusted_voters"];
   for (const size of SIZES) {
     names.push(`${size}_wait_days`, `${size}_auto_install`);
   }
@@ -784,6 +811,59 @@ function communityVerdictLine(tr, verdict, myVerdict) {
 
   const badge = verdictBadge(tr, { community_verdict: verdict });
   return badge ? { icon: badge.icon, text: badge.title } : { icon: null, text: tr.community_not_yet_rated };
+}
+
+// The shared .dialog-rows/.row/.key/.value fact-list building block --
+// used both by the pending-update section's own installed/latest version +
+// impact rows and by the History facts block. A pair whose value is
+// null/undefined is skipped entirely rather than shown as "unknown" (found
+// by review: the two call sites used to hand-roll this same loop, one of
+// them additionally skipping null values, the other not needing to).
+function buildKeyValueRows(pairs) {
+  const rows = document.createElement("div");
+  rows.className = "dialog-rows";
+  pairs.forEach(([key, value]) => {
+    if (!value) return;
+    const row = document.createElement("div");
+    row.className = "row";
+    const k = document.createElement("div");
+    k.className = "key";
+    k.textContent = key;
+    const v = document.createElement("div");
+    v.className = "value";
+    v.textContent = value;
+    row.appendChild(k);
+    row.appendChild(v);
+    rows.appendChild(row);
+  });
+  return rows;
+}
+
+// "@a", "@a and @b", "@a, @b and @c" -- used wherever more than one trusted
+// username can be named at once (the History facts block, the auto-install
+// pill's own tooltip, the pending-update "held back" alert). `tr.list_and`
+// (not a hardcoded "and"): this joins usernames, not a fixed-language list.
+function joinUsernames(tr, usernames) {
+  const named = usernames.map((u) => `@${u}`);
+  if (named.length <= 1) return named[0] || "";
+  return `${named.slice(0, -1).join(", ")} ${tr.list_and} ${named[named.length - 1]}`;
+}
+
+// One install_log entry -> its own "how was this installed" sentence, shared
+// by the History facts block (always shown) and its card's own auto-install
+// pill tooltip (only shown when entry.auto_installed). `auto_install_reason`/
+// `trusted_voter_usernames` are both null/empty on a manual install, or on
+// any entry logged before this session's trusted-voter feature existed at
+// all (see install_log.py's own docstring on this) -- the last `dialog_history_auto`
+// fallback covers that older case specifically, distinct from a genuine manual
+// install.
+function installMethodText(tr, entry) {
+  if (!entry.auto_installed) return tr.dialog_history_method_manual;
+  if (entry.auto_install_reason === "trusted_voter") {
+    return tr.dialog_history_method_trusted(joinUsernames(tr, entry.trusted_voter_usernames || []));
+  }
+  if (entry.auto_install_reason === "rules") return tr.dialog_history_method_rules;
+  return tr.dialog_history_auto;
 }
 
 // Grouped by status, not by domain/category (changed 2026-07-16, direct
@@ -1196,13 +1276,14 @@ class UpdateManagerPanel extends HTMLElement {
         // _formData, and pickKnownSettings then leaves it out of the save
         // payload entirely: save_settings's vol.Required(...) schema
         // rejected that outright ("required key not provided"), found live.
-        // excluded_entities isn't part of any profile preset (it's a plain
-        // entity list, not a wait/auto-install tuning value), so it needs
-        // its own explicit empty-array default the same way.
+        // excluded_entities/trusted_voters aren't part of any profile preset
+        // (plain lists, not wait/auto-install tuning values), so both need
+        // their own explicit empty-array default the same way.
         const fallback = (this._profiles && this._profiles.balanced) || {};
         this._formData = {
           enabled: true,
           excluded_entities: [],
+          trusted_voters: [],
           hide_postponed: true,
           ...fallback,
           ...pickKnownSettings(this._settings),
@@ -1856,7 +1937,7 @@ class UpdateManagerPanel extends HTMLElement {
         // auto/manual distinction the per-entity dialog's own history
         // cards already do (entry.auto_installed), instead of only
         // showing it there.
-        const badge = entry.auto_installed ? { icon: ICON_AUTO_DOWNLOAD, title: tr.dialog_history_auto } : null;
+        const badge = entry.auto_installed ? { icon: ICON_AUTO_DOWNLOAD, title: installMethodText(tr, entry) } : null;
         const row = this._buildListRow(
           entry.entity_id,
           supporting,
@@ -2105,26 +2186,35 @@ class UpdateManagerPanel extends HTMLElement {
       }
       body.appendChild(statusAlert);
 
-      const rows = document.createElement("div");
-      rows.className = "dialog-rows";
-      [
-        [tr.dialog_current_version, u.installed_version],
-        [tr.dialog_new_version, u.latest_version],
-        [tr.col_impact, sizeShort],
-      ].forEach(([key, value]) => {
-        const row = document.createElement("div");
-        row.className = "row";
-        const k = document.createElement("div");
-        k.className = "key";
-        k.textContent = key;
-        const v = document.createElement("div");
-        v.className = "value";
-        v.textContent = value;
-        row.appendChild(k);
-        row.appendChild(v);
-        rows.appendChild(row);
-      });
-      body.appendChild(rows);
+      // Shown regardless of whatever the status alert above already says
+      // (e.g. still "waiting" on its own postponement period) -- direct
+      // user feedback: a block needs to explain itself right here, on the
+      // still-pending update it actually prevents, not just be inferable
+      // from "why hasn't this auto-installed even though it's ready and the
+      // toggle is on". Distinct wording from the unrelated "blocked"
+      // *staging* status (a discouraged size/jump) on purpose: this is
+      // about one specific trusted vote overriding auto-install, not that.
+      // Also gated on !auto_install_excluded/!skipped (found by review):
+      // announcer.py's effective_auto_install_state checks those hard
+      // gates FIRST, before ever looking at trusted_vote at all, so for an
+      // always-excluded entity (Core/Supervisor/OS) or an already-skipped
+      // one, a trusted "problematic" vote was never actually the reason
+      // auto-install won't happen -- showing this alert there would
+      // falsely blame the vote for a block that already existed anyway.
+      if (u.trusted_vote === "problematic" && !u.auto_install_excluded && u.status !== "skipped") {
+        const heldBackAlert = document.createElement("ha-alert");
+        heldBackAlert.alertType = "warning";
+        heldBackAlert.textContent = tr.dialog_auto_install_held_back(joinUsernames(tr, u.trusted_voters_matched || []));
+        body.appendChild(heldBackAlert);
+      }
+
+      body.appendChild(
+        buildKeyValueRows([
+          [tr.dialog_current_version, u.installed_version],
+          [tr.dialog_new_version, u.latest_version],
+          [tr.col_impact, sizeShort],
+        ])
+      );
 
       // A link-only row, exactly like more-info-update.ts's own
       // release_url row (a .row with just a .key containing an <a>, no
@@ -2219,121 +2309,94 @@ class UpdateManagerPanel extends HTMLElement {
         const versionText = `${entry.from_version} → ${entry.to_version}`;
         const whenText = relativeTime(tr, entry.installed_at);
         const pill = entry.auto_installed
-          ? this._buildTimerPill({ icon: ICON_AUTO_DOWNLOAD, title: tr.dialog_history_auto })
+          ? this._buildTimerPill({ icon: ICON_AUTO_DOWNLOAD, title: installMethodText(tr, entry) })
           : null;
 
-        // A timeline of versions is only worth having if you can actually
-        // get to what changed. Direct user feedback: the version+time
-        // line used to sit there inert, with a separate small "View
-        // changelog" toggle and a separate link line competing for
-        // attention below it. Now the whole row is the one thing you'd
-        // tap: reads the changelog in place if there is one to read, else
-        // opens the original release page, else it's plain, unclickable
-        // fact (no chevron promising an action that doesn't exist).
-        if (entry.release_notes || entry.release_url) {
-          // One row shape for both interactive cases, not ha-expansion-panel
-          // for one and ha-list-item-button for the other. Direct user
-          // feedback: those two components' own different padding/
-          // typography made entries look inconsistent sitting right next
-          // to each other in the same timeline. Only the trailing icon
-          // differs: a chevron that rotates (expands the changelog in
-          // place, below) versus the external-link glyph (opens the
-          // release page, see ICON_OPEN_IN_NEW's own comment).
-          const hasNotes = !!entry.release_notes;
-          const row = document.createElement("ha-list-item-button");
-          row.hasMeta = true;
-          const headline = document.createElement("span");
-          headline.slot = "headline";
-          headline.textContent = versionText;
-          row.appendChild(headline);
-          const supporting = document.createElement("span");
-          supporting.slot = "supporting-text";
-          supporting.textContent = whenText;
-          row.appendChild(supporting);
-          const end = document.createElement("div");
-          end.slot = "end";
-          end.className = "row-end";
-          if (pill) end.appendChild(pill);
-          const chevron = document.createElement("ha-svg-icon");
-          if (hasNotes) {
-            chevron.path = ICON_CHEVRON_DOWN;
-            chevron.className = "dialog-history-chevron";
-          } else {
-            chevron.path = ICON_OPEN_IN_NEW;
-            chevron.title = tr.dialog_history_release_link;
-          }
-          end.appendChild(chevron);
-          row.appendChild(end);
-          content.appendChild(row);
+        // Every entry expands the same way now, regardless of whether it
+        // has release notes, a bare release_url, or neither (changed
+        // 2026-07-23, direct user feedback: install method + timing is
+        // worth showing even for an entry with no changelog at all, the
+        // same way the pending-update dialog above already shows installed/
+        // latest version and impact as plain fact rows).
+        const row = document.createElement("ha-list-item-button");
+        row.hasMeta = true;
+        const headline = document.createElement("span");
+        headline.slot = "headline";
+        headline.textContent = versionText;
+        row.appendChild(headline);
+        const supporting = document.createElement("span");
+        supporting.slot = "supporting-text";
+        supporting.textContent = whenText;
+        row.appendChild(supporting);
+        const end = document.createElement("div");
+        end.slot = "end";
+        end.className = "row-end";
+        if (pill) end.appendChild(pill);
+        const chevron = document.createElement("ha-svg-icon");
+        chevron.path = ICON_CHEVRON_DOWN;
+        chevron.className = "dialog-history-chevron";
+        end.appendChild(chevron);
+        row.appendChild(end);
+        content.appendChild(row);
 
-          if (hasNotes) {
-            // Collapsed by default, toggled by hand (not ha-expansion-panel's
-            // own built-in toggle, see this block's own comment above) --
-            // just a hidden attribute and a rotated icon, not a new
-            // component of its own.
-            const notesWrap = document.createElement("div");
-            notesWrap.className = "dialog-history-notes-wrap";
-            notesWrap.hidden = true;
-            const markdown = document.createElement("ha-markdown");
-            markdown.content = entry.release_notes;
-            notesWrap.appendChild(markdown);
-            // Still reachable even while primarily reading the notes in
-            // place, same .row/.key link-only pattern as the release_url
-            // row above for the entity's *currently* pending update,
-            // confirmed against more-info-update.ts's own source, not a
-            // one-off style of its own.
-            if (entry.release_url) {
-              const linkRow = document.createElement("div");
-              linkRow.className = "row";
-              const linkKey = document.createElement("div");
-              linkKey.className = "key";
-              const link = document.createElement("a");
-              link.href = entry.release_url;
-              link.target = "_blank";
-              link.rel = "noreferrer";
-              link.textContent = tr.dialog_history_release_link;
-              linkKey.appendChild(link);
-              linkRow.appendChild(linkKey);
-              notesWrap.appendChild(linkRow);
-            }
-            content.appendChild(notesWrap);
-            row.addEventListener("click", () => {
-              notesWrap.hidden = !notesWrap.hidden;
-              chevron.classList.toggle("open", !notesWrap.hidden);
-            });
-          } else {
-            row.addEventListener("click", () => window.open(entry.release_url, "_blank", "noopener,noreferrer"));
-          }
+        // Collapsed by default, toggled by hand (not ha-expansion-panel's
+        // own built-in toggle, see ICON_CHEVRON_DOWN's own comment) -- just
+        // a hidden attribute and a rotated icon, not a new component of its
+        // own.
+        const expandWrap = document.createElement("div");
+        expandWrap.className = "dialog-history-notes-wrap";
+        expandWrap.hidden = true;
 
-          if (entry.release_summary && !hasNotes) {
-            const notesEl = document.createElement("div");
-            notesEl.className = "dialog-history-notes";
-            notesEl.textContent = entry.release_summary;
-            content.appendChild(notesEl);
-          }
-        } else {
-          // Nothing to read, nowhere to go: a plain, unclickable fact --
-          // no chevron, no ha-list-item-button ripple/hover promising an
-          // action that isn't there.
-          const main = document.createElement("div");
-          main.className = "dialog-history-main";
-          const versions = document.createElement("span");
-          versions.className = "dialog-history-versions";
-          versions.textContent = versionText;
-          main.appendChild(versions);
-          const when = document.createElement("span");
-          when.className = "dialog-history-when";
-          when.textContent = whenText;
-          main.appendChild(when);
-          if (pill) main.appendChild(pill);
-          content.appendChild(main);
-          if (entry.release_summary) {
-            const notesEl = document.createElement("div");
-            notesEl.className = "dialog-history-notes";
-            notesEl.textContent = entry.release_summary;
-            content.appendChild(notesEl);
-          }
+        // Same buildKeyValueRows the pending-update section above already
+        // uses for installed/latest version + impact. Any fact this exact
+        // entry doesn't have (available_since/announced_at are both null on
+        // a manual install, or on any entry logged before this session's
+        // audit-trail fields existed at all) is skipped entirely, not shown
+        // as "unknown".
+        expandWrap.appendChild(
+          buildKeyValueRows([
+            [tr.dialog_history_available_since, entry.available_since ? absoluteWhen(tr, entry.available_since, this._hass) : null],
+            [tr.dialog_history_announced, entry.announced_at ? absoluteWhen(tr, entry.announced_at, this._hass) : null],
+            [tr.dialog_history_installed_at, absoluteWhen(tr, entry.installed_at, this._hass)],
+            [tr.dialog_history_method_label, installMethodText(tr, entry)],
+          ])
+        );
+
+        if (entry.release_notes) {
+          const markdown = document.createElement("ha-markdown");
+          markdown.content = entry.release_notes;
+          expandWrap.appendChild(markdown);
+        } else if (entry.release_summary) {
+          const notesEl = document.createElement("div");
+          notesEl.className = "dialog-history-notes";
+          notesEl.textContent = entry.release_summary;
+          expandWrap.appendChild(notesEl);
         }
+        // A release_url with no full notes used to navigate away on click
+        // instead (external-link icon, no expand) -- now just one more link
+        // row inside the same expand, same .row/.key link-only pattern the
+        // entity's own *currently* pending update uses for this (confirmed
+        // against more-info-update.ts's own source, not a one-off style).
+        if (entry.release_url) {
+          const linkRow = document.createElement("div");
+          linkRow.className = "row";
+          const linkKey = document.createElement("div");
+          linkKey.className = "key";
+          const link = document.createElement("a");
+          link.href = entry.release_url;
+          link.target = "_blank";
+          link.rel = "noreferrer";
+          link.textContent = tr.dialog_history_release_link;
+          linkKey.appendChild(link);
+          linkRow.appendChild(linkKey);
+          expandWrap.appendChild(linkRow);
+        }
+
+        content.appendChild(expandWrap);
+        row.addEventListener("click", () => {
+          expandWrap.hidden = !expandWrap.hidden;
+          chevron.classList.toggle("open", !expandWrap.hidden);
+        });
 
         card.appendChild(content);
         list.appendChild(card);
@@ -2553,23 +2616,15 @@ class UpdateManagerPanel extends HTMLElement {
     // of size (see _buildGeneralCard), not a rule about any one of them.
     wrap.appendChild(this._buildGeneralCard(tr));
 
-    const autoInstallSlot = document.createElement("div");
-    // Rebuilds the sibling card only when anyAutoInstall actually flips, not
-    // on every value-changed event -- the "Update rules" form also fires
-    // this for unrelated edits (e.g. a wait-days number), which doesn't
-    // change whether this card should exist at all.
-    let lastAnyAutoInstall = null;
-    const syncAutoInstallCard = () => {
-      const anyAutoInstall = SIZES.some((size) => this._formData[`${size}_auto_install`]);
-      if (anyAutoInstall === lastAnyAutoInstall) return;
-      lastAnyAutoInstall = anyAutoInstall;
-      autoInstallSlot.innerHTML = "";
-      if (anyAutoInstall) autoInstallSlot.appendChild(this._buildAutoInstallCard(tr));
-    };
-
-    wrap.appendChild(this._buildUpdateRulesCard(tr, syncAutoInstallCard));
-    wrap.appendChild(autoInstallSlot);
-    syncAutoInstallCard();
+    wrap.appendChild(this._buildUpdateRulesCard(tr));
+    // Always rendered now (changed 2026-07-23): used to only appear once
+    // some size's own auto_install toggle was on, but the trusted-voter
+    // override living in this same card (see _buildAutoInstallCard) is
+    // reachable independent of any size toggle -- direct user feedback,
+    // "installeer altijd automatisch als [klaptafel] een update als healthy
+    // heeft beoordeeld, ongeacht mijn eigen rules" makes no sense to hide
+    // behind a size setting that isn't otherwise involved.
+    wrap.appendChild(this._buildAutoInstallCard(tr));
     // No explicit Save button -- every field autosaves itself (debounced,
     // see _scheduleAutosave), direct user feedback: "kunnen we niet direct
     // saven bij elke edit ipv via een losse button?".
@@ -2947,11 +3002,7 @@ class UpdateManagerPanel extends HTMLElement {
   // metaphor wasn't pulling its weight). Once the community layer exists
   // (Fase 1/3, see FUTURE.md) that becomes its own, separately-named card
   // next to this one -- revisit both cards' naming together then, not now.
-  // `onAutoInstallChange` fires
-  // after every edit so the sibling auto-install card (a separate ha-card,
-  // not a schema entry of this form) can appear/disappear live as
-  // ${size}_auto_install toggles, without rebuilding this card itself.
-  _buildUpdateRulesCard(tr, onAutoInstallChange) {
+  _buildUpdateRulesCard(tr) {
     const card = document.createElement("ha-card");
     card.outlined = true;
     card.header = tr.settings_header;
@@ -3015,7 +3066,6 @@ class UpdateManagerPanel extends HTMLElement {
       this._formData = { ...this._formData, ...e.detail.value };
       form.data = this._formData;
       this._scheduleAutosave();
-      onAutoInstallChange();
     });
     body.appendChild(form);
     card.appendChild(body);
@@ -3115,6 +3165,41 @@ class UpdateManagerPanel extends HTMLElement {
       this._scheduleAutosave();
     });
     body.appendChild(entitiesForm);
+
+    // Same manually-drawn label + hint pattern as excludedLabel/excludedHint
+    // above -- direct user feedback: "installeer altijd automatisch als
+    // [klaptafel] een update als healthy heeft beoordeeld, ongeacht mijn
+    // eigen rules", then "kan je meerdere mensen vertrouwen?" (yes, a list,
+    // see community_verdict.py's own aggregation: any trusted problematic
+    // vote wins outright, else any trusted healthy vote does).
+    const trustedLabel = document.createElement("p");
+    trustedLabel.className = "field-label";
+    trustedLabel.textContent = tr.field_trusted_voters;
+    body.appendChild(trustedLabel);
+
+    const trustedHint = document.createElement("p");
+    trustedHint.className = "hint";
+    trustedHint.textContent = tr.field_trusted_voters_helper;
+    body.appendChild(trustedHint);
+
+    // selector: { text: { multiple: true } } -- HA's own native way to
+    // collect a free-text list as chips (verified against home-assistant/
+    // frontend's real StringSelector type, stable tag 20260624.6, not
+    // guessed), the same widget shape excluded_entities above uses for
+    // entities. No validation against community-votes itself: purely a
+    // local, unverified username string, see FUTURE.md's own note on this.
+    const trustedForm = document.createElement("ha-form");
+    trustedForm.hass = this._hass;
+    trustedForm.schema = [{ name: "trusted_voters", selector: { text: { multiple: true } } }];
+    trustedForm.data = this._formData;
+    trustedForm.computeLabel = () => "";
+    trustedForm.computeHelper = () => "";
+    trustedForm.addEventListener("value-changed", (e) => {
+      this._formData = { ...this._formData, ...e.detail.value };
+      trustedForm.data = this._formData;
+      this._scheduleAutosave();
+    });
+    body.appendChild(trustedForm);
 
     card.appendChild(body);
     return card;
@@ -3390,29 +3475,11 @@ class UpdateManagerPanel extends HTMLElement {
          included) already sets 0 16px 16px on its own, which must be
          canceled here explicitly, not merely left un-added-to. Changed
          2026-07-22, direct user feedback: "enorme padding om de items".
-         ha-list-item-button (both interactive cases now, see
-         _openDetailDialog) already carries its own generous, native
-         padding. This card's own 16px on top of that was stacking two
-         insets into one that read as excessive. The one case with no
-         built-in padding of its own, the plain unclickable fallback
-         (.dialog-history-main), gets its padding set directly on itself
-         instead, below. */
+         ha-list-item-button (every entry now, see _openDetailDialog)
+         already carries its own generous, native padding, and 2026-07-23's
+         unification means there's no longer a plain-fallback row without
+         one to account for separately. */
       .dialog-history-card { padding: 0; font-size: var(--ha-font-size-s, 13px); }
-      .dialog-history-main {
-        display: flex; align-items: center; gap: var(--ha-space-2, 8px);
-        color: var(--primary-text-color); padding: var(--ha-space-4, 16px);
-      }
-      /* .dialog-history-versions' own flex: 1 already pushes .dialog-history-when
-         and the trailing auto-install pill (see _buildTimerPill above) to the
-         row's far right as a group, no separate margin-left: auto needed. Only
-         used by the plain, unclickable fallback now (no release_notes or
-         release_url at all): the interactive case above builds its own row
-         entirely out of ha-list-item-button instead. */
-      .dialog-history-versions { flex: 1; font-weight: var(--ha-font-weight-medium, 500); }
-      /* Same size as everything else here, not demoted. Direct user
-         feedback: "it's a timeline of versions, the time isn't irrelevant."
-         An earlier pass shrank this to try to de-emphasize it; reverted. */
-      .dialog-history-when { color: var(--secondary-text-color); }
       .dialog-history-notes {
         color: var(--secondary-text-color); margin-top: var(--ha-space-2, 8px);
         white-space: pre-wrap;
@@ -3424,11 +3491,12 @@ class UpdateManagerPanel extends HTMLElement {
          component uses elsewhere in this file (Updates list), looking and
          feeling noticeably weaker by comparison. Direct user feedback. */
       .dialog-history-card ha-list-item-button { font-size: var(--ha-font-size-m, 14px); }
-      /* The chevron for the "expand this row's changelog in place" case
-         (see ICON_CHEVRON_DOWN/_openDetailDialog). Rotates on toggle the
-         same way ha-expansion-panel's own built-in chevron would, since
-         this row no longer uses that component (see this block's own
-         comment above for why). */
+      /* The chevron every history entry now has, expanding its own facts
+         block (and changelog, if any) in place (see ICON_CHEVRON_DOWN/
+         _openDetailDialog). Rotates on toggle the same way
+         ha-expansion-panel's own built-in chevron would, since this row no
+         longer uses that component (see this block's own comment above for
+         why). */
       .dialog-history-chevron {
         transition: transform 150ms ease-in-out;
       }

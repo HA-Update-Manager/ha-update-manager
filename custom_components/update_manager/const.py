@@ -42,6 +42,16 @@ CONF_EXCLUDED_ENTITIES = "excluded_entities"
 # tuning value). See staging_skip.py for what it actually does.
 CONF_HIDE_POSTPONED = "hide_postponed"
 
+# A plain list of GitHub usernames, empty by default -- "I trust @someone's
+# judgement more than my own rules" (see FUTURE.md's "vertrouwenspersoon"
+# note), not part of any profile preset, same reasoning as
+# CONF_EXCLUDED_ENTITIES: a per-instance choice about *who*, not a
+# wait/auto-install tuning value. Direct user feedback, 2026-07-23: a list,
+# not a single username -- more than one person's judgement can be trusted
+# at once. See announcer.py's own effective_auto_install_state for how
+# disagreement among them is resolved.
+CONF_TRUSTED_VOTERS = "trusted_voters"
+
 PROFILE_CONSERVATIVE = "conservative"
 PROFILE_BALANCED = "balanced"
 PROFILE_FREE = "free"

@@ -21,9 +21,11 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .announcer import (
+    AutoInstallContext,
     AutoInstallRules,
     PendingAnnouncement,
     decide_action,
+    effective_auto_install_state,
     size_auto_install_enabled,
     start_announcement,
 )
@@ -143,14 +145,15 @@ class InstallManager:
         self._dirty = False
         self._unsub_timer = None
         self._unsub_coordinator_listener = None
-        # entity_id -> the to_version _async_execute just dispatched
+        # entity_id -> the AutoInstallContext _async_execute just dispatched
         # update.install for -- lets __init__.py's install-listener (fired
         # once the entity's installed_version actually changes, from
         # coordinator.py) tell install_log.py whether *this* completed
-        # install was auto-install's doing or a manual click elsewhere.
-        # Not persisted: only meaningful for the brief window between
-        # dispatching and the entity's own state catching up.
-        self._recently_executed: dict[str, str] = {}
+        # install was auto-install's doing or a manual click elsewhere, and
+        # if so, why (own rules vs. a trusted vote, and when it was
+        # announced). Not persisted: only meaningful for the brief window
+        # between dispatching and the entity's own state catching up.
+        self._recently_executed: dict[str, AutoInstallContext] = {}
         # Serializes every _async_tick pass against every other one: same
         # fix, and same underlying race, as staging_skip.py's own StagingSkipManager
         # lock (see its docstring for the full incident this closes). _on_recompute
@@ -357,13 +360,28 @@ class InstallManager:
         # master_enabled argument, not folded in here -- see that
         # function's own docstring for why (pausing freezes an existing
         # countdown in place instead of removing it).
-        rules_enabled = (
-            size_auto_install_enabled(cached["version_size"], self._rules)
-            if cached and not cached["auto_install_excluded"]
-            else False
-        )
+        #
+        # A trusted voter's own already-aggregated verdict for this exact
+        # version (coordinator.py's own trusted_vote/trusted_voters_matched,
+        # see community_verdict.py) can override both is_ready and the
+        # size's own toggle below -- see effective_auto_install_state's own
+        # docstring for the full reasoning (including why a "healthy"
+        # override still respects auto_install_excluded and an explicit
+        # user skip).
+        if cached:
+            size_enabled = size_auto_install_enabled(cached["version_size"], self._rules)
+            is_ready, rules_enabled, reason = effective_auto_install_state(
+                status=cached["status"],
+                size_enabled=size_enabled,
+                auto_install_excluded=cached["auto_install_excluded"],
+                trusted_vote=cached.get("trusted_vote"),
+            )
+            trusted_voter_usernames = cached.get("trusted_voters_matched", []) if reason == "trusted_voter" else []
+        else:
+            is_ready, rules_enabled, reason, trusted_voter_usernames = False, False, None, []
+
         action = decide_action(
-            is_ready=bool(cached and cached["status"] == "ready"),
+            is_ready=is_ready,
             auto_install_enabled=rules_enabled,
             master_enabled=self._coordinator.master_enabled,
             installable=bool(cached and cached["installable"]),
@@ -377,7 +395,12 @@ class InstallManager:
         if action == "announce":
             await self._async_announce(entity_id, current_to_version, now)
         elif action == "execute":
-            await self._async_execute(entity_id, current_to_version)
+            # reason is guaranteed non-None here: decide_action only ever
+            # returns "execute" when auto_install_enabled was True, and
+            # effective_auto_install_state never returns a True middle
+            # value with a None reason (see its own docstring) -- the
+            # fallback below is defensive, not expected to ever fire.
+            await self._async_execute(entity_id, current_to_version, reason or "rules", trusted_voter_usernames)
         elif action == "remove":
             await self._async_remove(entity_id)
 
@@ -396,7 +419,16 @@ class InstallManager:
             notification_id=f"{_NOTIFICATION_ID_PREFIX}{entity_id}",
         )
 
-    async def _async_execute(self, entity_id: str, to_version: str) -> None:
+    async def _async_execute(
+        self, entity_id: str, to_version: str, reason: str, trusted_voter_usernames: list[str]
+    ) -> None:
+        # The pending announcement's own announced_at is read *before*
+        # _async_remove clears it -- install_log.py wants this for the
+        # History entry's own "Announced" fact, and it's gone from
+        # self._pending the moment _async_remove runs below.
+        pending = self._pending.get(entity_id)
+        announced_at = pending.announced_at if pending is not None else None
+
         # Finalize the decision *before* dispatching the actual install
         # call: once the wait has elapsed, a cancel that arrives while the
         # install is being dispatched must have no effect (too late), not
@@ -432,8 +464,16 @@ class InstallManager:
         # leaves the entity to be re-evaluated fresh next tick, same
         # natural retry _async_run_install's own except-branch already
         # relies on for the actual install call.
+        context = AutoInstallContext(
+            to_version=to_version,
+            reason=reason,
+            trusted_voter_usernames=trusted_voter_usernames,
+            announced_at=announced_at,
+        )
         try:
-            result = await self._rollout_manager.async_request_install(entity_id, to_version, service_data, is_auto=True)
+            result = await self._rollout_manager.async_request_install(
+                entity_id, to_version, service_data, is_auto=True, context=context
+            )
         except Exception:
             _LOGGER.exception("Update Manager couldn't check the rollout queue for %s", entity_id)
             return
@@ -445,7 +485,7 @@ class InstallManager:
         # in place by the time coordinator.py's install-listener notices
         # installed_version actually changed, which can happen well before
         # the update.install call itself finishes.
-        self._recently_executed[entity_id] = to_version
+        self._recently_executed[entity_id] = context
         # Its own task, not awaited inline: an install can take a while
         # (e.g. firmware download/flash), and one slow/failing entity
         # shouldn't hold up evaluating every other entity in the same tick.
@@ -456,24 +496,25 @@ class InstallManager:
         # Update Manager at all.
         self.hass.async_create_task(self._async_run_install(entity_id, to_version, service_data))
 
-    def mark_recently_executed(self, entity_id: str, to_version: str) -> None:
+    def mark_recently_executed(self, entity_id: str, context: AutoInstallContext) -> None:
         """Called by rollout_manager.py (via the setter it's given in
         __init__.py) when it dispatches a queued, auto-install-originated
         entry itself, once that entity's own turn in a Zigbee rollout
         finally comes: _async_execute above already does this directly
         for the immediately-dispatched (not queued at all) case; this
         covers the "was deferred, RolloutManager pressed the button later"
-        case, so was_auto_installed() still attributes it correctly either
-        way."""
-        self._recently_executed[entity_id] = to_version
+        case, so was_auto_installed() still attributes it correctly (and
+        with the same reason/announced_at captured back when this was
+        first requested, not whatever might apply *now*) either way."""
+        self._recently_executed[entity_id] = context
 
-    def was_auto_installed(self, entity_id: str, to_version: str) -> bool:
+    def was_auto_installed(self, entity_id: str, to_version: str) -> AutoInstallContext | None:
         """Consumed once by __init__.py's install-listener callback, fired
         when coordinator.py notices installed_version actually changed to
-        `to_version` -- True only if *this* completed install was the one
-        _async_execute just dispatched, not a manual click (or any other
-        means) that happened to land on the same entity around the same
-        time.
+        `to_version` -- non-None only if *this* completed install was the
+        one _async_execute just dispatched, not a manual click (or any
+        other means) that happened to land on the same entity around the
+        same time.
 
         Only pops the record on an actual match, not unconditionally --
         found live (well, found by review): a plain .pop(entity_id, None)
@@ -484,10 +525,11 @@ class InstallManager:
         change did) -- the genuine auto-install's own callback would then
         find no record left and misattribute it as a manual install in
         install_log.py."""
-        if self._recently_executed.get(entity_id) != to_version:
-            return False
+        context = self._recently_executed.get(entity_id)
+        if context is None or context.to_version != to_version:
+            return None
         del self._recently_executed[entity_id]
-        return True
+        return context
 
     async def _async_run_install(self, entity_id: str, to_version: str, service_data: dict[str, Any]) -> None:
         try:
@@ -515,7 +557,8 @@ class InstallManager:
         # re-announced. A no-op for a queued entry that was never auto-
         # install's own doing in the first place (never set in
         # self._recently_executed to begin with).
-        if self._recently_executed.get(entity_id) == to_version:
+        context = self._recently_executed.get(entity_id)
+        if context is not None and context.to_version == to_version:
             del self._recently_executed[entity_id]
 
         name = _friendly_name(self.hass, entity_id)

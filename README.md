@@ -25,8 +25,12 @@ time to be noticed and fixed before you commit to it.
   specific update version healthy or problematic, and cast your own vote from the Updates or History
   tab. Covers HACS integrations, Home Assistant Core/Supervisor/OS, real vendor Zigbee device firmware,
   and Supervisor add-ons.
+* **Trusted voters:** name one or more GitHub usernames whose verdict on a specific version overrides
+  your own auto-install rules for that version, in either direction: healthy installs it regardless of
+  your own rules, problematic blocks it even if your rules would otherwise allow it.
 * **Sidebar panel:** an Updates tab with live install progress and an "update all" button, a History
-  tab with changelogs, and an autosaving Settings tab.
+  tab with changelogs and a full per-entry audit trail (when it became available, was announced, and
+  was installed, and how), and an autosaving Settings tab.
 
 ---
 

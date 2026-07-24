@@ -39,6 +39,52 @@ class TestSizeAutoInstallEnabled:
         assert announcer.size_auto_install_enabled("big", rules) is True
 
 
+class TestEffectiveAutoInstallState:
+    def test_no_trusted_vote_falls_through_to_today(self):
+        assert announcer.effective_auto_install_state(
+            status="ready", size_enabled=True, auto_install_excluded=False, trusted_vote=None
+        ) == (True, True, "rules")
+        # reason reflects *why* auto_install_enabled is what it is, decoupled
+        # from readiness -- still "rules" even while still waiting, since
+        # that's already the reason it *would* auto-install once ready.
+        assert announcer.effective_auto_install_state(
+            status="waiting", size_enabled=True, auto_install_excluded=False, trusted_vote=None
+        ) == (False, True, "rules")
+        assert announcer.effective_auto_install_state(
+            status="ready", size_enabled=False, auto_install_excluded=False, trusted_vote=None
+        ) == (True, False, None)
+
+    def test_trusted_healthy_overrides_wait_and_toggle(self):
+        # Neither ready nor toggle-enabled, but a trusted healthy vote still
+        # forces both -- the whole point of the feature.
+        assert announcer.effective_auto_install_state(
+            status="waiting", size_enabled=False, auto_install_excluded=False, trusted_vote="healthy"
+        ) == (True, True, "trusted_voter")
+
+    def test_trusted_problematic_blocks_even_when_otherwise_eligible(self):
+        assert announcer.effective_auto_install_state(
+            status="ready", size_enabled=True, auto_install_excluded=False, trusted_vote="problematic"
+        ) == (True, False, None)
+
+    def test_auto_install_excluded_wins_over_a_healthy_trusted_vote(self):
+        # Core/Supervisor/OS, or anything explicitly excluded: never
+        # auto-installed no matter what anyone voted.
+        assert announcer.effective_auto_install_state(
+            status="ready", size_enabled=True, auto_install_excluded=True, trusted_vote="healthy"
+        ) == (True, False, None)
+        assert announcer.effective_auto_install_state(
+            status="waiting", size_enabled=False, auto_install_excluded=True, trusted_vote="healthy"
+        ) == (False, False, None)
+
+    def test_explicit_skip_wins_over_a_healthy_trusted_vote(self):
+        # A direct, deliberate update.skip outranks an indirect trust
+        # setting -- a trusted healthy vote must not silently un-skip a
+        # version the user themselves chose to skip.
+        assert announcer.effective_auto_install_state(
+            status="skipped", size_enabled=True, auto_install_excluded=False, trusted_vote="healthy"
+        ) == (False, False, None)
+
+
 class TestDecideAction:
     def test_not_ready_with_no_existing_announcement_does_nothing(self):
         action = announcer.decide_action(
