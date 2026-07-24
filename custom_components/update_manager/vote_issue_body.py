@@ -62,7 +62,8 @@ def build_issue_body(
             _field("Owner/repo", identity.owner_repo),
             _field("Manufacturer/model", identity.manufacturer_model),
             _field("App slug", identity.app_slug),
-            _field("Version", identity.version),
+            _field("From version", identity.from_version),
+            _field("To version", identity.to_version),
             _field("Verdict", verdict),
             _field(
                 "Reason category",

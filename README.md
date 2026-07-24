@@ -22,12 +22,13 @@ time to be noticed and fixed before you commit to it.
 * **Zigbee rollout pacing:** identical Zigbee devices (ZHA or Zigbee2MQTT) update one at a time instead
   of all at once, protecting mesh stability.
 * **Community verdict and voting:** link your GitHub account to see whether other users found a
-  specific update version healthy or problematic, and cast your own vote from the Updates or History
-  tab. Covers HACS integrations, Home Assistant Core/Supervisor/OS, real vendor Zigbee device firmware,
-  and Supervisor add-ons.
-* **Trusted voters:** name one or more GitHub usernames whose verdict on a specific version overrides
-  your own auto-install rules for that version, in either direction: healthy installs it regardless of
-  your own rules, problematic blocks it even if your rules would otherwise allow it.
+  specific version *jump* (the version you're coming from, not just the one you're landing on) healthy
+  or problematic, and cast your own vote from the Updates or History tab. Also shows other jumps to the
+  same destination version, if any have been rated. Covers HACS integrations, Home Assistant
+  Core/Supervisor/OS, real vendor Zigbee device firmware, and Supervisor add-ons.
+* **Trusted voters:** name one or more GitHub usernames whose verdict on your exact version jump
+  overrides your own auto-install rules, in either direction: healthy installs it regardless of your
+  own rules, problematic blocks it even if your rules would otherwise allow it.
 * **Sidebar panel:** an Updates tab with live install progress and an "update all" button, a History
   tab with changelogs and a full per-entry audit trail (when it became available, was announced, and
   was installed, and how), and an autosaving Settings tab.

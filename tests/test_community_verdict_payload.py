@@ -1,0 +1,208 @@
+"""Tests for the pure, HA-independent to_version-payload extraction."""
+from __future__ import annotations
+
+import importlib.util
+import sys
+from pathlib import Path
+
+_PKG_DIR = Path(__file__).resolve().parent.parent / "custom_components" / "update_manager"
+
+_spec = importlib.util.spec_from_file_location(
+    "community_verdict_payload", _PKG_DIR / "community_verdict_payload.py"
+)
+community_verdict_payload = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = community_verdict_payload
+_spec.loader.exec_module(community_verdict_payload)
+
+
+def _payload(**jumps):
+    return {"jumps": jumps}
+
+
+class TestVerdictFromPayload:
+    def test_returns_my_jumps_verdict(self):
+        payload = _payload(**{"3.5.1": {"votes": {}, "verdict": {"healthy_count": 2, "problematic_count": 0}}})
+        assert community_verdict_payload.verdict_from_payload(payload, "3.5.1") == {
+            "healthy_count": 2,
+            "problematic_count": 0,
+        }
+
+    def test_none_when_jump_not_rated_at_all(self):
+        payload = _payload(**{"3.5.1": {"votes": {}, "verdict": {"healthy_count": 1, "problematic_count": 0}}})
+        assert community_verdict_payload.verdict_from_payload(payload, "0.1.0") is None
+
+    def test_none_when_payload_itself_is_none(self):
+        assert community_verdict_payload.verdict_from_payload(None, "3.5.1") is None
+
+
+class TestMyVoteFromPayload:
+    def test_returns_specific_users_own_verdict(self):
+        payload = _payload(
+            **{
+                "3.5.1": {
+                    "votes": {"klaptafel": {"verdict": "healthy"}, "alice": {"verdict": "problematic"}},
+                    "verdict": {"healthy_count": 1, "problematic_count": 1},
+                }
+            }
+        )
+        assert community_verdict_payload.my_vote_from_payload(payload, "3.5.1", "klaptafel") == "healthy"
+        assert community_verdict_payload.my_vote_from_payload(payload, "3.5.1", "alice") == "problematic"
+
+    def test_none_when_username_never_voted_on_this_jump(self):
+        payload = _payload(**{"3.5.1": {"votes": {"klaptafel": {"verdict": "healthy"}}, "verdict": {}}})
+        assert community_verdict_payload.my_vote_from_payload(payload, "3.5.1", "bob") is None
+
+    def test_none_when_username_voted_on_a_different_jump_only(self):
+        # Confirms a vote is genuinely scoped to one exact jump, not the
+        # destination version as a whole -- someone who voted on the 0.1.0
+        # jump must not appear to have voted on the 3.5.1 jump too.
+        payload = _payload(
+            **{
+                "0.1.0": {"votes": {"klaptafel": {"verdict": "healthy"}}, "verdict": {}},
+                "3.5.1": {"votes": {}, "verdict": {}},
+            }
+        )
+        assert community_verdict_payload.my_vote_from_payload(payload, "3.5.1", "klaptafel") is None
+
+
+class TestTrustedVoteFromPayload:
+    def test_no_trusted_voters_configured_short_circuits(self):
+        payload = _payload(**{"3.5.1": {"votes": {"klaptafel": {"verdict": "problematic"}}, "verdict": {}}})
+        assert community_verdict_payload.trusted_vote_from_payload(payload, "3.5.1", []) == (None, [])
+
+    def test_single_trusted_voter_healthy(self):
+        payload = _payload(**{"3.5.1": {"votes": {"klaptafel": {"verdict": "healthy"}}, "verdict": {}}})
+        assert community_verdict_payload.trusted_vote_from_payload(payload, "3.5.1", ["klaptafel"]) == (
+            "healthy",
+            ["klaptafel"],
+        )
+
+    def test_single_trusted_voter_problematic(self):
+        payload = _payload(**{"3.5.1": {"votes": {"klaptafel": {"verdict": "problematic"}}, "verdict": {}}})
+        assert community_verdict_payload.trusted_vote_from_payload(payload, "3.5.1", ["klaptafel"]) == (
+            "problematic",
+            ["klaptafel"],
+        )
+
+    def test_any_problematic_wins_even_if_others_voted_healthy(self):
+        # Same asymmetric-safety rule as the aggregate auto-install quorum
+        # (FUTURE.md's own point 5): one problematic vote among the trusted
+        # list blocks outright, regardless of how many others voted healthy.
+        payload = _payload(
+            **{
+                "3.5.1": {
+                    "votes": {
+                        "alice": {"verdict": "healthy"},
+                        "bob": {"verdict": "problematic"},
+                        "carol": {"verdict": "healthy"},
+                    },
+                    "verdict": {},
+                }
+            }
+        )
+        verdict, matched = community_verdict_payload.trusted_vote_from_payload(
+            payload, "3.5.1", ["alice", "bob", "carol"]
+        )
+        assert verdict == "problematic"
+        assert matched == ["bob"]
+
+    def test_healthy_only_when_none_of_the_trusted_voters_are_problematic(self):
+        payload = _payload(
+            **{
+                "3.5.1": {
+                    "votes": {"alice": {"verdict": "healthy"}, "carol": {"verdict": "healthy"}},
+                    "verdict": {},
+                }
+            }
+        )
+        verdict, matched = community_verdict_payload.trusted_vote_from_payload(payload, "3.5.1", ["alice", "carol"])
+        assert verdict == "healthy"
+        assert set(matched) == {"alice", "carol"}
+
+    def test_trusted_voter_who_never_voted_on_this_jump_is_ignored(self):
+        payload = _payload(**{"3.5.1": {"votes": {"alice": {"verdict": "healthy"}}, "verdict": {}}})
+        assert community_verdict_payload.trusted_vote_from_payload(payload, "3.5.1", ["dave"]) == (None, [])
+
+    def test_trusted_vote_scoped_to_my_own_jump_not_a_different_one(self):
+        # A trusted username's vote on a *different* from_version landing on
+        # the same destination must not override my own, different jump.
+        payload = _payload(
+            **{
+                "0.1.0": {"votes": {"klaptafel": {"verdict": "healthy"}}, "verdict": {}},
+                "3.5.1": {"votes": {}, "verdict": {}},
+            }
+        )
+        assert community_verdict_payload.trusted_vote_from_payload(payload, "3.5.1", ["klaptafel"]) == (None, [])
+
+
+class TestOtherJumpsFromPayload:
+    def test_excludes_my_own_jump(self):
+        payload = _payload(
+            **{
+                "3.5.1": {"votes": {}, "verdict": {"healthy_count": 5, "problematic_count": 0}},
+                "0.1.0": {"votes": {}, "verdict": {"healthy_count": 1, "problematic_count": 0}},
+            }
+        )
+        others = community_verdict_payload.other_jumps_from_payload(payload, "3.5.1")
+        assert [j["from_version"] for j in others] == ["0.1.0"]
+
+    def test_empty_when_no_other_jumps_exist(self):
+        payload = _payload(**{"3.5.1": {"votes": {}, "verdict": {"healthy_count": 5, "problematic_count": 0}}})
+        assert community_verdict_payload.other_jumps_from_payload(payload, "3.5.1") == []
+
+    def test_empty_when_payload_is_none(self):
+        assert community_verdict_payload.other_jumps_from_payload(None, "3.5.1") == []
+
+    def test_skips_a_jump_with_no_verdict_yet(self):
+        payload = _payload(**{"3.5.1": {"votes": {}, "verdict": None}})
+        assert community_verdict_payload.other_jumps_from_payload(payload, "0.1.0") == []
+
+    def test_sorted_by_total_votes_descending(self):
+        payload = _payload(
+            **{
+                "current": {"votes": {}, "verdict": {"healthy_count": 0, "problematic_count": 0}},
+                "0.1.0": {"votes": {}, "verdict": {"healthy_count": 1, "problematic_count": 0}},
+                "2.0.0": {"votes": {}, "verdict": {"healthy_count": 3, "problematic_count": 1}},
+                "1.0.0": {"votes": {}, "verdict": {"healthy_count": 2, "problematic_count": 0}},
+            }
+        )
+        others = community_verdict_payload.other_jumps_from_payload(payload, "current")
+        assert [j["from_version"] for j in others] == ["2.0.0", "1.0.0", "0.1.0"]
+
+    def test_capped_at_max_other_jumps(self):
+        jumps = {
+            f"1.0.{i}": {"votes": {}, "verdict": {"healthy_count": i, "problematic_count": 0}} for i in range(10)
+        }
+        payload = _payload(**jumps)
+        others = community_verdict_payload.other_jumps_from_payload(payload, "nonexistent")
+        assert len(others) == community_verdict_payload.MAX_OTHER_JUMPS
+        # Highest counts kept, not an arbitrary/first-N slice.
+        assert [j["from_version"] for j in others] == ["1.0.9", "1.0.8", "1.0.7", "1.0.6", "1.0.5"]
+
+    def test_returned_shape_has_only_the_documented_fields(self):
+        payload = _payload(
+            **{
+                "3.5.1": {"votes": {}, "verdict": {}},
+                "0.1.0": {
+                    "votes": {},
+                    "verdict": {
+                        "healthy_count": 1,
+                        "problematic_count": 0,
+                        "quorum": 3,
+                        "quorum_reached": False,
+                        "auto_install_eligible": False,
+                        "updated_at": "2026-07-24T00:00:00+00:00",
+                    },
+                },
+            }
+        )
+        others = community_verdict_payload.other_jumps_from_payload(payload, "3.5.1")
+        assert others == [
+            {
+                "from_version": "0.1.0",
+                "healthy_count": 1,
+                "problematic_count": 0,
+                "quorum_reached": False,
+                "auto_install_eligible": False,
+            }
+        ]

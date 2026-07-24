@@ -182,7 +182,7 @@ const TRANSLATIONS = {
       "The postponement/auto-install rules above apply per size. Everything below (announcement notice, always-manual entities, trusted voters) applies regardless.",
     field_trusted_voters: "Trusted voters",
     field_trusted_voters_helper:
-      "GitHub usernames whose community vote (see the Community section in a version's own dialog) overrides your own rules for that exact version: healthy always auto-installs it, problematic always blocks auto-install, even if a size's own rules above say otherwise. If more than one is listed and they disagree on the same version, a problematic vote wins.",
+      "GitHub usernames whose community vote (see the Community section in a version's own dialog) overrides your own rules for that exact version jump: healthy always auto-installs it, problematic always blocks auto-install, even if a size's own rules above say otherwise. If more than one is listed and they disagree on the same jump, a problematic vote wins.",
     announce_hours_label: "Announcement notice (hours)",
     announce_hours_helper:
       "How long you have to cancel a scheduled automatic install (Updates tab) before it actually happens, once the postponement period is over.",
@@ -193,7 +193,13 @@ const TRANSLATIONS = {
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
     community_not_yet_rated: "Not yet rated by others",
     community_vote_link_prompt: "Link your GitHub account in Settings to vote.",
-    community_vote_prompt: (version) => `How's version ${version} treating you?`,
+    // Names both endpoints of the jump, not just the destination (changed
+    // 2026-07-24: a verdict is about the exact jump, going from 0.1.0 to
+    // 3.5.2 is a different risk than going from 3.5.1 to 3.5.2 even though
+    // both land on the same version).
+    community_vote_prompt: (fromVersion, toVersion) => `How's the jump from ${fromVersion} to ${toVersion} treating you?`,
+    community_other_jumps_heading: "Other jumps to this version",
+    community_other_jump_line: (fromVersion, badgeTitle) => `From ${fromVersion}: ${badgeTitle}`,
     community_report_toggle: "Report a known issue",
     community_report_intro:
       "Already know this update will cause problems, e.g. from the release notes? Report it before installing, so others are warned before they update too.",
@@ -387,7 +393,7 @@ const TRANSLATIONS = {
       "De uitstel-/auto-installatieregels hierboven gelden per grootte. Alles hieronder (aankondigingstermijn, altijd-handmatige entiteiten, vertrouwde stemmers) geldt sowieso.",
     field_trusted_voters: "Vertrouwde stemmers",
     field_trusted_voters_helper:
-      "GitHub-gebruikersnamen wiens community-stem (zie de sectie Community in de dialoog van een versie) je eigen regels overstemt voor precies die versie: gezond installeert 'm altijd automatisch, problematisch blokkeert auto-installatie altijd, ook als een grootte's eigen regels hierboven iets anders zeggen. Staan er meerdere in de lijst en zijn ze het niet eens over dezelfde versie, dan wint een problematische stem.",
+      "GitHub-gebruikersnamen wiens community-stem (zie de sectie Community in de dialoog van een versie) je eigen regels overstemt voor precies die sprong: gezond installeert 'm altijd automatisch, problematisch blokkeert auto-installatie altijd, ook als een grootte's eigen regels hierboven iets anders zeggen. Staan er meerdere in de lijst en zijn ze het niet eens over dezelfde sprong, dan wint een problematische stem.",
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper:
       "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
@@ -401,7 +407,9 @@ const TRANSLATIONS = {
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
     community_not_yet_rated: "Nog niet beoordeeld door anderen",
     community_vote_link_prompt: "Koppel je GitHub-account in Instellingen om te stemmen.",
-    community_vote_prompt: (version) => `Hoe bevalt versie ${version} je?`,
+    community_vote_prompt: (fromVersion, toVersion) => `Hoe bevalt de sprong van ${fromVersion} naar ${toVersion} je?`,
+    community_other_jumps_heading: "Andere sprongen naar deze versie",
+    community_other_jump_line: (fromVersion, badgeTitle) => `Van ${fromVersion}: ${badgeTitle}`,
     community_report_toggle: "Meld een bekend probleem",
     community_report_intro:
       "Weet je al dat deze update problemen gaat geven, bijvoorbeeld via de release notes? Meld dat vast voordat je 'm installeert, zodat anderen gewaarschuwd zijn voordat ze zelf updaten.",
@@ -2767,7 +2775,16 @@ class UpdateManagerPanel extends HTMLElement {
   // cost its own line.
   _buildCommunitySection(tr, entityId, historyEntry, u, isDialogStale) {
     const votingVersion = historyEntry ? historyEntry.to_version : u ? u.latest_version : null;
-    if (!votingVersion) return null;
+    // The version upgraded *from* -- a vote/verdict is about the exact jump
+    // (changed 2026-07-24, direct user feedback: going from 0.1.0 to 3.5.2
+    // is a different risk than going from 3.5.1 to 3.5.2, even though both
+    // land on the same version), not the destination version alone. Both
+    // journeys already have this in hand: historyEntry (Journey B) already
+    // carries its own from_version, u (Journey A) already carries its own
+    // installed_version, same as install_log.py/coordinator.py's own
+    // from_version/installed_version fields.
+    const fromVersion = historyEntry ? historyEntry.from_version : u ? u.installed_version : null;
+    if (!votingVersion || !fromVersion) return null;
 
     const section = document.createElement("div");
     section.className = "dialog-community-section";
@@ -2784,17 +2801,19 @@ class UpdateManagerPanel extends HTMLElement {
     infoGroup.className = "dialog-community-info";
     section.appendChild(infoGroup);
 
-    if (historyEntry) {
-      // A friendly question, not a dry "voting on version X" statement --
-      // direct user feedback, 2026-07-22: still names the exact version
-      // (the whole reason this line exists at all), just asked like a
-      // person would rather than stated like a system log. Normal text
-      // weight, not `.hint`: this is the section's own lead line now, not
-      // a secondary detail.
-      const scopeLine = document.createElement("p");
-      scopeLine.textContent = tr.community_vote_prompt(historyEntry.to_version);
-      infoGroup.appendChild(scopeLine);
-    }
+    // A friendly question, not a dry "voting on version X" statement --
+    // direct user feedback, 2026-07-22: still names the exact version (the
+    // whole reason this line exists at all), just asked like a person
+    // would rather than stated like a system log. Normal text weight, not
+    // `.hint`: this is the section's own lead line now, not a secondary
+    // detail. Built unconditionally now (changed 2026-07-24: used to only
+    // show for historyEntry/Journey B, leaving Journey A's pending-update
+    // dialog with no such line at all) and names both endpoints of the
+    // jump, not just the destination -- see this method's own fromVersion
+    // comment above for why that distinction matters.
+    const scopeLine = document.createElement("p");
+    scopeLine.textContent = tr.community_vote_prompt(fromVersion, votingVersion);
+    infoGroup.appendChild(scopeLine);
 
     // Icon + sentence, not a separate heading plus a separate disclaimer
     // paragraph on top -- reuses verdictBadge (the exact same function the
@@ -2840,6 +2859,38 @@ class UpdateManagerPanel extends HTMLElement {
         const verdictIcon = document.createElement("ha-svg-icon");
         verdictIcon.path = line.icon;
         verdictRow.insertBefore(verdictIcon, verdictText);
+      }
+
+      // Other jumps landing on this same destination version, if any --
+      // direct user feedback, 2026-07-24: "in de update dialog wil ik dan
+      // ook zien welke sprongen naar de gewenste nieuwe versie wel en niet
+      // als veilig zijn beoordeeld", with my own jump (verdictRow above)
+      // always shown first/primary. Nothing rendered at all when there
+      // simply aren't any yet (no empty-state message) -- this data is
+      // inherently sparse early on, and a "nothing here" line would just
+      // be noise for the common case.
+      if (result.other_jumps && result.other_jumps.length) {
+        const otherJumpsHeading = document.createElement("p");
+        otherJumpsHeading.className = "hint";
+        otherJumpsHeading.textContent = tr.community_other_jumps_heading;
+        infoGroup.appendChild(otherJumpsHeading);
+        result.other_jumps.forEach((jump) => {
+          // Reuses verdictBadge (the exact same healthy/problematic-count
+          // derivation the Updates-tab row's own pill and this section's
+          // own verdictRow above already use), rather than re-deriving the
+          // icon/count/direction logic a third time.
+          const badge = verdictBadge(tr, { community_verdict: jump });
+          if (!badge) return;
+          const otherRow = document.createElement("div");
+          otherRow.className = "dialog-community-verdict-line";
+          const otherIcon = document.createElement("ha-svg-icon");
+          otherIcon.path = badge.icon;
+          const otherText = document.createElement("span");
+          otherText.textContent = tr.community_other_jump_line(jump.from_version, badge.title);
+          otherRow.appendChild(otherIcon);
+          otherRow.appendChild(otherText);
+          infoGroup.appendChild(otherRow);
+        });
       }
 
       const status = await this._hass.callWS({ type: "update_manager/github_link_status" });

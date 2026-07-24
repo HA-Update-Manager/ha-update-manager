@@ -405,16 +405,41 @@ def _release_url_for_version(hass: HomeAssistant, data: dict, entity_id: str, ve
     return None
 
 
+def _from_version_for_version(hass: HomeAssistant, data: dict, entity_id: str, version: str) -> str | None:
+    """The from_version (the version upgraded *from*) that applies to this
+    exact (entity_id, version) pair -- mirrors _release_url_for_version's
+    own two-case shape exactly, so a vote/verdict lookup resolves the whole
+    jump (not just the destination) server-side, the same defensive
+    precedent this file already established for release_url. Checked in the
+    same two places: install_log.py's own entries (a specific past install,
+    e.g. voting from the History tab, already carries its own from_version)
+    first; the entity's live installed_version state second, for the
+    still-pending, not-yet-installed case."""
+    for entry in reversed(data["install_log"].entries):
+        if entry["entity_id"] == entity_id and entry["to_version"] == version:
+            return entry.get("from_version")
+    state = hass.states.get(entity_id)
+    if state is not None and state.attributes.get("latest_version") == version:
+        return state.attributes.get("installed_version")
+    return None
+
+
 def _resolve_identity_for_version(
     hass: HomeAssistant, data: dict, entity_id: str, version: str
 ) -> ResolvedIdentity | None:
-    """_release_url_for_version + resolve_full_identity, the one pairing
-    both _handle_verdict_for_version and _handle_vote need, resolved once
-    instead of each handler repeating both steps on its own (found by
-    review: resolve_full_identity does a device_registry lookup, worth not
-    duplicating)."""
+    """_release_url_for_version + _from_version_for_version +
+    resolve_full_identity, the one pairing both _handle_verdict_for_version
+    and _handle_vote need, resolved once instead of each handler repeating
+    these steps on its own (found by review: resolve_full_identity does a
+    device_registry lookup, worth not duplicating). None (rather than
+    calling resolve_full_identity with a bogus from_version) whenever the
+    from_version can't be determined at all -- same "can't identify this"
+    treatment as a missing release_url."""
     release_url = _release_url_for_version(hass, data, entity_id, version)
-    return resolve_full_identity(hass, entity_id, release_url, version)
+    from_version = _from_version_for_version(hass, data, entity_id, version)
+    if from_version is None:
+        return None
+    return resolve_full_identity(hass, entity_id, release_url, version, from_version)
 
 
 async def _async_resolve_my_verdict(hass: HomeAssistant, data: dict, identity: ResolvedIdentity) -> str | None:
@@ -430,7 +455,7 @@ async def _async_resolve_my_verdict(hass: HomeAssistant, data: dict, identity: R
     by hand, and the _handle_vote copy was missing the backfill, silently
     paying the extra request again on every future check until an actual
     vote was cast)."""
-    my_verdict = data["my_votes_manager"].my_verdict(identity.votes_path)
+    my_verdict = data["my_votes_manager"].my_verdict(identity.jump_key)
     if my_verdict is not None:
         return my_verdict
     username = data["github_auth_manager"].linked_username
@@ -438,7 +463,7 @@ async def _async_resolve_my_verdict(hass: HomeAssistant, data: dict, identity: R
         return None
     my_verdict = await async_fetch_my_vote(hass, identity, username)
     if my_verdict is not None:
-        await data["my_votes_manager"].async_remember(identity.votes_path, my_verdict)
+        await data["my_votes_manager"].async_remember(identity.jump_key, my_verdict)
     return my_verdict
 
 
@@ -475,10 +500,22 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     # early. One extra live HTTP GET per dialog open is the right,
     # deliberate price for "always tell the truth right now" on an
     # interactive, user-initiated check.
-    verdict = await async_fetch_verdict_uncached(hass, identity) if identity is not None else None
+    verdict, other_jumps = (
+        await async_fetch_verdict_uncached(hass, identity) if identity is not None else (None, [])
+    )
     my_verdict = await _async_resolve_my_verdict(hass, data, identity) if identity is not None else None
     connection.send_result(
-        msg["id"], {"verdict": verdict, "identifiable": identity is not None, "my_verdict": my_verdict}
+        msg["id"],
+        {
+            "verdict": verdict,
+            "identifiable": identity is not None,
+            "my_verdict": my_verdict,
+            # Every other jump landing on this same destination version
+            # (direct user feedback, 2026-07-24), my own jump excluded --
+            # "verdict"/"my_verdict" above already are my own jump, always
+            # shown first/primary in the dialog by construction.
+            "other_jumps": other_jumps,
+        },
     )
 
 
@@ -539,7 +576,7 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
     except Exception:
         connection.send_error(msg["id"], "vote_failed", "Couldn't submit the vote, try again")
         return
-    await data["my_votes_manager"].async_remember(identity.votes_path, msg["verdict"])
+    await data["my_votes_manager"].async_remember(identity.jump_key, msg["verdict"])
     connection.send_result(msg["id"], {"updated": is_vote_update})
 
 

@@ -560,20 +560,22 @@ class UpdateManagerCoordinator:
         # needed) is fired as its own background task instead, see
         # _async_refresh_community_verdict.
         community_verdict = (
-            self._community_verdict_manager.peek_cached_verdict(entity_id)
+            self._community_verdict_manager.peek_cached_verdict(entity_id, latest, current)
             if self._community_verdict_manager is not None
             else None
         )
         # Same reasoning as community_verdict above: whatever's already
         # known, synchronously, refreshed as its own background task below.
         trusted_vote, trusted_voters_matched = (
-            self._community_verdict_manager.peek_cached_trusted_vote(entity_id, latest)
+            self._community_verdict_manager.peek_cached_trusted_vote(entity_id, latest, current)
             if self._community_verdict_manager is not None
             else (None, [])
         )
         if self._community_verdict_manager is not None:
             self.hass.async_create_task(
-                self._async_refresh_community_verdict(entity_id, state.attributes.get("release_url"), latest)
+                self._async_refresh_community_verdict(
+                    entity_id, state.attributes.get("release_url"), latest, current
+                )
             )
         self.cache[entity_id] = {
             "entity_id": entity_id,
@@ -621,22 +623,33 @@ class UpdateManagerCoordinator:
             "trusted_voters_matched": trusted_voters_matched,
         }
 
-    async def _async_refresh_community_verdict(self, entity_id: str, release_url: str | None, latest: str) -> None:
+    async def _async_refresh_community_verdict(
+        self, entity_id: str, release_url: str | None, latest: str, installed_version: str
+    ) -> None:
         """Its own task, not awaited inline by _async_cache_active (see that
         method's own comment): patches this entity's cache entry once the
         real lookup resolves, but only if that entry still exists and still
-        refers to the exact same version, entity_id's own cache entry may
-        have moved on (a newer version, or no longer pending at all) by the
-        time this background fetch finishes. Patches trusted_vote/
-        trusted_voters_matched too -- async_get_verdict fetches and caches
-        both in the same call, see community_verdict.py's own docstring."""
+        refers to the exact same jump (both latest_version AND
+        installed_version -- entity_id's own cache entry may have moved on,
+        e.g. a newer version, no longer pending at all, or even an
+        intermediate manual install changing installed_version underneath
+        this same latest_version, by the time this background fetch
+        finishes). Patches trusted_vote/trusted_voters_matched too --
+        async_get_verdict fetches and caches both in the same call, see
+        community_verdict.py's own docstring."""
         assert self._community_verdict_manager is not None
-        verdict = await self._community_verdict_manager.async_get_verdict(entity_id, release_url, latest)
+        verdict = await self._community_verdict_manager.async_get_verdict(
+            entity_id, release_url, latest, installed_version
+        )
         trusted_vote, trusted_voters_matched = self._community_verdict_manager.peek_cached_trusted_vote(
-            entity_id, latest
+            entity_id, latest, installed_version
         )
         cached = self.cache.get(entity_id)
-        if cached is not None and cached.get("latest_version") == latest:
+        if (
+            cached is not None
+            and cached.get("latest_version") == latest
+            and cached.get("installed_version") == installed_version
+        ):
             cached["community_verdict"] = verdict
             cached["trusted_vote"] = trusted_vote
             cached["trusted_voters_matched"] = trusted_voters_matched

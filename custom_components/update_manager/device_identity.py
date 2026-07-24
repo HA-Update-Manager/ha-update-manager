@@ -98,7 +98,7 @@ def resolve_app_slug(device: dr.DeviceEntry) -> str | None:
 
 
 def resolve_full_identity(
-    hass: HomeAssistant, entity_id: str, release_url: str | None, latest_version: str
+    hass: HomeAssistant, entity_id: str, release_url: str | None, latest_version: str, installed_version: str
 ) -> ResolvedIdentity | None:
     """resolve_identity, extended with the two categories that need a real
     hass (devices, apps). Tries the cheap, pure checks (home-assistant,
@@ -106,9 +106,19 @@ def resolve_full_identity(
     entity_registry lookup (shared between the devices and apps checks
     below, found by review: they used to each re-fetch the device
     independently) when those don't already resolve it, since that's the
-    common case and a registry lookup is comparatively expensive."""
+    common case and a registry lookup is comparatively expensive.
+
+    installed_version is passed straight through to resolve_identity (see
+    that function's own docstring for the normalization it applies) --
+    callers are expected to have already treated a missing/unknown
+    installed_version as "can't identify this at all", same as a missing
+    release_url, so this takes a plain str, not Optional."""
     identity = resolve_identity(
-        entity_id, release_url, latest_version, is_hacs_entity=is_hacs_entity(hass, entity_id)
+        entity_id,
+        release_url,
+        latest_version,
+        installed_version,
+        is_hacs_entity=is_hacs_entity(hass, entity_id),
     )
     if identity is not None:
         return identity
@@ -137,6 +147,7 @@ def resolve_full_identity(
         entity_id,
         release_url,
         latest_version,
+        installed_version,
         device_manufacturer=device_manufacturer,
         device_model=device_model,
         app_slug=app_slug,

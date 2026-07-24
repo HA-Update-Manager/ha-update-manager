@@ -17,10 +17,21 @@ notice new votes cast later for a version that's still pending (unlike
 available_since, where the answer genuinely can't change once known, a vote
 count can keep climbing while a device is still sitting on the same pending
 version).
+
+A vote/verdict is identified by the exact version jump (from_version ->
+to_version), not the destination version alone (changed 2026-07-24, see
+hacs_identity.py's own docstring for why). community-votes stores every jump
+landing on the same to_version in one shared file
+(votes/<category>/.../<to_version>.json, shape: {"jumps": {"<from_version>":
+{"votes": {...}, "verdict": {...}}, ...}}) -- one fetch of that file answers
+"what's my own jump's verdict", "what did a specific username vote", and
+"what do other jumps to this same destination look like" all at once, so
+every read in this module funnels through one shared low-level fetch,
+_fetch_to_version_json, followed by pure, synchronous extraction over the
+resulting payload.
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
@@ -30,6 +41,12 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .community_verdict_payload import (
+    my_vote_from_payload,
+    other_jumps_from_payload,
+    trusted_vote_from_payload,
+    verdict_from_payload,
+)
 from .const import DOMAIN
 from .device_identity import resolve_full_identity
 from .hacs_identity import ResolvedIdentity
@@ -62,40 +79,44 @@ async def _fetch_json(hass: HomeAssistant, url: str) -> dict[str, Any] | None:
         return await response.json(content_type=None)
 
 
-async def _fetch_verdict_json(hass: HomeAssistant, votes_path: str) -> dict[str, Any] | None:
-    return await _fetch_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{votes_path}/_verdict.json")
+async def _fetch_to_version_json(hass: HomeAssistant, to_version_path: str) -> dict[str, Any] | None:
+    """The whole destination-version payload -- every jump (from_version)
+    that's been rated for it, and every voter's own entry within each jump.
+    Every other function in this module that needs anything jump-related
+    (my own jump's verdict, a specific username's vote, other jumps to the
+    same destination) fetches this once and extracts from it via
+    community_verdict_payload.py's own pure helpers, rather than each doing
+    its own separate request."""
+    return await _fetch_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{to_version_path}.json")
 
 
 async def async_fetch_my_vote(hass: HomeAssistant, identity: ResolvedIdentity, username: str) -> str | None:
-    """The verdict from *your own* vote file for this identity, straight
-    from community-votes itself (`votes/<votes_path>/<username>.json`,
-    verified against process-vote.yml's own votePath: every vote is its
-    own file, literally named after the GitHub username that cast it), not
-    just the aggregate counts. Direct user feedback, 2026-07-23 ("maar je
-    weet toch dat ik klaptafel ben?"): my_votes.py's own local record only
-    ever covers a vote cast after that module existed -- this covers every
-    vote that's actually been processed already, regardless of when, at
-    the cost of one extra request. None on a 404 (never voted, or not
-    processed yet) or any transient failure alike -- this is a nice-to-
-    have enrichment of the verdict line, not something worth surfacing an
-    error for."""
+    """The verdict from *your own* vote for this exact identity+jump,
+    straight from community-votes itself, not just the aggregate counts.
+    Direct user feedback, 2026-07-23 ("maar je weet toch dat ik klaptafel
+    ben?"): my_votes.py's own local record only ever covers a vote cast
+    after that module existed -- this covers every vote that's actually been
+    processed already, regardless of when, at the cost of one extra request.
+    None on a 404 (never voted, or not processed yet) or any transient
+    failure alike -- this is a nice-to-have enrichment of the verdict line,
+    not something worth surfacing an error for."""
     try:
-        payload = await _fetch_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{identity.votes_path}/{username}.json")
+        payload = await _fetch_to_version_json(hass, identity.to_version_path)
     except Exception:
-        _LOGGER.debug("Couldn't fetch %s's own vote for %s", username, identity.votes_path, exc_info=True)
+        _LOGGER.debug("Couldn't fetch %s's own vote for %s", username, identity.to_version_path, exc_info=True)
         return None
-    return payload.get("verdict") if payload else None
+    return my_vote_from_payload(payload, identity.from_version, username)
 
 
 class CommunityVerdictManager:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self._store: Store[dict[str, dict[str, Any]]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        # entity_id -> {"version", "verdict", "trusted_vote",
-        # "trusted_voters_matched", "fetched_at"}. Re-fetched whenever
-        # latest_version changes (same as available_since) OR the cached
-        # record is simply older than _REFRESH_INTERVAL, whichever comes
-        # first.
+        # entity_id -> {"to_version", "from_version", "verdict",
+        # "trusted_vote", "trusted_voters_matched", "fetched_at"}.
+        # Re-fetched whenever latest_version OR installed_version changes
+        # (same as available_since) OR the cached record is simply older
+        # than _REFRESH_INTERVAL, whichever comes first.
         self._cache: dict[str, dict[str, Any]] = {}
         # Empty by default (see const.py's own CONF_TRUSTED_VOTERS): a list,
         # not a single username, so more than one person's judgement can be
@@ -108,42 +129,51 @@ class CommunityVerdictManager:
     def set_trusted_voters(self, usernames: list[str]) -> None:
         self._trusted_voters = usernames
 
-    def peek_cached_verdict(self, entity_id: str) -> dict[str, Any] | None:
-        """Synchronous, no fetch: whatever verdict was last known for this
-        entity, stale or not, or None if it's never been looked up at all.
-        Found by review, 2026-07-22: coordinator.py's own bulk scan used to
-        await async_get_verdict inline, serializing a real HTTP round-trip
-        (on a cache miss/expiry) into every single entity's staging-status
-        write, even though the verdict is purely cosmetic and never gates
-        that decision. Coordinator now uses this for an entity's cache
-        entry immediately, and refreshes it in the background separately
-        (see coordinator.py's own _async_refresh_community_verdict)."""
+    def _cached_record(self, entity_id: str, to_version: str, from_version: str) -> dict[str, Any] | None:
+        """The cached record for entity_id, or None if it's never been
+        looked up at all, or it's for a different jump than requested --
+        shared version-matching logic for peek_cached_verdict/
+        peek_cached_trusted_vote/_fresh_cached, all of which must not reuse
+        a stale unrelated jump's data (found by review, 2026-07-23, applied
+        to peek_cached_trusted_vote first: a version bump, or an
+        intermediate manual install changing from_version, can otherwise
+        apply an old jump's verdict to a new one nobody's actually voted
+        on)."""
         record = self._cache.get(entity_id)
+        if not record or record.get("to_version") != to_version or record.get("from_version") != from_version:
+            return None
+        return record
+
+    def peek_cached_verdict(self, entity_id: str, to_version: str, from_version: str) -> dict[str, Any] | None:
+        """Synchronous, no fetch: whatever verdict was last known for this
+        entity's exact jump, stale or not, or None if it's never been
+        looked up (or is for a different jump). Found by review, 2026-07-22:
+        coordinator.py's own bulk scan used to await async_get_verdict
+        inline, serializing a real HTTP round-trip (on a cache miss/expiry)
+        into every single entity's staging-status write, even though the
+        verdict is purely cosmetic and never gates that decision.
+        Coordinator now uses this for an entity's cache entry immediately,
+        and refreshes it in the background separately (see coordinator.py's
+        own _async_refresh_community_verdict)."""
+        record = self._cached_record(entity_id, to_version, from_version)
         return record.get("verdict") if record else None
 
-    def peek_cached_trusted_vote(self, entity_id: str, latest_version: str) -> tuple[str | None, list[str]]:
+    def peek_cached_trusted_vote(
+        self, entity_id: str, to_version: str, from_version: str
+    ) -> tuple[str | None, list[str]]:
         """Same reasoning/shape as peek_cached_verdict, for the trusted-
         voters' own already-aggregated verdict instead: (verdict, which
         usernames' votes produced it). (None, []) if never looked up, no
         trusted voter is configured at all, or the cached record is for a
-        different version than latest_version.
-
-        Found by review, 2026-07-23: this used to skip the version check
-        peek_cached_verdict/_fresh_cached_verdict both already do, so a
-        version bump (latest_version changes, but the cache entry hasn't
-        been re-fetched yet -- this synchronous peek runs before that
-        background refetch resolves) could apply an older version's
-        trusted-healthy verdict to the new, not-actually-voted-on version,
-        auto-installing it on the strength of a vote that was never cast
-        for it."""
-        record = self._cache.get(entity_id)
-        if not record or record.get("version") != latest_version:
+        different jump than requested."""
+        record = self._cached_record(entity_id, to_version, from_version)
+        if not record:
             return None, []
         return record.get("trusted_vote"), record.get("trusted_voters_matched", [])
 
-    def _fresh_cached_verdict(self, entity_id: str, latest_version: str) -> tuple[bool, Any]:
-        record = self._cache.get(entity_id)
-        if record is None or record.get("version") != latest_version:
+    def _fresh_cached(self, entity_id: str, to_version: str, from_version: str) -> tuple[bool, Any]:
+        record = self._cached_record(entity_id, to_version, from_version)
+        if record is None:
             return False, None
         fetched_at = dt_util.parse_datetime(record.get("fetched_at", ""))
         if fetched_at is None or dt_util.utcnow() - fetched_at >= _REFRESH_INTERVAL:
@@ -153,13 +183,15 @@ class CommunityVerdictManager:
     async def _async_remember(
         self,
         entity_id: str,
-        latest_version: str,
+        to_version: str,
+        from_version: str,
         verdict: dict[str, Any] | None,
         trusted_vote: str | None = None,
         trusted_voters_matched: list[str] | None = None,
     ) -> None:
         self._cache[entity_id] = {
-            "version": latest_version,
+            "to_version": to_version,
+            "from_version": from_version,
             "verdict": verdict,
             "trusted_vote": trusted_vote,
             "trusted_voters_matched": trusted_voters_matched or [],
@@ -175,80 +207,81 @@ class CommunityVerdictManager:
         # this is safe to debounce.
         self._store.async_delay_save(lambda: self._cache, 1.0)
 
-    async def _async_fetch_trusted_vote(self, identity: ResolvedIdentity) -> tuple[str | None, list[str]]:
-        """Every configured trusted username's own vote for this identity,
-        fetched concurrently, then aggregated the same asymmetric-safety
-        way this project already resolves the *aggregate* auto-install
-        quorum (FUTURE.md's own point 5): any "problematic" among them
-        wins outright, even if others among them voted "healthy" -- only
-        if none of them did, and at least one voted "healthy", does that
-        apply instead. Short-circuits to (None, []) with no request at all
-        when no trusted voter is configured."""
-        # Snapshotted once, up front: found by review, re-reading
-        # self._trusted_voters again after the gather below (to zip it with
-        # the results) raced against a settings save reassigning it
-        # mid-fetch (set_trusted_voters swaps in a whole new list, it
-        # doesn't mutate in place), silently pairing one username's fetched
-        # vote with a different username's name.
-        trusted_voters = self._trusted_voters
-        if not trusted_voters:
-            return None, []
-        results = await asyncio.gather(
-            *(async_fetch_my_vote(self.hass, identity, username) for username in trusted_voters)
-        )
-        voted = dict(zip(trusted_voters, results))
-        problematic = [username for username, verdict in voted.items() if verdict == "problematic"]
-        if problematic:
-            return "problematic", problematic
-        healthy = [username for username, verdict in voted.items() if verdict == "healthy"]
-        if healthy:
-            return "healthy", healthy
-        return None, []
-
     async def async_get_verdict(
-        self, entity_id: str, release_url: str | None, latest_version: str
+        self, entity_id: str, release_url: str | None, latest_version: str, installed_version: str | None
     ) -> dict[str, Any] | None:
-        is_fresh, cached_verdict = self._fresh_cached_verdict(entity_id, latest_version)
+        # No installed_version at all (entity hasn't reported it yet):
+        # unidentifiable, same graceful degradation as a missing release_url
+        # below -- there's no valid jump to resolve an identity for, and
+        # nothing here is a network call worth caching against, unlike the
+        # identity-resolution-failed case below.
+        if installed_version is None:
+            return None
+
+        is_fresh, cached_verdict = self._fresh_cached(entity_id, latest_version, installed_version)
         if is_fresh:
             return cached_verdict
 
-        identity = resolve_full_identity(self.hass, entity_id, release_url, latest_version)
+        identity = resolve_full_identity(self.hass, entity_id, release_url, latest_version, installed_version)
         if identity is None:
-            await self._async_remember(entity_id, latest_version, None)
+            await self._async_remember(entity_id, latest_version, installed_version, None)
             return None
 
         try:
-            verdict = await _fetch_verdict_json(self.hass, identity.votes_path)
+            payload = await _fetch_to_version_json(self.hass, identity.to_version_path)
         except Exception:
             # Transient (timeout, 5xx, DNS hiccup): logged, not surfaced as a
             # visible error. Falls back to whatever was last known for this
             # entity (even a stale record, so a badge doesn't flash on and
             # off just because one fetch hiccupped) instead of blanking it.
             _LOGGER.debug("Couldn't fetch community verdict for %s", entity_id, exc_info=True)
-            record = self._cache.get(entity_id)
+            record = self._cached_record(entity_id, identity.to_version, identity.from_version)
             return record.get("verdict") if record else None
 
-        trusted_vote, trusted_voters_matched = await self._async_fetch_trusted_vote(identity)
-        await self._async_remember(entity_id, latest_version, verdict, trusted_vote, trusted_voters_matched)
+        # One fetch, both derived facts: the aggregate verdict for my own
+        # jump, and the trusted-voter check (changed 2026-07-24 -- used to
+        # be a second round of N separate requests, one per configured
+        # trusted username, now a synchronous lookup over the same payload).
+        verdict = verdict_from_payload(payload, identity.from_version)
+        trusted_vote, trusted_voters_matched = trusted_vote_from_payload(
+            payload, identity.from_version, self._trusted_voters
+        )
+        await self._async_remember(
+            entity_id, identity.to_version, identity.from_version, verdict, trusted_vote, trusted_voters_matched
+        )
         return verdict
 
 
-async def async_fetch_verdict_uncached(hass: HomeAssistant, identity: ResolvedIdentity) -> dict[str, Any] | None:
+async def async_fetch_verdict_uncached(
+    hass: HomeAssistant, identity: ResolvedIdentity
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
     """A direct, uncached lookup for an arbitrary already-resolved identity,
-    not necessarily the entity's own current pending version, e.g. reading/
+    not necessarily the entity's own current pending jump, e.g. reading/
     voting from a specific History entry. Deliberately NOT
     CommunityVerdictManager's own cache (keyed only by entity_id, one
     record per entity, meant for the Updates-tab badge): reusing that here
     would let a historical lookup silently overwrite that entity's own
-    "current pending version" cache entry, corrupting the badge. No caching
+    "current pending jump" cache entry, corrupting the badge. No caching
     here at all, this is a rare, user-initiated, one-off lookup (opening a
-    History dialog), not a hot path worth optimizing. Takes the identity
-    directly rather than (entity_id, release_url, version): callers already
-    had to resolve it once to decide whether to call this at all (see
-    websocket_api.py's own _resolve_identity_for_version), no reason to
-    resolve it a second time here."""
+    dialog), not a hot path worth optimizing. Takes the identity directly
+    rather than (entity_id, release_url, to_version, from_version): callers
+    already had to resolve it once to decide whether to call this at all
+    (see websocket_api.py's own _resolve_identity_for_version), no reason to
+    resolve it a second time here.
+
+    Returns (my own jump's verdict, other jumps to this same destination) --
+    both derived from the one fetch, direct user feedback 2026-07-24: the
+    dialog wants to show which other jumps landing on this version have
+    been rated, with my own jump always shown first/primary (this tuple's
+    own ordering, and the fact that "verdict" is unconditionally about my
+    own jump, already satisfies that -- the caller doesn't need to do any
+    sorting/filtering of its own)."""
     try:
-        return await _fetch_verdict_json(hass, identity.votes_path)
+        payload = await _fetch_to_version_json(hass, identity.to_version_path)
     except Exception:
-        _LOGGER.debug("Couldn't fetch community verdict for %s", identity.votes_path, exc_info=True)
-        return None
+        _LOGGER.debug("Couldn't fetch community verdict for %s", identity.to_version_path, exc_info=True)
+        return None, []
+    return (
+        verdict_from_payload(payload, identity.from_version),
+        other_jumps_from_payload(payload, identity.from_version),
+    )

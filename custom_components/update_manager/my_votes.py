@@ -27,18 +27,22 @@ class MyVotesManager:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
         self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        # votes_path -> verdict. Keyed by the same votes_path community-votes
-        # itself uses (see hacs_identity.py's ResolvedIdentity.votes_path),
-        # not entity_id/version separately: a vote is tied to one specific
-        # identity/version pair, exactly what votes_path already encodes.
+        # jump_key -> verdict. Keyed by ResolvedIdentity.jump_key (a vote is
+        # tied to one specific identity+jump pair, not entity_id/version
+        # separately -- jump_key already encodes exactly that). Changed
+        # 2026-07-24 from the old, single-version votes_path: an old stored
+        # key simply won't match a freshly resolved jump_key, a one-time
+        # cache miss that falls back to a remote fetch and backfills, same
+        # graceful degradation this module already relies on for a vote
+        # cast before it existed at all.
         self._votes: dict[str, str] = {}
 
     async def async_load(self) -> None:
         self._votes = await self._store.async_load() or {}
 
-    def my_verdict(self, votes_path: str) -> Verdict | None:
-        return self._votes.get(votes_path)  # type: ignore[return-value]
+    def my_verdict(self, jump_key: str) -> Verdict | None:
+        return self._votes.get(jump_key)  # type: ignore[return-value]
 
-    async def async_remember(self, votes_path: str, verdict: Verdict) -> None:
-        self._votes[votes_path] = verdict
+    async def async_remember(self, jump_key: str, verdict: Verdict) -> None:
+        self._votes[jump_key] = verdict
         await self._store.async_save(self._votes)

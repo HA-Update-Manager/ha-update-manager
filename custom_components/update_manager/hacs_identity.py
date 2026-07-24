@@ -61,37 +61,64 @@ _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID = {
 
 class ResolvedIdentity(NamedTuple):
     """Everything both the read side (community_verdict.py, needs only
-    .votes_path) and the write side (community_vote.py, needs the individual
-    fields to build a vote's issue body) need, computed once instead of
-    twice. Exactly one of component/owner_repo/manufacturer_model/app_slug
-    is set, matching which category this identity is. manufacturer_model is
-    already the joined "manufacturer/model" string (found by review: every
-    consumer -- votes_path below, vote_issue_body.py's own "Manufacturer/
-    model" field -- immediately joined the two, keeping them as separate
-    fields just duplicated that join)."""
+    .to_version_path plus from_version as a lookup key) and the write side
+    (community_vote.py, needs the individual fields to build a vote's issue
+    body) need, computed once instead of twice. Exactly one of component/
+    owner_repo/manufacturer_model/app_slug is set, matching which category
+    this identity is. manufacturer_model is already the joined "manufacturer/
+    model" string (found by review: every consumer -- to_version_path below,
+    vote_issue_body.py's own "Manufacturer/model" field -- immediately
+    joined the two, keeping them as separate fields just duplicated that
+    join).
+
+    A vote/verdict is identified by the exact version jump (from_version ->
+    to_version), not the destination version alone (changed 2026-07-24,
+    direct user feedback: going from 0.1.0 to 3.5.2 -- possibly skipping
+    several breaking changes -- is a fundamentally different risk than going
+    from 3.5.1 to 3.5.2, even though both land on the same version). Both
+    are required fields here -- a jump without a "from" isn't a valid
+    identity under this model. from_version is never part of any *path*
+    though (see to_version_path below): community-votes stores every jump
+    landing on the same destination in one shared file, so from_version is
+    purely a dict key used after fetching that one file, not a path
+    segment."""
 
     category: str
-    version: str
+    to_version: str
+    from_version: str
     component: str | None = None
     owner_repo: str | None = None
     manufacturer_model: str | None = None
     app_slug: str | None = None
 
     @property
-    def votes_path(self) -> str:
+    def jump_key(self) -> str:
+        """A single string uniquely identifying this exact jump -- for
+        anything that needs one opaque key rather than the two separate
+        fields (my_votes.py's own local Store, keyed by this instead of
+        entity_id/version separately, exactly like it was keyed by the old
+        single-version votes_path before this session's jump-based
+        redesign). "::" can't appear in a real path segment, so this can't
+        collide with a to_version_path for a different identity/version
+        that happens to share a from_version string."""
+        return f"{self.to_version_path}::{self.from_version}"
+
+    @property
+    def to_version_path(self) -> str:
         if self.category == "home-assistant":
-            return f"home-assistant/{self.component}/{self.version}"
+            return f"home-assistant/{self.component}/{self.to_version}"
         if self.category == "hacs":
-            return f"hacs/{self.owner_repo}/{self.version}"
+            return f"hacs/{self.owner_repo}/{self.to_version}"
         if self.category == "devices":
-            return f"devices/{self.manufacturer_model}/{self.version}"
-        return f"apps/{self.app_slug}/{self.version}"
+            return f"devices/{self.manufacturer_model}/{self.to_version}"
+        return f"apps/{self.app_slug}/{self.to_version}"
 
 
 def resolve_identity(
     entity_id: str,
     release_url: str | None,
     latest_version: str,
+    installed_version: str,
     *,
     is_hacs_entity: bool = False,
     device_manufacturer: str | None = None,
@@ -108,6 +135,16 @@ def resolve_identity(
     these three, not release_url's own version, so this doesn't depend on
     their release_url happening to look like a GitHub release URL at all,
     unlike the HACS case below where owner/repo can only come from there.
+
+    installed_version is normalized the exact same way latest_version is
+    (strip_version_prefix) -- must not be skipped: an update entity's own
+    installed_version attribute is just as likely to carry a stray "v"
+    prefix as latest_version is, and skipping normalization here would
+    silently split what's actually the same jump into two different
+    community-votes entries. Callers are expected to already have filtered
+    out a None installed_version before calling this (same "can't identify
+    this at all" treatment as a missing release_url), so this takes a plain
+    str, not Optional.
 
     is_hacs_entity, device_manufacturer/device_model, and app_slug are all
     pre-resolved by the caller (device_identity.py), not looked up here:
@@ -135,9 +172,12 @@ def resolve_identity(
     firmware must never be passed in there, since two users' "same board
     model" can run completely different, incomparable custom firmware
     there -- that exclusion happens in device_identity.py, not here."""
+    from_version = strip_version_prefix(installed_version)
     component = _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID.get(entity_id)
     if component is not None:
-        return ResolvedIdentity("home-assistant", strip_version_prefix(latest_version), component=component)
+        return ResolvedIdentity(
+            "home-assistant", strip_version_prefix(latest_version), from_version, component=component
+        )
 
     identity = extract_hacs_identity(release_url) if is_hacs_entity else None
     if identity is not None:
@@ -151,16 +191,19 @@ def resolve_identity(
         # trusting it for the version silently misattributed a vote to the
         # wrong version. release_url is only ever used here to find the
         # owner/repo, never the version.
-        return ResolvedIdentity("hacs", strip_version_prefix(latest_version), owner_repo=f"{owner}/{repo}")
+        return ResolvedIdentity(
+            "hacs", strip_version_prefix(latest_version), from_version, owner_repo=f"{owner}/{repo}"
+        )
 
     if device_manufacturer is not None and device_model is not None:
         return ResolvedIdentity(
             "devices",
             strip_version_prefix(latest_version),
+            from_version,
             manufacturer_model=f"{device_manufacturer}/{device_model}",
         )
 
     if app_slug is not None:
-        return ResolvedIdentity("apps", strip_version_prefix(latest_version), app_slug=app_slug)
+        return ResolvedIdentity("apps", strip_version_prefix(latest_version), from_version, app_slug=app_slug)
 
     return None

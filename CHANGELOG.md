@@ -12,8 +12,8 @@ a still-*pending* update (Updates tab) only offers reporting an issue that's kno
 at all, straight from the release notes (a breaking change, a dev/pre-release build, requiring a newer
 HA version), no "healthy" button, since nobody's actually run it yet; an *installed* (or downgraded-to)
 version, opened from the History tab, gets the full healthy/problematic vote, with "problematic" adding
-two more, only-after-running reasons ("broken functionality", "other"). Every vote dialog asks which
-version it's about in plain language ("How's version X treating you?"), and a successful vote shows an
+two more, only-after-running reasons ("broken functionality", "other"). Every vote dialog asks about the
+exact jump in plain language ("How's the jump from X to Y treating you?"), and a successful vote shows an
 immediate, optimistic confirmation rather than waiting on community-votes' own processing to reflect it.
 Covers every update category community-votes has a schema for: HACS (only entities actually installed
 through HACS itself, verified against its own entity registry, not just anything whose release_url
@@ -40,15 +40,27 @@ settings toggle: always on, nothing is ever sent just by looking.
 
 **Adds a trusted-voter auto-install override**
 A new "Trusted voters" setting (Auto-update card, a list of GitHub usernames) lets someone whose
-judgement you trust more than your own size-based rules override auto-install for a specific version,
-in either direction: if any of them rated it healthy, it auto-installs regardless of your own
+judgement you trust more than your own size-based rules override auto-install for a specific version
+jump, in either direction: if any of them rated it healthy, it auto-installs regardless of your own
 wait/toggle rules for that size; if any of them rated it problematic, auto-install is blocked outright,
 even if your own rules would otherwise allow it. If more than one is listed and they disagree on the
-same version, a problematic vote always wins. A still-pending update blocked this way now says so
+same jump, a problematic vote always wins. A still-pending update blocked this way now says so
 directly, in its own dialog ("Auto-install held back: @username reported this version as
 problematic."), and every History entry now shows a full audit trail once expanded: when the update
 became available, when it was announced (if at all), when it was actually installed, and how (manual,
 your own rules, or a trusted vote, naming who).
+
+**Changes community voting to be about the exact version jump, not just the destination version**
+A verdict is now identified by both endpoints (the version you upgraded *from*, and the one you landed
+on), not the destination version alone: going from 0.1.0 to 3.5.2 (possibly skipping several breaking
+changes) is a fundamentally different risk than going from 3.5.1 to 3.5.2, even though both land on the
+same version, and treating them as one pool of votes hid that distinction. Every vote dialog now names
+both endpoints ("How's the jump from X to Y treating you?"), and shows which other jumps landing on the
+same destination version have been rated, if any, with your own jump always listed first. This is a
+breaking change to the community-votes repo's own on-disk schema (`votes/<category>/.../<to-version>.json`,
+one file per destination version holding every rated jump instead of one per version alone); there were
+no real votes yet to migrate, so the two existing test entries were removed outright rather than
+converted.
 
 **Redesigns the Settings and History pages**
 Settings now groups the master switch and visibility toggle into one General card up top, the
@@ -72,12 +84,16 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
 - GitHub account linking (`github_auth.py`): a "Link GitHub account" button in Settings using OAuth
   device flow, no client secret involved anywhere.
 - Community voting (`community_vote.py`, `vote_issue_body.py`, `device_identity.py`): vote buttons in
-  the update dialog's own Community section, scoped to the exact version being viewed (a pending
-  update's own latest version, or a specific History entry's), submitted as a community-votes issue
-  using the linked account. Identity resolution now covers all four community-votes categories:
-  HACS/Core/Supervisor/OS (HACS gated on the entity actually being HACS-owned via entity_registry, not
-  release_url's shape alone), plus real vendor Zigbee device firmware (manufacturer/model, via
-  ZHA/Zigbee2MQTT) and Supervisor add-ons (via the add-on's own device-registry slug).
+  the update dialog's own Community section, scoped to the exact version jump being viewed (a pending
+  update's own installed-to-latest jump, or a specific History entry's from/to pair), submitted as a
+  community-votes issue using the linked account. Identity resolution now covers all four community-votes
+  categories: HACS/Core/Supervisor/OS (HACS gated on the entity actually being HACS-owned via
+  entity_registry, not release_url's shape alone), plus real vendor Zigbee device firmware
+  (manufacturer/model, via ZHA/Zigbee2MQTT) and Supervisor add-ons (via the add-on's own device-registry
+  slug).
+- Shows other jumps landing on the same destination version, if any, right below your own jump's verdict
+  in the dialog (`other_jumps` in `community_verdict.py`/`community_verdict_payload.py`) -- your own jump
+  is always primary, other jumps are purely supplementary context, sorted by vote count and capped at 5.
 - Zigbee/ZHA rollout pacing (`zigbee.py`, `rollout_manager.py`): one-at-a-time device install queues,
   surfaced on the Updates tab as their own "queue" section per network, reactive only (no queue shown
   for a lone device).
@@ -93,7 +109,7 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
   you already rated now shows "Vote updated to..." instead of the usual first-time confirmation.
 - A trusted-voter auto-install override (`CONF_TRUSTED_VOTERS`, `effective_auto_install_state` in
   `announcer.py`, aggregated in `community_verdict.py`): a configurable list of GitHub usernames whose
-  own vote on a specific version overrides your own size-based rules for that exact version, healthy
+  own vote on a specific version jump overrides your own size-based rules for that exact jump, healthy
   overriding an otherwise-off/still-waiting auto-install, problematic blocking one that would otherwise
   go ahead. Any trusted problematic vote wins outright over any trusted healthy one among the same list.
 - A full audit trail on every History entry (`install_log.py`'s new `auto_install_reason`,
@@ -124,6 +140,13 @@ be controlled from a dashboard or an automation. Both stay in sync with each oth
 - The Settings page's Community verdict section spacing/proportions were tightened, and its "not yet
   rated" copy now reads "by others" instead of "by the community" (direct user feedback: read more
   naturally once your own past vote is recognized separately).
+- community-votes' own on-disk schema (`votes/<category>/.../<to-version>.json`): one file per
+  destination version now holds every rated jump landing on it (`{"jumps": {"<from-version>": {...}}}`),
+  instead of one file per destination version alone. The vote Issue Form gained a required "From
+  version" field alongside the renamed "To version" (was "Version"). `process-vote.yml`'s own
+  read-modify-write now retries (with a small randomized delay) on a conflicting concurrent write,
+  since two different people voting on two different jumps to the same destination can now genuinely
+  race on the same file, which was never possible under the old one-file-per-voter layout.
 
 ### Fixed
 - Identity resolution for a HACS vote used whatever version was embedded in `release_url`'s own tag
