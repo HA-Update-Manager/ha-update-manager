@@ -92,7 +92,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # large instance) behind it too.
     await staging_skip_manager.async_load()
     await asyncio.gather(
-        coordinator.async_start(),
         install_log.async_load(),
         install_manager.async_load(),
         rollout_manager.async_load(),
@@ -135,7 +134,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         )
 
+    # Registered, and install_log's own persisted entries loaded above,
+    # *before* coordinator.async_start() below -- changed 2026-07-27:
+    # that call's own bulk scan can now retroactively fire this exact
+    # listener, synchronously, inline, for an install that completed
+    # entirely while HA was down (see coordinator.py's own
+    # _recover_install_across_restart), not only from a later live
+    # state_changed event like before. install_log.async_load() is no
+    # longer gathered concurrently with coordinator.async_start() for
+    # that reason: if it hadn't finished loading yet, _on_install's own
+    # async_log_install would append to (and then save) an empty in-memory
+    # list, silently wiping out every previously-logged install. These
+    # loads are cheap (a single Store read each) -- the coordinator's own
+    # staggered scan is the actually slow part, so sequencing them first
+    # costs little and removes the race entirely.
     coordinator.async_add_install_listener(_on_install)
+    await coordinator.async_start()
     install_manager.async_start()
     staging_skip_manager.async_start(bool(options.get(CONF_HIDE_POSTPONED, True)))
     rollout_manager.async_start()

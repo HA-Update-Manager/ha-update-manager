@@ -2,6 +2,85 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.3.0] - 2026-07-27
+
+**Community voting redesigned: clearer, more complete information**
+The Community section no longer opens with a question. It now shows plain facts in order: your own vote
+first (shown even when everyone else disagrees, which used to hide it), then everyone else's votes (both
+healthy and problematic counts when opinions are mixed), and a clear "No one's reported on this jump
+yet." when there's nothing at all. It also shows when one of your trusted voters has voted, since that's
+what changes auto-install behavior. A few related display bugs are fixed too: a double divider, the
+section appearing after long release notes instead of before them, and a stale "not yet rated" message
+next to your own just-submitted vote.
+
+**HA Core updates now appear on the History page**
+Installing Core requires a full restart, so the update was never logged before. It's now recorded
+retroactively once Home Assistant is back up.
+
+**Also in this release:**
+- The manual refresh button now also pulls in the latest community-vote data, not a cached version up to
+  an hour old.
+- Installing an update from its own dialog now refreshes that dialog once the install finishes.
+- Updates already scheduled to auto-install now sort by how soon that happens, not by how long they've
+  been available.
+- A same-month update (e.g. 2026.07.3 to 2026.07.4) is now correctly classified as small instead of big.
+- Fixed the Zigbee/Z2M rollout-queue cards rendering full-width instead of matching every other card.
+
+### Added
+- The panel's own manual refresh button now also pulls in the latest community-votes data for every
+  pending update, instead of only reflecting whatever was cached (up to an hour old). Everything else
+  it already did (updates/history/settings) is unchanged.
+- The dialog's Community section now also shows when a configured trusted voter is among the people who
+  voted on the exact jump being viewed (not just your own vote), since that's exactly the fact that
+  changes auto-install behavior for it. Backed by a new `trusted_vote`/`trusted_voters_matched` pair on
+  the `verdict_for_version` websocket response.
+
+### Changed
+- The Community section no longer asks "How's this update treating you?" before showing the verdict.
+  It's now a short stack of plain facts, shown in priority order: your own vote (if any, shown even when
+  it disagrees with everyone else, which used to make it disappear from the sentence entirely), then
+  everyone else's votes (both healthy and problematic counts shown when genuinely mixed, instead of only
+  ever surfacing the more cautious one), then "No one's reported on this jump yet." if there's truly
+  nothing at all. Identical wording for a still-pending update and an already-installed History entry;
+  only the vote controls below still differ between the two.
+
+### Fixed
+- HA Core (and likely Supervisor/OS) updates never appeared on the History page at all: installing them
+  requires a full HA restart, so the installed_version transition happened across that restart boundary,
+  which the coordinator's live state-change listener could never observe. It now persists each tracked
+  entity's own last-known installed_version and detects the transition retroactively at startup.
+- The verdict/badge wording said "this version" ("deze versie") instead of "this jump" ("deze sprong"),
+  even though voting has been scoped to the exact from/to jump since 2026-07-24.
+- Opening the dialog from the Updates tab (or a rollout-queue row) also auto-expanded the entity's most
+  recent History entry, even though the pending update's own Community section already had the point.
+  History entries only auto-expand now when opened directly from the History tab, or when the entity has
+  no pending update of its own.
+- An expanded History entry's own Community section rendered two divider lines stacked on top of each
+  other, with too little spacing above them.
+- An expanded History entry's own Community section rendered *after* its changelog/release notes,
+  easy to miss on an entry with long release notes even though spotting a reported problem before
+  reading them is the whole point. It now sits right after the entry's plain facts, before the
+  changelog, each separated by its own divider.
+- Opening the dialog from the History tab for one specific past install also pulled in the entity's
+  entire, unrelated *current* pending update (progress bar, status alert, Cancel/Skip/Install actions,
+  its own Community section, its own changelog) above the entry that was actually clicked. That block no
+  longer renders at all when a specific History entry was opened directly; it's still there in full when
+  opened from the Updates tab or a rollout-queue row.
+- "Ready to update" no longer sorted entities with an active scheduled auto-install (`pending_install`)
+  by how soon that install will actually happen; it sorted by how long the update had been available
+  instead, like every other ready entity.
+- A same-month calendar-version jump (e.g. "2026.07.3" -> "2026.07.4") was misclassified as "big" instead
+  of "small": the zero-padded month ("07") matched neither the calendar-version shape nor strict semver.
+- Installing an update from the dialog itself left the dialog showing its stale pending-update facts and
+  an enabled Install button indefinitely, even after the install had actually finished. It now reopens
+  itself in place once the install completes, the same way it already does for Cancel/Skip/Unskip.
+- Casting a vote left the "No one's reported on this jump yet." line untouched right next to the vote's
+  own confirmation message, reading as a contradiction. It now shows your own vote immediately, the same
+  optimistic, local update the confirmation message itself already relies on.
+- The Zigbee/Z2M rollout-queue cards (and the "all caught up" empty state) rendered full-width and
+  flush left on the Updates tab instead of the same capped, centered 600px column every other card gets,
+  since the shared width rule only matched cards nested one level deeper than these actually are.
+
 ## [0.2.0] - 2026-07-25
 
 ## Community voting

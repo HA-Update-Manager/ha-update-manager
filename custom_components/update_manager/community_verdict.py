@@ -129,6 +129,15 @@ class CommunityVerdictManager:
     def set_trusted_voters(self, usernames: list[str]) -> None:
         self._trusted_voters = usernames
 
+    @property
+    def trusted_voters(self) -> list[str]:
+        """The currently configured trusted-voter usernames, for callers
+        outside this module doing their own one-off uncached lookup (see
+        async_fetch_verdict_uncached) -- there's exactly one source of
+        truth for this list (set via set_trusted_voters whenever settings
+        are saved), no reason for websocket_api.py to keep its own copy."""
+        return list(self._trusted_voters)
+
     def _cached_record(self, entity_id: str, to_version: str, from_version: str) -> dict[str, Any] | None:
         """The cached record for entity_id, or None if it's never been
         looked up at all, or it's for a different jump than requested --
@@ -208,7 +217,13 @@ class CommunityVerdictManager:
         self._store.async_delay_save(lambda: self._cache, 1.0)
 
     async def async_get_verdict(
-        self, entity_id: str, release_url: str | None, latest_version: str, installed_version: str | None
+        self,
+        entity_id: str,
+        release_url: str | None,
+        latest_version: str,
+        installed_version: str | None,
+        *,
+        force: bool = False,
     ) -> dict[str, Any] | None:
         # No installed_version at all (entity hasn't reported it yet):
         # unidentifiable, same graceful degradation as a missing release_url
@@ -218,9 +233,15 @@ class CommunityVerdictManager:
         if installed_version is None:
             return None
 
-        is_fresh, cached_verdict = self._fresh_cached(entity_id, latest_version, installed_version)
-        if is_fresh:
-            return cached_verdict
+        # force=True skips the freshness check entirely, always doing a
+        # live fetch -- the panel's own manual refresh button, direct user
+        # feedback 2026-07-25: "als ik op de refresh knop druk wil ik dat
+        # hij ook de meest recente info van de votes naar binnen haalt",
+        # not silently keep showing whatever was cached up to an hour ago.
+        if not force:
+            is_fresh, cached_verdict = self._fresh_cached(entity_id, latest_version, installed_version)
+            if is_fresh:
+                return cached_verdict
 
         identity = resolve_full_identity(self.hass, entity_id, release_url, latest_version, installed_version)
         if identity is None:
@@ -253,8 +274,8 @@ class CommunityVerdictManager:
 
 
 async def async_fetch_verdict_uncached(
-    hass: HomeAssistant, identity: ResolvedIdentity
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    hass: HomeAssistant, identity: ResolvedIdentity, trusted_voters: list[str] | None = None
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None, list[str]]:
     """A direct, uncached lookup for an arbitrary already-resolved identity,
     not necessarily the entity's own current pending jump, e.g. reading/
     voting from a specific History entry. Deliberately NOT
@@ -269,19 +290,27 @@ async def async_fetch_verdict_uncached(
     (see websocket_api.py's own _resolve_identity_for_version), no reason to
     resolve it a second time here.
 
-    Returns (my own jump's verdict, other jumps to this same destination) --
-    both derived from the one fetch, direct user feedback 2026-07-24: the
-    dialog wants to show which other jumps landing on this version have
-    been rated, with my own jump always shown first/primary (this tuple's
-    own ordering, and the fact that "verdict" is unconditionally about my
-    own jump, already satisfies that -- the caller doesn't need to do any
-    sorting/filtering of its own)."""
+    Returns (my own jump's verdict, other jumps to this same destination,
+    trusted vote, trusted voters matched) -- all derived from the one
+    fetch, direct user feedback 2026-07-24 (other_jumps) and 2026-07-27
+    (trusted_vote/trusted_voters_matched, "toevallig mijn trusted voter die
+    heeft gestemd, maar dat zie ik niet terug" -- the dialog's own verdict
+    line for a specific jump had no idea whether a trusted voter was among
+    the people who voted on it, even though that's exactly what changes
+    auto-install behavior for this jump). trusted_voters defaults to none
+    (not every caller cares, e.g. a caller that already knows this entity
+    has no pending update at all)."""
     try:
         payload = await _fetch_to_version_json(hass, identity.to_version_path)
     except Exception:
         _LOGGER.debug("Couldn't fetch community verdict for %s", identity.to_version_path, exc_info=True)
-        return None, []
+        return None, [], None, []
+    trusted_vote, trusted_voters_matched = trusted_vote_from_payload(
+        payload, identity.from_version, trusted_voters or []
+    )
     return (
         verdict_from_payload(payload, identity.from_version),
         other_jumps_from_payload(payload, identity.from_version),
+        trusted_vote,
+        trusted_voters_matched,
     )

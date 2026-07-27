@@ -191,13 +191,21 @@ const TRANSLATIONS = {
     dialog_new_version: "Latest version",
     dialog_community_verdict_disclaimer:
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
-    community_not_yet_rated: "Not yet rated by others",
+    // Also the "nothing at all" row of the Community section's own fact
+    // stack (see _buildCommunitySection) -- same wording either way, direct
+    // user feedback, 2026-07-27: replaces the old question+"not yet rated"
+    // pairing, which read as a non-answer with no clear next step.
+    community_not_yet_rated: "No one's reported on this jump yet.",
     community_vote_link_prompt: "Link your GitHub account in Settings to vote.",
-    // Names both endpoints of the jump, not just the destination (changed
-    // 2026-07-24: a verdict is about the exact jump, going from 0.1.0 to
-    // 3.5.2 is a different risk than going from 3.5.1 to 3.5.2 even though
-    // both land on the same version).
-    community_vote_prompt: (fromVersion, toVersion) => `How's the jump from ${fromVersion} to ${toVersion} treating you?`,
+    // Surfaces whether a configured trusted voter is among the people who
+    // voted on this exact jump -- direct user feedback, 2026-07-27: "dat
+    // zie ik niet terug", after a trusted voter's own vote didn't show up
+    // anywhere even though it's exactly what changes auto-install behavior
+    // for this jump (see announcer.py's own effective_auto_install_state).
+    // "Trusted vote:" prefix, not "Trusted voter(s)": names can be one or
+    // several, this avoids needing a separate singular/plural form.
+    community_trusted_vote_healthy: (names) => `Trusted vote: ${names} reported this jump as healthy.`,
+    community_trusted_vote_problematic: (names) => `Trusted vote: ${names} reported this jump as problematic.`,
     community_other_jumps_heading: "Other jumps to this version",
     community_other_jump_line: (fromVersion, badgeTitle) => `From ${fromVersion}: ${badgeTitle}`,
     community_report_toggle: "Report a known issue",
@@ -239,7 +247,7 @@ const TRANSLATIONS = {
     dialog_history_method_rules: "Automatic, your own rules",
     dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
     list_and: "and",
-    dialog_auto_install_held_back: (names) => `Auto-install held back: ${names} reported this version as problematic.`,
+    dialog_auto_install_held_back: (names) => `Auto-install held back: ${names} reported this jump as problematic.`,
     dialog_more_info: "More info",
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
     // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
@@ -292,25 +300,38 @@ const TRANSLATIONS = {
     // the queue must stay authoritative, not something a hurried click can
     // jump.
     rollout_queue_waiting: (name) => `Waiting for ${name}`,
-    // Community-verdict badge tooltips (see verdictBadge), read-only slice
+    // Community-verdict fact rows (see _buildCommunitySection, and
+    // aggregateVerdictText for how these four get picked), read-only slice
     // added 2026-07-22: https://github.com/HA-Update-Manager/community-votes.
+    // Redesigned 2026-07-27, direct user feedback: rather than one sentence
+    // that silently drops whichever count loses (problematic used to always
+    // win, even when e.g. 2 people said healthy and only 1 said
+    // problematic), "people"/"others" perspective + a "_mixed" variant show
+    // both numbers whenever both exist.
     community_verdict_healthy: (count) =>
-      `${count} ${count === 1 ? "person" : "people"} reported this version as healthy`,
+      `${count} ${count === 1 ? "person" : "people"} reported this jump as healthy.`,
     community_verdict_problematic: (count) =>
-      `${count} ${count === 1 ? "person" : "people"} reported this version as problematic`,
-    // Shown instead of the two above whenever this HA instance itself
-    // already voted (see my_votes.py), direct user feedback, 2026-07-22:
-    // "I can't see that I voted myself" -- `others` is the count minus your
-    // own vote, floored at 0 for the common case where community-votes
-    // hasn't processed it into the aggregate yet.
-    community_verdict_you_healthy: (others) =>
-      others === 0
-        ? "You reported this version as healthy"
-        : `You and ${others} ${others === 1 ? "other person" : "other people"} reported this version as healthy`,
-    community_verdict_you_problematic: (others) =>
-      others === 0
-        ? "You reported this version as problematic"
-        : `You and ${others} ${others === 1 ? "other person" : "other people"} reported this version as problematic`,
+      `${count} ${count === 1 ? "person" : "people"} reported this jump as problematic.`,
+    community_verdict_mixed: (healthyCount, problematicCount) =>
+      `${healthyCount} reported this jump as healthy, ${problematicCount} as problematic.`,
+    // "others" perspective: used instead of the three above whenever a
+    // separate "You reported..." row (below) is already shown, so these
+    // counts exclude your own vote instead of restating it.
+    community_verdict_others_healthy: (count) =>
+      `${count} ${count === 1 ? "other person" : "others"} reported this jump as healthy.`,
+    community_verdict_others_problematic: (count) =>
+      `${count} ${count === 1 ? "other person" : "others"} reported this jump as problematic.`,
+    community_verdict_others_mixed: (healthyCount, problematicCount) =>
+      `${healthyCount} ${healthyCount === 1 ? "other person" : "others"} reported this jump as healthy, ${problematicCount} as problematic.`,
+    // Your own vote, shown as its own fact regardless of whether it agrees
+    // with everyone else (direct user feedback, 2026-07-22: "I can't see
+    // that I voted myself"; redesigned 2026-07-27 to always show, even when
+    // your vote is the dissenting one -- it used to silently disappear from
+    // the sentence entirely whenever it didn't match the leading direction,
+    // see my_votes.py). The wider picture, if any, is the separate
+    // aggregate row above/below this, not merged into this same sentence.
+    community_verdict_you_healthy: "You reported this jump as healthy.",
+    community_verdict_you_problematic: "You reported this jump as problematic.",
     // Count+pluralized, matching ha-config-section-updates.ts's own real
     // title_skipped/title_not_installable convention (confirmed against its
     // source: both are passed {count} and pluralize the same way
@@ -405,9 +426,12 @@ const TRANSLATIONS = {
     dialog_new_version: "Nieuwste versie",
     dialog_community_verdict_disclaimer:
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
-    community_not_yet_rated: "Nog niet beoordeeld door anderen",
+    community_not_yet_rated: "Niemand heeft nog iets over deze sprong gemeld.",
     community_vote_link_prompt: "Koppel je GitHub-account in Instellingen om te stemmen.",
-    community_vote_prompt: (fromVersion, toVersion) => `Hoe bevalt de sprong van ${fromVersion} naar ${toVersion} je?`,
+    community_trusted_vote_healthy: (names) =>
+      `Vertrouwde stem: deze sprong is door ${names} als probleemloos beoordeeld.`,
+    community_trusted_vote_problematic: (names) =>
+      `Vertrouwde stem: deze sprong is door ${names} als problematisch beoordeeld.`,
     community_other_jumps_heading: "Andere sprongen naar deze versie",
     community_other_jump_line: (fromVersion, badgeTitle) => `Van ${fromVersion}: ${badgeTitle}`,
     community_report_toggle: "Meld een bekend probleem",
@@ -446,7 +470,7 @@ const TRANSLATIONS = {
     // needing separate singular/plural verb forms for a variable-length,
     // possibly multi-name subject.
     dialog_auto_install_held_back: (names) =>
-      `Auto-installatie tegengehouden: deze versie is door ${names} als problematisch beoordeeld.`,
+      `Auto-installatie tegengehouden: deze sprong is door ${names} als problematisch beoordeeld.`,
     dialog_more_info: "Meer info",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
     enabled_section_title: "Algemeen",
@@ -483,17 +507,19 @@ const TRANSLATIONS = {
     rollout_queue_subtitle: "Installeert één voor één om het Zigbee-netwerk niet te overbelasten.",
     rollout_queue_waiting: (name) => `Wacht op ${name}`,
     community_verdict_healthy: (count) =>
-      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze versie als probleemloos`,
+      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als probleemloos.`,
     community_verdict_problematic: (count) =>
-      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze versie als problematisch`,
-    community_verdict_you_healthy: (others) =>
-      others === 0
-        ? "Jij meldde deze versie als probleemloos"
-        : `Jij en ${others} ${others === 1 ? "ander" : "anderen"} meldden deze versie als probleemloos`,
-    community_verdict_you_problematic: (others) =>
-      others === 0
-        ? "Jij meldde deze versie als problematisch"
-        : `Jij en ${others} ${others === 1 ? "ander" : "anderen"} meldden deze versie als problematisch`,
+      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als problematisch.`,
+    community_verdict_mixed: (healthyCount, problematicCount) =>
+      `${healthyCount} melden deze sprong als probleemloos, ${problematicCount} als problematisch.`,
+    community_verdict_others_healthy: (count) =>
+      `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos.`,
+    community_verdict_others_problematic: (count) =>
+      `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als problematisch.`,
+    community_verdict_others_mixed: (healthyCount, problematicCount) =>
+      `${healthyCount} ${healthyCount === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos, ${problematicCount} als problematisch.`,
+    community_verdict_you_healthy: "Jij meldde deze sprong als probleemloos.",
+    community_verdict_you_problematic: "Jij meldde deze sprong als problematisch.",
     group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,
     group_not_installable: (count) =>
       `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
@@ -632,21 +658,49 @@ const STATUS_ALERT_TYPE = { ready: "success", waiting: "info", blocked: "warning
 // them would sort/group as blocked but render with the wrong alert color.
 const _FALLBACK_STATUS = "blocked";
 
-function updateSortKey(u, settings) {
-  const priority = STATUS_SORT_PRIORITY[u.status] ?? STATUS_SORT_PRIORITY[_FALLBACK_STATUS];
-  const availableSinceSec = u.available_since ? Math.floor(new Date(u.available_since).getTime() / 1000) : 0;
+// Tier-by-tier, not one packed number -- a single additive key worked while
+// every status only ever needed one secondary ordering, but "ready" now
+// needs two different ones within the same group (see below), and a raw
+// available_since timestamp and a scheduled execute_at time aren't the same
+// unit, so packing both into one arithmetic slot doesn't generalize.
+function compareUpdates(a, b, settings) {
+  const priorityOf = (u) => STATUS_SORT_PRIORITY[u.status] ?? STATUS_SORT_PRIORITY[_FALLBACK_STATUS];
+  const pa = priorityOf(a);
+  const pb = priorityOf(b);
+  if (pa !== pb) return pa - pb;
+
+  // Within "ready": an entity already counting down to a real scheduled
+  // auto-install (pending_install) sorts soonest-execute_at-first among
+  // others like it, ahead of "ready" entities with nothing scheduled yet --
+  // direct user feedback, 2026-07-27 ("in ready to update zou ik verwachten
+  // dat de geplande geautomatiseerde updates op volgorde gesorteerd staan
+  // van nu naar later"). Plain ready entities (no pending_install) keep the
+  // existing oldest-available-first order below.
+  if (a.status === "ready" && b.status === "ready") {
+    const aScheduled = a.pending_install != null;
+    const bScheduled = b.pending_install != null;
+    if (aScheduled !== bScheduled) return aScheduled ? -1 : 1;
+    if (aScheduled) {
+      return new Date(a.pending_install.execute_at).getTime() - new Date(b.pending_install.execute_at).getTime();
+    }
+  }
+
+  const availableSinceSec = (u) => (u.available_since ? Math.floor(new Date(u.available_since).getTime() / 1000) : 0);
   // Same number the badge itself displays, not always plain remaining_seconds
   // -- found live: two auto-install-projected updates sorted apart, with an
   // unrelated manual one in between, because remaining_seconds alone (time
   // to "ready") no longer matches what's shown once projectedAutoInstallTime
   // (remaining_seconds + announce_hours) is what the badge actually counts
   // down to.
-  const projected = u.status === "waiting" ? projectedAutoInstallTime(u, settings) : null;
-  const waitingSeconds = projected
-    ? Math.round((new Date(projected).getTime() - Date.now()) / 1000)
-    : u.remaining_seconds;
-  const secondary = u.status === "waiting" && waitingSeconds != null ? waitingSeconds : availableSinceSec;
-  return priority * 10_000_000_000 + secondary;
+  const waitingSeconds = (u) => {
+    const projected = u.status === "waiting" ? projectedAutoInstallTime(u, settings) : null;
+    return projected ? Math.round((new Date(projected).getTime() - Date.now()) / 1000) : u.remaining_seconds;
+  };
+  const secondaryOf = (u) => {
+    const w = u.status === "waiting" ? waitingSeconds(u) : null;
+    return w != null ? w : availableSinceSec(u);
+  };
+  return secondaryOf(a) - secondaryOf(b);
 }
 
 // Will this update ever auto-install itself, as currently configured?
@@ -768,57 +822,60 @@ function timerBadge(tr, u, settings, hass) {
   return null;
 }
 
+// Builds the aggregate sentence for a healthy/problematic count pair,
+// showing both numbers when genuinely mixed instead of silently dropping
+// the minority one -- direct user feedback, 2026-07-27 (found live: 2
+// healthy + 1 problematic used to only ever surface as "1... problematic",
+// the 2 healthy votes invisible). `perspective` picks the wording: "people"
+// when there's no separate "you" row already distinguishing your own vote
+// (the badge tooltip below, the dialog's other-jumps rows, or the dialog's
+// own aggregate row when you haven't voted yourself), "others" when there
+// is one and these counts already exclude you.
+function aggregateVerdictText(tr, healthyCount, problematicCount, perspective) {
+  const key = (suffix) => tr[`community_verdict_${perspective === "others" ? "others_" : ""}${suffix}`];
+  if (healthyCount > 0 && problematicCount > 0) return key("mixed")(healthyCount, problematicCount);
+  if (problematicCount > 0) return key("problematic")(problematicCount);
+  if (healthyCount > 0) return key("healthy")(healthyCount);
+  return null;
+}
+
+// Row 1's own "you voted" rendering (see _buildCommunitySection), shared
+// between the initial verdict_for_version fetch (my_verdict already set)
+// and a vote just cast in this same dialog session (see _buildVoteControls'
+// own onVoted callback) -- direct user feedback, 2026-07-27: casting a vote
+// used to leave this row exactly as it was before ("No one's reported on
+// this jump yet."), reading as a flat contradiction sitting right next to
+// the vote confirmation ("Marked as healthy...") that appears right below
+// it. Idempotent (removes any icon this row already has before inserting
+// the new one): a vote can be changed more than once in the same dialog
+// session.
+function applyMyVerdictRow(verdictRow, verdictText, tr, verdict) {
+  verdictText.textContent = verdict === "problematic" ? tr.community_verdict_you_problematic : tr.community_verdict_you_healthy;
+  const existingIcon = verdictRow.querySelector("ha-svg-icon");
+  if (existingIcon) existingIcon.remove();
+  const verdictIcon = document.createElement("ha-svg-icon");
+  verdictIcon.path = verdict === "problematic" ? ICON_ALERT : ICON_THUMB_UP;
+  verdictRow.insertBefore(verdictIcon, verdictText);
+  verdictRow.hidden = false;
+}
+
 // A second, independent pill (see _buildListRow's own verdictBadgeInfo
 // parameter), read from community_verdict.py's read-only community-votes
 // lookup (https://github.com/HA-Update-Manager/community-votes, added
 // 2026-07-22). No badge at all when null (not HACS-identified, or not yet
 // rated): a neutral pill on every single row would be more clutter than
-// signal for the common "nobody's voted yet" case.
+// signal for the common "nobody's voted yet" case. The pill's own icon/
+// digit stay single-number (problematic leads, asymmetric safety) -- a
+// badge can't show two counts -- but the hover tooltip gets the fuller
+// "both counts when mixed" treatment via aggregateVerdictText.
 function verdictBadge(tr, u) {
   const verdict = u.community_verdict;
   if (!verdict || (verdict.healthy_count === 0 && verdict.problematic_count === 0)) return null;
+  const title = aggregateVerdictText(tr, verdict.healthy_count, verdict.problematic_count, "people");
   if (verdict.problematic_count > 0) {
-    return {
-      icon: ICON_ALERT,
-      text: String(verdict.problematic_count),
-      title: tr.community_verdict_problematic(verdict.problematic_count),
-    };
+    return { icon: ICON_ALERT, text: String(verdict.problematic_count), title };
   }
-  return {
-    icon: ICON_THUMB_UP,
-    text: String(verdict.healthy_count),
-    title: tr.community_verdict_healthy(verdict.healthy_count),
-  };
-}
-
-// The dialog's own verdict line (icon + full sentence, see
-// _buildCommunitySection), folding in whether *this* HA instance already
-// voted (my_votes.py: community-votes' own aggregate never distinguishes
-// "your vote" from anyone else's, and can lag behind a vote actually being
-// submitted -- direct user feedback, 2026-07-22, "ik kan ook niet zien dat
-// ik zelf iets heb gestemd"). Only switches to the "you" wording when your
-// vote matches the leading direction shown (or nothing's leading yet, your
-// own vote just hasn't been counted): if you voted the opposite of what's
-// currently shown, the plain aggregate sentence is shown as-is rather than
-// guessing whether you're already one of that number.
-function communityVerdictLine(tr, verdict, myVerdict) {
-  const counts = verdict || { healthy_count: 0, problematic_count: 0 };
-  const leadingVerdict = counts.problematic_count > 0 ? "problematic" : counts.healthy_count > 0 ? "healthy" : null;
-
-  if (myVerdict && (leadingVerdict === null || leadingVerdict === myVerdict)) {
-    const total = myVerdict === "problematic" ? counts.problematic_count : counts.healthy_count;
-    const others = Math.max(0, total - 1);
-    return {
-      icon: myVerdict === "problematic" ? ICON_ALERT : ICON_THUMB_UP,
-      text:
-        myVerdict === "problematic"
-          ? tr.community_verdict_you_problematic(others)
-          : tr.community_verdict_you_healthy(others),
-    };
-  }
-
-  const badge = verdictBadge(tr, { community_verdict: verdict });
-  return badge ? { icon: badge.icon, text: badge.title } : { icon: null, text: tr.community_not_yet_rated };
+  return { icon: ICON_THUMB_UP, text: String(verdict.healthy_count), title };
 }
 
 // The shared .dialog-rows/.row/.key/.value fact-list building block --
@@ -1336,6 +1393,17 @@ class UpdateManagerPanel extends HTMLElement {
     const icon = btn && btn.querySelector("ha-icon");
     if (icon) icon.classList.add("spinning");
     try {
+      // Awaited before _loadAll(), not alongside it: direct user feedback,
+      // 2026-07-25 ("als ik op de refresh knop druk wil ik dat hij ook de
+      // meest recente info van de votes naar binnen haalt") -- community
+      // verdicts otherwise stay cached for up to an hour
+      // (community_verdict.py's own _REFRESH_INTERVAL), same as any other
+      // background-refreshed fact. This forces a fresh fetch for every
+      // currently-pending entity and patches the coordinator's own cache
+      // *before* _loadAll()'s own update_manager/updates call reads it, so
+      // this one manual click is guaranteed to show genuinely current
+      // counts, not whatever was last cached.
+      await this._hass.callWS({ type: "update_manager/refresh_community_verdicts" });
       await this._loadAll();
       this._renderContent();
       this._showToast(this._tr.refreshed_toast);
@@ -1476,6 +1544,7 @@ class UpdateManagerPanel extends HTMLElement {
     const next = new Map();
     let installingChanged = false;
     let anyVersionChanged = false;
+    let dialogEntityVersionChanged = false;
     for (const u of this._updates) {
       const state = entityState(this._hass, u.entity_id);
       const installing = updateIsInstalling(state);
@@ -1484,11 +1553,32 @@ class UpdateManagerPanel extends HTMLElement {
       const prev = previous.get(u.entity_id);
       if (!prev) continue;
       if (prev.installing !== installing) installingChanged = true;
-      if (prev.installedVersion !== installedVersion) anyVersionChanged = true;
+      if (prev.installedVersion !== installedVersion) {
+        anyVersionChanged = true;
+        if (u.entity_id === this._dialogEntityId) dialogEntityVersionChanged = true;
+      }
     }
     this._installSnapshots = next;
     if (anyVersionChanged) {
-      this._loadAll().then(() => this._renderContent());
+      this._loadAll().then(() => {
+        this._renderContent();
+        // Reopens the dialog in place if it's open for the entity that just
+        // finished installing -- direct user feedback, 2026-07-27 ("na het
+        // installeren van een update vanuit een dialog verwacht je dat je
+        // het history-dialog te zien krijgt voor die entity"). The Install
+        // button itself is deliberately fire-and-forget (see its own click
+        // handler's comment: awaiting it either closed the dialog too early
+        // or left it stuck spinning for a slow install), so nothing
+        // previously told an already-open dialog its own install had
+        // actually finished -- it kept showing the stale pending facts and
+        // an enabled Install button indefinitely. Every other dialog action
+        // (Cancel/Skip/Unskip) already reopens itself this same way as soon
+        // as its own websocket call resolves (see _afterDialogAction) --
+        // this covers the one action that can't simply await its own
+        // completion. Preserves whichever History entry was expanded, same
+        // as _afterDialogAction, via this._dialogHistoryEntry.
+        if (dialogEntityVersionChanged) this._openDetailDialog(this._dialogEntityId, this._dialogHistoryEntry);
+      });
     } else if (installingChanged && this._tab === "updates") {
       this._renderContent();
     }
@@ -1779,7 +1869,7 @@ class UpdateManagerPanel extends HTMLElement {
   }
 
   // Default sort: safest first (green, then orange, then red), see
-  // updateSortKey's own comment for the secondary key -- requested
+  // compareUpdates's own comments for the secondary ordering -- requested
   // directly by the user. No interactive sort/filter controls (HA's own
   // /config updates list doesn't have them either); this whole page is a
   // short, at-a-glance list, not a big searchable table anymore.
@@ -1865,7 +1955,7 @@ class UpdateManagerPanel extends HTMLElement {
       const list = document.createElement("ha-list-base");
       group.entities
         .slice()
-        .sort((a, b) => updateSortKey(a, this._settings) - updateSortKey(b, this._settings))
+        .sort((a, b) => compareUpdates(a, b, this._settings))
         .forEach((u) => {
           // The version to install, plus the device's area (confirmed
           // against ha-config-updates.ts's real source -- "AreaName ⋅
@@ -2066,7 +2156,14 @@ class UpdateManagerPanel extends HTMLElement {
     // its own History entries below instead (see the entries.forEach loop
     // further down), consistently, whether or not something's pending.
 
-    if (u) {
+    // `!historyEntry`, not just `u`: opened via a specific History-tab row
+    // (historyEntry set) means the user wants that one past install, not
+    // also the entity's unrelated current pending update dragged in above
+    // it -- direct user feedback, 2026-07-27 ("je verwacht die bovenkant
+    // helemaal niet"). Same signal _openDetailDialog's own defaultExpandIndex
+    // already uses for the same reasoning. The Updates-tab/rollout-queue
+    // entry points (both `u` truthy, no historyEntry) are unaffected.
+    if (u && !historyEntry) {
       // A live install-progress bar (indeterminate, or percentage-based
       // when the entity supports it) -- matching more-info-update.ts's own
       // placement exactly (confirmed against its real source): below the
@@ -2299,26 +2396,33 @@ class UpdateManagerPanel extends HTMLElement {
       // visible, matching direct user feedback that a card should open to
       // show its details rather than dumping everything inline.
       //
-      // Exactly one entry starts expanded, not all collapsed (changed
-      // 2026-07-25, direct user feedback: voting used to live in a single
-      // fixed section elsewhere in the dialog; now every entry gets its own
-      // vote section inline, so the single most relevant one should be
-      // visible immediately without a click). Defaults to the most recent
-      // entry (entries[0] -- this._installLog is already loaded newest-first,
-      // see _loadAll's own .slice().reverse()) unless the dialog was opened
-      // for one *specific* entry (historyEntry, from the History tab's own
-      // list), in which case that one starts expanded instead. Matched by
-      // installed_at+to_version, not object identity: _afterDialogAction
+      // At most one entry starts expanded. Opened for one *specific* entry
+      // (historyEntry, from the History tab's own list): that one, matched
+      // by installed_at+to_version, not object identity -- _afterDialogAction
       // reloads this._installLog (a fresh array of fresh objects) before
       // re-opening the dialog with the same old historyEntry reference, so
       // `===` would silently fail to re-match a structurally-identical entry
-      // after that reload.
+      // after that reload. Otherwise: the most recent entry (entries[0] --
+      // this._installLog is already loaded newest-first, see _loadAll's own
+      // .slice().reverse()), but only when there's no pending update of its
+      // own already drawing attention via the Journey A Community section
+      // above (`u`, in scope from earlier in this method) -- direct user
+      // feedback, 2026-07-27: opening the dialog from the Updates tab (or
+      // the rollout-queue row -- both always have `u` truthy) shouldn't also
+      // auto-expand History. `-1` never matches a real `index`, so every
+      // card stays collapsed in that case. `_afterDialogAction`'s own
+      // self-refresh re-evaluates `u` fresh each time, so once an Install
+      // finishes and `u` becomes falsy, the newest entry (the install that
+      // just completed) auto-expands on the refreshed dialog -- correct by
+      // construction, not a case needing its own handling here.
       const defaultExpandIndex = (() => {
-        if (!historyEntry) return 0;
-        const i = entries.findIndex(
-          (e) => e.installed_at === historyEntry.installed_at && e.to_version === historyEntry.to_version
-        );
-        return i !== -1 ? i : 0;
+        if (historyEntry) {
+          const i = entries.findIndex(
+            (e) => e.installed_at === historyEntry.installed_at && e.to_version === historyEntry.to_version
+          );
+          return i !== -1 ? i : 0;
+        }
+        return u ? -1 : 0;
       })();
 
       const list = document.createElement("div");
@@ -2389,6 +2493,17 @@ class UpdateManagerPanel extends HTMLElement {
           ])
         );
 
+        // Marks where the changelog/release-notes block below starts, so
+        // the (lazily-built, see ensureCommunitySection below) Community
+        // section can always be inserted right before it -- direct user
+        // feedback, 2026-07-27: votes used to render after the changelog,
+        // at the very bottom, easy to miss on an entry with long release
+        // notes, when spotting a reported problem before reading the notes
+        // is exactly the point. An invisible, empty comment node, not a
+        // real element: nothing to style or accidentally match a CSS rule.
+        const changelogAnchor = document.createComment("changelog");
+        expandWrap.appendChild(changelogAnchor);
+
         if (entry.release_notes) {
           const markdown = document.createElement("ha-markdown");
           markdown.content = entry.release_notes;
@@ -2438,9 +2553,18 @@ class UpdateManagerPanel extends HTMLElement {
           entryCommunitySection = this._buildCommunitySection(
             tr, entityId, entry.from_version, entry.to_version, true, isDialogStale
           );
+          // Inserted right before changelogAnchor, not appended at the end
+          // -- puts it between the plain facts above and the changelog/
+          // release notes below, regardless of how long the notes are (see
+          // changelogAnchor's own comment). No extra <hr> before the
+          // section itself -- _buildCommunitySection already adds its own
+          // leading divider (that's the facts/votes boundary). The second
+          // <hr> here is the votes/changelog boundary; see the CSS rule
+          // below for its spacing (this wrapper isn't a flex container, so
+          // it needs its own margin, not a parent gap).
           if (entryCommunitySection) {
-            expandWrap.appendChild(document.createElement("hr"));
-            expandWrap.appendChild(entryCommunitySection);
+            expandWrap.insertBefore(entryCommunitySection, changelogAnchor);
+            expandWrap.insertBefore(document.createElement("hr"), changelogAnchor);
           }
         };
         if (isDefaultExpanded) ensureCommunitySection();
@@ -2483,7 +2607,10 @@ class UpdateManagerPanel extends HTMLElement {
     });
     actions.appendChild(moreInfoBtn);
 
-    if (u) {
+    // Same `!historyEntry` guard as the body content above -- no
+    // Skip/Install buttons for the entity's unrelated pending update either
+    // when this dialog was opened for one specific past History entry.
+    if (u && !historyEntry) {
       // Already skipped: the alert's own "Clear skipped" button (see
       // above) covers the only relevant action here, showing this too
       // would just be a redundant, no-op way to skip an already-skipped
@@ -2836,40 +2963,23 @@ class UpdateManagerPanel extends HTMLElement {
     section.hidden = true;
     section.appendChild(document.createElement("hr"));
 
-    // The question and the verdict readout share their own tight-gapped
-    // group, separate from the section's own wider gap to the action
-    // controls below -- direct user feedback, 2026-07-22: uniform spacing
-    // throughout made the whole section read as one dense stack, with no
-    // visual cue that the top two lines are "information" and what's below
-    // is "things you can do about it".
+    // The verdict fact rows share their own tight-gapped group, separate
+    // from the section's own wider gap to the action controls below --
+    // direct user feedback, 2026-07-22: uniform spacing throughout made the
+    // whole section read as one dense stack, with no visual cue that the
+    // top lines are "information" and what's below is "things you can do
+    // about it".
     const infoGroup = document.createElement("div");
     infoGroup.className = "dialog-community-info";
     section.appendChild(infoGroup);
 
-    // A friendly question, not a dry "voting on version X" statement --
-    // direct user feedback, 2026-07-22: still names the exact version (the
-    // whole reason this line exists at all), just asked like a person
-    // would rather than stated like a system log. Normal text weight, not
-    // `.hint`: this is the section's own lead line now, not a secondary
-    // detail. Built unconditionally now (changed 2026-07-24: used to only
-    // show for historyEntry/Journey B, leaving Journey A's pending-update
-    // dialog with no such line at all) and names both endpoints of the
-    // jump, not just the destination -- see this method's own fromVersion
-    // comment above for why that distinction matters.
-    const scopeLine = document.createElement("p");
-    scopeLine.textContent = tr.community_vote_prompt(fromVersion, toVersion);
-    infoGroup.appendChild(scopeLine);
-
     // Icon + sentence, not a separate heading plus a separate disclaimer
-    // paragraph on top -- reuses verdictBadge (the exact same function the
-    // Updates-tab row's own pill already calls) so the icon/wording match
-    // exactly, instead of re-deriving the healthy/problematic branch here.
-    // The icon is only ever appended once there's a real badge to show, not
-    // created upfront and toggled via .hidden -- found live, 2026-07-22:
-    // ha-svg-icon's own shadow-DOM styles set `:host { display: inline-flex
-    // }` unconditionally, with no `:host([hidden])` override, so the
-    // `hidden` attribute never actually collapsed it, only left an empty,
-    // pathless icon-sized gap sitting in front of the text.
+    // paragraph on top. The icon is only ever appended once there's a real
+    // fact to show, not created upfront and toggled via .hidden -- found
+    // live, 2026-07-22: ha-svg-icon's own shadow-DOM styles set `:host {
+    // display: inline-flex }` unconditionally, with no `:host([hidden])`
+    // override, so the `hidden` attribute never actually collapsed it, only
+    // left an empty, pathless icon-sized gap sitting in front of the text.
     const verdictRow = document.createElement("div");
     verdictRow.className = "dialog-community-verdict-line";
     verdictRow.title = tr.dialog_community_verdict_disclaimer;
@@ -2898,12 +3008,70 @@ class UpdateManagerPanel extends HTMLElement {
       // uses.
       if (isDialogStale() || !result.identifiable) return;
       section.hidden = false;
-      const line = communityVerdictLine(tr, result.verdict, result.my_verdict);
-      verdictText.textContent = line.text;
-      if (line.icon) {
-        const verdictIcon = document.createElement("ha-svg-icon");
-        verdictIcon.path = line.icon;
-        verdictRow.insertBefore(verdictIcon, verdictText);
+
+      // Row 1: your own vote, shown as its own fact whenever you have one --
+      // regardless of whether it agrees with the wider aggregate below
+      // (redesigned 2026-07-27, direct user feedback: a dissenting vote used
+      // to be silently dropped from the sentence entirely). No vote of your
+      // own, but the aggregate has votes: this row is hidden entirely, the
+      // aggregate row below covers it on its own ("N people reported...").
+      // No votes at all, anywhere: this row states that plainly.
+      const counts = result.verdict || { healthy_count: 0, problematic_count: 0 };
+      const myVerdict = result.my_verdict;
+      if (myVerdict) {
+        applyMyVerdictRow(verdictRow, verdictText, tr, myVerdict);
+      } else if (counts.healthy_count === 0 && counts.problematic_count === 0) {
+        verdictText.textContent = tr.community_not_yet_rated;
+      } else {
+        verdictRow.hidden = true;
+      }
+
+      // Row 2: everyone else's votes, if any beyond your own -- both counts
+      // shown when genuinely mixed (see aggregateVerdictText), "others"
+      // perspective when Row 1 above already shows your own vote (these
+      // counts then exclude it), "people" perspective otherwise.
+      const othersHealthy = Math.max(0, counts.healthy_count - (myVerdict === "healthy" ? 1 : 0));
+      const othersProblematic = Math.max(0, counts.problematic_count - (myVerdict === "problematic" ? 1 : 0));
+      const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, myVerdict ? "others" : "people");
+      if (aggregateText) {
+        const aggregateRow = document.createElement("div");
+        aggregateRow.className = "dialog-community-verdict-line";
+        aggregateRow.title = tr.dialog_community_verdict_disclaimer;
+        const aggregateIcon = document.createElement("ha-svg-icon");
+        aggregateIcon.path = othersProblematic > 0 ? ICON_ALERT : ICON_THUMB_UP;
+        const aggregateSpan = document.createElement("span");
+        aggregateSpan.textContent = aggregateText;
+        aggregateRow.appendChild(aggregateIcon);
+        aggregateRow.appendChild(aggregateSpan);
+        infoGroup.appendChild(aggregateRow);
+      }
+
+      // Whether a configured trusted voter is among the people who voted
+      // on this exact jump -- direct user feedback, 2026-07-27 ("toevallig
+      // mijn trusted voter die heeft gestemd, maar dat zie ik niet terug"),
+      // this is exactly the fact that changes auto-install behavior for
+      // this jump (see announcer.py's own effective_auto_install_state), so
+      // it gets its own line right next to the primary verdict, not folded
+      // into that sentence (folding "you" and "trusted voter(s)" into one
+      // grammatically correct sentence for every combination of the two
+      // wasn't worth the complexity). Not shown if the same person is both
+      // "you" and the trusted voter who voted -- a real but rare edge case,
+      // left as a minor known simplification rather than plumbing your own
+      // linked username through here just to de-duplicate one line.
+      if (result.trusted_voters_matched && result.trusted_voters_matched.length) {
+        const trustedRow = document.createElement("div");
+        trustedRow.className = "dialog-community-verdict-line";
+        const trustedIcon = document.createElement("ha-svg-icon");
+        trustedIcon.path = result.trusted_vote === "problematic" ? ICON_ALERT : ICON_THUMB_UP;
+        const trustedText = document.createElement("span");
+        const names = joinUsernames(tr, result.trusted_voters_matched);
+        trustedText.textContent =
+          result.trusted_vote === "problematic"
+            ? tr.community_trusted_vote_problematic(names)
+            : tr.community_trusted_vote_healthy(names);
+        trustedRow.appendChild(trustedIcon);
+        trustedRow.appendChild(trustedText);
+        infoGroup.appendChild(trustedRow);
       }
 
       // Other jumps landing on this same destination version, if any --
@@ -2947,7 +3115,9 @@ class UpdateManagerPanel extends HTMLElement {
         controlsContainer.appendChild(prompt);
         return;
       }
-      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy);
+      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, (verdict) =>
+        applyMyVerdictRow(verdictRow, verdictText, tr, verdict)
+      );
     })();
 
     return section;
@@ -2992,7 +3162,15 @@ class UpdateManagerPanel extends HTMLElement {
   // dialog is opened fresh). Every failure surfaces the backend's own
   // specific reason via _showToast (not_linked/not_identifiable/
   // vote_failed, see websocket_api.py's own _handle_vote) instead.
-  _buildVoteControls(container, tr, entityId, version, allowHealthy) {
+  //
+  // `onVoted(verdict)`, called the same optimistic way right before
+  // showConfirmed: direct user feedback, 2026-07-27, found live -- Row 1
+  // above this (see _buildCommunitySection) kept showing "No one's reported
+  // on this jump yet." right next to this exact confirmation text after a
+  // successful vote, a flat contradiction. Updates that row locally too,
+  // same "don't wait on the real external count" principle as
+  // showConfirmed itself already uses.
+  _buildVoteControls(container, tr, entityId, version, allowHealthy, onVoted) {
     const showConfirmed = (text) => {
       container.innerHTML = "";
       const confirmed = document.createElement("p");
@@ -3024,6 +3202,7 @@ class UpdateManagerPanel extends HTMLElement {
       healthyBtn.addEventListener("click", () =>
         _runProgressAction(healthyBtn, async () => {
           const result = await submitVote("healthy", {});
+          onVoted?.("healthy");
           showConfirmed(tr.community_vote_confirmed_healthy(result.updated));
         })
       );
@@ -3085,6 +3264,7 @@ class UpdateManagerPanel extends HTMLElement {
           notes: formData.notes || undefined,
           link: formData.link || undefined,
         });
+        onVoted?.("problematic");
         const reasonLabel = tr[_VOTE_REASON_LABEL_KEYS[formData.reason_category]];
         showConfirmed(tr.community_vote_confirmed_problematic(reasonLabel, result.updated));
       })
@@ -3435,6 +3615,14 @@ class UpdateManagerPanel extends HTMLElement {
          container specifically. */
       .content--form { padding-bottom: var(--ha-space-6, 24px); }
       .update-groups-outer > ha-alert { display: block; max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); }
+      /* The rollout-queue cards (_buildRolloutGroupCard) are appended
+         directly to .update-groups-outer, not .update-groups -- found live,
+         2026-07-27, direct user feedback ("hij staat meer naar rechts"):
+         .update-groups ha-card below only matches a ha-card with a
+         .update-groups ancestor specifically, so these cards fell through
+         with no width cap or centering at all, rendering full-width instead
+         of the same capped/centered 600px column every other card gets. */
+      .update-groups-outer > ha-card { max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); }
       .update-groups { display: block; }
       .update-groups ha-card {
         max-width: 600px; margin: 0 auto var(--ha-space-6, 24px);
@@ -3510,13 +3698,24 @@ class UpdateManagerPanel extends HTMLElement {
          it's set. */
       /* A wider gap than infoGroup's own (see below) between the divider,
          the info group, and the action controls -- three distinct blocks,
-         not one uniform stack. */
+         not one uniform stack. Explicit margin-top on the section's own
+         leading divider, on top of that gap, not instead of it -- direct
+         user feedback, 2026-07-27: the release-link row right above this
+         section read as flush against the divider, with not enough
+         breathing room to read as a new section starting. */
       .dialog-community-section:not([hidden]) { display: flex; flex-direction: column; gap: var(--ha-space-3, 12px); }
+      .dialog-community-section > hr:first-child { margin-top: var(--ha-space-2, 8px); }
       .dialog-community-section p { margin: 0; }
       /* Tight, not the section's own wider gap: the question and the
          verdict readout read as one connected pair of facts, found live,
          2026-07-22 -- see _buildCommunitySection's own comment. */
       .dialog-community-info { display: flex; flex-direction: column; gap: var(--ha-space-1, 4px); }
+      /* Extra space above "Other jumps to this version" specifically, on
+         top of infoGroup's own tight 4px -- direct user feedback,
+         2026-07-27: the verdict line, the "other jumps" heading, and every
+         other-jump row all ran together as one dense block with no visual
+         cue that "other jumps" starts a new, separate list. */
+      .dialog-community-info > .hint { margin-top: var(--ha-space-2, 8px); }
       .dialog-community-verdict-line { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       .dialog-community-verdict-line ha-svg-icon { --mdc-icon-size: 18px; flex-shrink: 0; }
       .dialog-vote { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ha-space-2, 8px); }
@@ -3591,8 +3790,21 @@ class UpdateManagerPanel extends HTMLElement {
          embedded per entry (2026-07-25): it's an action, not passive
          changelog text, and should read the same size it does in the
          pending-update dialog, not shrunk to this card's own compact
-         13px scope. */
-      .dialog-history-notes-wrap .dialog-community-section { font-size: var(--ha-font-size-m, 14px); }
+         13px scope. margin-top: this wrapper isn't a flex container (no
+         parent gap to rely on), and the section sits right after the plain
+         facts block above it (changed 2026-07-27, direct user feedback:
+         votes used to render after the changelog, at the very bottom, easy
+         to miss on an entry with long release notes) -- this is the
+         section's own top spacing, on top of its own internal leading
+         divider. */
+      .dialog-history-notes-wrap .dialog-community-section { font-size: var(--ha-font-size-m, 14px); margin-top: var(--ha-space-3, 12px); }
+      /* The votes/changelog boundary divider (see ensureCommunitySection's
+         own comment) -- a plain top-level <hr>, not nested inside the
+         Community section like the facts/votes one above it, so this
+         selector only matches that one, not the section's own internal
+         divider. Same reasoning as the rule above: no parent flex-gap here,
+         needs its own margin. */
+      .dialog-history-notes-wrap > hr { margin-top: var(--ha-space-3, 12px); }
       /* The chevron every history entry now has, expanding its own facts
          block (and changelog, if any) in place (see ICON_CHEVRON_DOWN/
          _openDetailDialog). Rotates on toggle the same way

@@ -15,6 +15,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import Any
 
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Event, HomeAssistant, State, callback
@@ -41,6 +42,9 @@ _LOGGER = logging.getLogger(__name__)
 
 _AVAILABLE_SINCE_STORAGE_VERSION = 1
 _AVAILABLE_SINCE_STORAGE_KEY = f"{DOMAIN}_available_since"
+
+_LAST_INSTALLED_STORAGE_VERSION = 1
+_LAST_INSTALLED_STORAGE_KEY = f"{DOMAIN}_last_installed_version"
 
 # Same lookback window previous-state-tracker's config_flow.py already uses
 # for its own best-effort recorder history lookup.
@@ -267,6 +271,23 @@ class UpdateManagerCoordinator:
         self._available_since_store: Store[dict[str, dict[str, str]]] = Store(
             hass, _AVAILABLE_SINCE_STORAGE_VERSION, _AVAILABLE_SINCE_STORAGE_KEY
         )
+        # entity_id -> this entity's own installed_version, as of the last
+        # time we saw it (any refresh, not just an install) -- persisted
+        # (unlike self.cache) precisely so a restart has something to
+        # compare the live post-restart value against, see
+        # _async_recover_install_across_restart. Installing HA Core itself
+        # (and likely Supervisor/OS) always requires a full HA restart, so
+        # the before/after installed_version transition happens *across*
+        # that restart boundary -- _handle_state_changed only ever compares
+        # a live event's own old_state/new_state, and a freshly-starting
+        # process's first-ever state report for any entity has no old_state
+        # at all, so that listener structurally can never see this specific
+        # transition. Found live, 2026-07-27: HA Core updates never
+        # appeared on the History page at all.
+        self._last_installed_version: dict[str, str] = {}
+        self._last_installed_store: Store[dict[str, str]] = Store(
+            hass, _LAST_INSTALLED_STORAGE_VERSION, _LAST_INSTALLED_STORAGE_KEY
+        )
         self._listeners: list[Callable[[], None]] = []
         self._install_listeners: list[InstallListener] = []
         self._unsub_state_changed: Callable[[], None] | None = None
@@ -322,6 +343,7 @@ class UpdateManagerCoordinator:
 
     async def async_start(self) -> None:
         self._available_since = await self._available_since_store.async_load() or {}
+        self._last_installed_version = await self._last_installed_store.async_load() or {}
 
         # Subscribe *before* the initial bulk scan, not after -- found via
         # live testing on a real instance (some pending updates never
@@ -337,8 +359,38 @@ class UpdateManagerCoordinator:
         self._unsub_recheck = async_track_time_interval(self.hass, self._async_periodic_recheck, _RECHECK_INTERVAL)
 
         for entity_id in self.hass.states.async_entity_ids("update"):
+            self._recover_install_across_restart(entity_id)
             await self._async_refresh_one(entity_id)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
+
+    @callback
+    def _recover_install_across_restart(self, entity_id: str) -> None:
+        """Retroactively fires the install listeners for an install that
+        completed entirely while HA was down (see self._last_installed_version's
+        own comment for why _handle_state_changed's live event comparison
+        can never catch this on its own). Must run before _async_refresh_one
+        for this same entity_id -- that call is what advances
+        self._last_installed_version to the current value, so this needs to
+        compare against the old persisted value first.
+
+        Same call shape as the live path (listener(entity_id, old, new,
+        state)), so install_log.py's own listener doesn't need to know
+        this ever happened any differently. coordinator.cache is always
+        empty for this entity_id at this point (rebuilt from scratch every
+        restart, no entry yet), so the listener's own available_since
+        naturally comes back None here -- an honest "we don't know", not a
+        guess, since HA genuinely wasn't running to observe when this
+        update actually became available."""
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return
+        new_installed = state.attributes.get("installed_version")
+        if not new_installed:
+            return
+        old_installed = self._last_installed_version.get(entity_id)
+        if old_installed is not None and old_installed != new_installed:
+            for listener in list(self._install_listeners):
+                listener(entity_id, old_installed, new_installed, state)
 
     @callback
     def async_stop(self) -> None:
@@ -464,7 +516,23 @@ class UpdateManagerCoordinator:
             self.cache.pop(entity_id, None)
             if self._available_since.pop(entity_id, None) is not None:
                 await self._available_since_store.async_save(self._available_since)
+            if self._last_installed_version.pop(entity_id, None) is not None:
+                self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
             return
+
+        # Advances the restart-recovery baseline (see
+        # _recover_install_across_restart) to whatever's live right now,
+        # regardless of "on"/"off"/skipped below -- this only cares about
+        # installed_version itself, not whether an update is pending.
+        # Delay-saved, not awaited immediately: this runs on every relevant
+        # state change, not just installs, and a lost write only costs a
+        # duplicate retroactive fire after a crash landing in that exact
+        # window, not a wrong user-visible decision (same risk already
+        # accepted for community_verdict.py's own cache).
+        live_installed = state.attributes.get("installed_version")
+        if live_installed and self._last_installed_version.get(entity_id) != live_installed:
+            self._last_installed_version[entity_id] = live_installed
+            self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
 
         # HA's own update entities are always exactly "on" (an update is
         # available) or "off" -- "off" normally means genuinely up to
@@ -624,7 +692,13 @@ class UpdateManagerCoordinator:
         }
 
     async def _async_refresh_community_verdict(
-        self, entity_id: str, release_url: str | None, latest: str, installed_version: str
+        self,
+        entity_id: str,
+        release_url: str | None,
+        latest: str,
+        installed_version: str,
+        *,
+        force: bool = False,
     ) -> None:
         """Its own task, not awaited inline by _async_cache_active (see that
         method's own comment): patches this entity's cache entry once the
@@ -636,10 +710,14 @@ class UpdateManagerCoordinator:
         this same latest_version, by the time this background fetch
         finishes). Patches trusted_vote/trusted_voters_matched too --
         async_get_verdict fetches and caches both in the same call, see
-        community_verdict.py's own docstring."""
+        community_verdict.py's own docstring.
+
+        force=True bypasses CommunityVerdictManager's own hour-long
+        freshness window -- see async_force_refresh_community_verdicts
+        below, the only caller that ever passes this."""
         assert self._community_verdict_manager is not None
         verdict = await self._community_verdict_manager.async_get_verdict(
-            entity_id, release_url, latest, installed_version
+            entity_id, release_url, latest, installed_version, force=force
         )
         trusted_vote, trusted_voters_matched = self._community_verdict_manager.peek_cached_trusted_vote(
             entity_id, latest, installed_version
@@ -653,6 +731,43 @@ class UpdateManagerCoordinator:
             cached["community_verdict"] = verdict
             cached["trusted_vote"] = trusted_vote
             cached["trusted_voters_matched"] = trusted_voters_matched
+
+    async def async_force_refresh_community_verdicts(self) -> None:
+        """Bypasses CommunityVerdictManager's own hour-long freshness window
+        for every currently-active entity, so the panel's manual refresh
+        button can guarantee genuinely fresh community-votes data instead of
+        silently showing whatever was cached up to an hour ago -- direct
+        user feedback, 2026-07-25 ("als ik op de refresh knop druk wil ik
+        dat hij ook de meest recente info van de votes naar binnen haalt").
+
+        Concurrent, not sequential: raw.githubusercontent.com reads aren't
+        rate-limited (see community_verdict.py's own docstring), and this is
+        a rare, deliberate, user-initiated action, not a background poll --
+        same reasoning already applied to the per-dialog verdict_for_version
+        fetch. self.cache is only ever entities with something currently
+        pending (see _async_refresh_one's own pop-when-not-active logic), so
+        this is already a naturally bounded set, not every tracked entity.
+
+        Snapshotted via list(...) before gathering: an unrelated
+        state_changed event could mutate self.cache concurrently with this
+        (e.g. an install finishing mid-refresh), and iterating a dict while
+        something else mutates it would raise."""
+        if self._community_verdict_manager is None:
+            return
+
+        async def _refresh_one(entity_id: str, cached: dict[str, Any]) -> None:
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                return
+            await self._async_refresh_community_verdict(
+                entity_id,
+                state.attributes.get("release_url"),
+                cached["latest_version"],
+                cached["installed_version"],
+                force=True,
+            )
+
+        await asyncio.gather(*(_refresh_one(entity_id, cached) for entity_id, cached in list(self.cache.items())))
 
     def _cache_skipped(self, entity_id: str, state: State, current: str, latest: str) -> None:
         # No staging computation here (state itself is "off", not "on" --

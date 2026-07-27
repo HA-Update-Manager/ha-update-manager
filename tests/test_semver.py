@@ -84,6 +84,12 @@ class TestIsCalendarVersion:
         assert not semver.is_calendar_version("2026.13.1")
         assert not semver.is_calendar_version("2026.0.1")
 
+    def test_matches_zero_padded_month(self):
+        # Found live, 2026-07-27: HA Core reports "2026.07.3", not "2026.7.3"
+        # -- the zero-padded form is the real one, not a hypothetical.
+        assert semver.is_calendar_version("2026.07.3")
+        assert not semver.is_calendar_version("2026.00.1")
+
     def test_rejects_year_out_of_plausible_range(self):
         assert not semver.is_calendar_version("1.7.1")
 
@@ -184,6 +190,12 @@ class TestClassifyVersionSize:
 
     def test_calendar_month_change_is_medium(self):
         assert semver.classify_version_size("2026.7.1", "2026.8.0") == "medium"
+
+    def test_calendar_zero_padded_month_same_month_is_small(self):
+        # Found live, 2026-07-27: fell through to "big" before the
+        # zero-padded month fix, since HA Core reports "2026.07.3", not
+        # "2026.7.3".
+        assert semver.classify_version_size("2026.07.3", "2026.07.4") == "small"
 
     def test_calendar_year_rollover_is_medium_not_big(self):
         # A year rollover is just another month boundary in this scheme's

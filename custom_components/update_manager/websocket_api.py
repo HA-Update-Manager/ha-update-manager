@@ -133,6 +133,27 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
     )
 
 
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command({vol.Required("type"): "update_manager/refresh_community_verdicts"})
+async def _handle_refresh_community_verdicts(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """The panel's own manual refresh button, direct user feedback,
+    2026-07-25: pressing it should also pull in the latest community-votes
+    data, not just whatever CommunityVerdictManager's own hour-long cache
+    still happens to have. Awaited here (not fired as a background task)
+    so the panel's own immediately-following update_manager/updates call
+    sees the freshly-patched cache, not a stale one with a refresh still
+    in flight."""
+    data = hass.data.get(DOMAIN)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    await data["coordinator"].async_force_refresh_community_verdicts()
+    connection.send_result(msg["id"])
+
+
 @callback
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "update_manager/install_log"})
@@ -500,8 +521,10 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     # early. One extra live HTTP GET per dialog open is the right,
     # deliberate price for "always tell the truth right now" on an
     # interactive, user-initiated check.
-    verdict, other_jumps = (
-        await async_fetch_verdict_uncached(hass, identity) if identity is not None else (None, [])
+    verdict, other_jumps, trusted_vote, trusted_voters_matched = (
+        await async_fetch_verdict_uncached(hass, identity, data["community_verdict_manager"].trusted_voters)
+        if identity is not None
+        else (None, [], None, [])
     )
     my_verdict = await _async_resolve_my_verdict(hass, data, identity) if identity is not None else None
     connection.send_result(
@@ -515,6 +538,13 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
             # "verdict"/"my_verdict" above already are my own jump, always
             # shown first/primary in the dialog by construction.
             "other_jumps": other_jumps,
+            # Whether a configured trusted voter is among the people who
+            # voted on this exact jump (direct user feedback, 2026-07-27) --
+            # the same fact community_verdict.py's own cache already
+            # computes for the entity's *current* pending jump, now also
+            # available for an arbitrary History entry's jump.
+            "trusted_vote": trusted_vote,
+            "trusted_voters_matched": trusted_voters_matched,
         },
     )
 
@@ -588,6 +618,7 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
         return
     hass.data[_WS_REGISTERED] = True
     websocket_api.async_register_command(hass, _handle_updates)
+    websocket_api.async_register_command(hass, _handle_refresh_community_verdicts)
     websocket_api.async_register_command(hass, _handle_install_log)
     websocket_api.async_register_command(hass, _handle_cancel_pending_install)
     websocket_api.async_register_command(hass, _handle_install)

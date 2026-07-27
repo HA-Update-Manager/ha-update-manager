@@ -40,8 +40,11 @@ _SEMVER_RE = re.compile(
 # release the following year bumps the first number for calendar reasons
 # alone, not because of a breaking change. Recognized as its own,
 # deliberately excluded category rather than silently misclassified as
-# "big".
-_CALENDAR_VERSION_RE = re.compile(r"^20\d{2}\.(?:[1-9]|1[0-2])\.\d+$")
+# "big". Month accepts a zero-padded form ("07") as well as bare ("7") --
+# found live, 2026-07-27: "2026.07.3" -> "2026.07.4" fell through this *and*
+# strict semver's own leading-zero rejection, landing on the conservative
+# "big" default despite being an ordinary same-month patch bump.
+_CALENDAR_VERSION_RE = re.compile(r"^20\d{2}\.(?:0[1-9]|[1-9]|1[0-2])\.\d+$")
 
 # A short (or full) git commit hash, e.g. HACS tracking a repo by commit
 # instead of a release tag. Git's own abbreviation length isn't fixed at 7 --
