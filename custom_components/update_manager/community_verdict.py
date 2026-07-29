@@ -44,6 +44,7 @@ from homeassistant.util import dt as dt_util
 from .community_verdict_payload import (
     my_vote_from_payload,
     other_jumps_from_payload,
+    problematic_reasons_from_payload,
     trusted_vote_from_payload,
     verdict_from_payload,
 )
@@ -275,7 +276,7 @@ class CommunityVerdictManager:
 
 async def async_fetch_verdict_uncached(
     hass: HomeAssistant, identity: ResolvedIdentity, trusted_voters: list[str] | None = None
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None, list[str]]:
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None, list[str], list[dict[str, Any]]]:
     """A direct, uncached lookup for an arbitrary already-resolved identity,
     not necessarily the entity's own current pending jump, e.g. reading/
     voting from a specific History entry. Deliberately NOT
@@ -291,20 +292,22 @@ async def async_fetch_verdict_uncached(
     resolve it a second time here.
 
     Returns (my own jump's verdict, other jumps to this same destination,
-    trusted vote, trusted voters matched) -- all derived from the one
-    fetch, direct user feedback 2026-07-24 (other_jumps) and 2026-07-27
-    (trusted_vote/trusted_voters_matched, "toevallig mijn trusted voter die
-    heeft gestemd, maar dat zie ik niet terug" -- the dialog's own verdict
-    line for a specific jump had no idea whether a trusted voter was among
-    the people who voted on it, even though that's exactly what changes
-    auto-install behavior for this jump). trusted_voters defaults to none
-    (not every caller cares, e.g. a caller that already knows this entity
-    has no pending update at all)."""
+    trusted vote, trusted voters matched, problematic voters' own reasons)
+    -- all derived from the one fetch, direct user feedback 2026-07-24
+    (other_jumps), 2026-07-27 (trusted_vote/trusted_voters_matched,
+    "toevallig mijn trusted voter die heeft gestemd, maar dat zie ik niet
+    terug" -- the dialog's own verdict line for a specific jump had no idea
+    whether a trusted voter was among the people who voted on it, even
+    though that's exactly what changes auto-install behavior for this
+    jump), and 2026-07-29 (problematic_reasons, "ik zie in de interface
+    nergens de reden staan"). trusted_voters defaults to none (not every
+    caller cares, e.g. a caller that already knows this entity has no
+    pending update at all)."""
     try:
         payload = await _fetch_to_version_json(hass, identity.to_version_path)
     except Exception:
         _LOGGER.debug("Couldn't fetch community verdict for %s", identity.to_version_path, exc_info=True)
-        return None, [], None, []
+        return None, [], None, [], []
     trusted_vote, trusted_voters_matched = trusted_vote_from_payload(
         payload, identity.from_version, trusted_voters or []
     )
@@ -313,4 +316,5 @@ async def async_fetch_verdict_uncached(
         other_jumps_from_payload(payload, identity.from_version),
         trusted_vote,
         trusted_voters_matched,
+        problematic_reasons_from_payload(payload, identity.from_version),
     )

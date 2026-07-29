@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, State, callback
 
 from .community_verdict import CommunityVerdictManager
-from .const import CONF_ENABLED, CONF_HIDE_POSTPONED, DOMAIN
+from .const import CONF_ENABLED, CONF_HIDE_POSTPONED
 from .coordinator import (
     UpdateManagerCoordinator,
     excluded_entities_from_options,
@@ -19,13 +18,14 @@ from .install_manager import InstallManager, auto_install_rules_from_options
 from .my_votes import MyVotesManager
 from .panel import async_register_update_manager_panel
 from .rollout_manager import RolloutManager
+from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
 from .staging_skip import StagingSkipManager
 from .websocket_api import async_apply_options, async_setup_websocket_api
 
 PLATFORMS: list[str] = ["sensor", "switch"]
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> bool:
     options = dict(entry.options)
     rules = rules_from_options(options)
     # Constructed before the coordinator: it takes a reference to this (see
@@ -91,14 +91,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # coordinator's own staggered bulk scan is the actual slow part on a
     # large instance) behind it too.
     await staging_skip_manager.async_load()
-    await asyncio.gather(
-        install_log.async_load(),
-        install_manager.async_load(),
-        rollout_manager.async_load(),
-        community_verdict_manager.async_load(),
-        github_auth_manager.async_load(),
-        my_votes_manager.async_load(),
-    )
+    # install_log.async_load() *and* community_verdict_manager.async_load()
+    # specifically (not the other three loads below) must both finish
+    # before coordinator.async_start() -- install_log for the reason given
+    # at _on_install's own registration further down, community_verdict_manager
+    # because coordinator.py's own _async_cache_active reads
+    # CommunityVerdictManager.peek_cached_verdict/peek_cached_trusted_vote
+    # synchronously, straight from its in-memory cache, during the bulk
+    # scan async_start() itself runs -- found by code review, 2026-07-27:
+    # gathering it concurrently with async_start() again (an earlier
+    # efficiency fix) reintroduced exactly the kind of race this whole
+    # split was meant to avoid, just for a different manager: whichever
+    # entities the scan reaches before this Store read resolves would
+    # silently get None/empty community-verdict data for a moment, even
+    # though a persisted cache exists on disk. install_manager/
+    # rollout_manager/github_auth_manager have no such ordering dependency
+    # and stay gathered together with coordinator.async_start() itself.
+    await asyncio.gather(install_log.async_load(), community_verdict_manager.async_load())
 
     @callback
     def _on_install(entity_id: str, old_version: str, new_version: str, new_state: State) -> None:
@@ -140,30 +149,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # listener, synchronously, inline, for an install that completed
     # entirely while HA was down (see coordinator.py's own
     # _recover_install_across_restart), not only from a later live
-    # state_changed event like before. install_log.async_load() is no
-    # longer gathered concurrently with coordinator.async_start() for
-    # that reason: if it hadn't finished loading yet, _on_install's own
+    # state_changed event like before. install_log.async_load() had to be
+    # pulled out of the gather below and awaited on its own first for this
+    # reason: if it hadn't finished loading yet, _on_install's own
     # async_log_install would append to (and then save) an empty in-memory
-    # list, silently wiping out every previously-logged install. These
-    # loads are cheap (a single Store read each) -- the coordinator's own
-    # staggered scan is the actually slow part, so sequencing them first
-    # costs little and removes the race entirely.
+    # list, silently wiping out every previously-logged install.
     coordinator.async_add_install_listener(_on_install)
-    await coordinator.async_start()
+    # The other three loads have no such ordering dependency on
+    # coordinator.async_start() -- gathered together with it, not awaited
+    # in front of it, so they still overlap with the coordinator's own
+    # slow, staggered bulk scan the same way they did before install_log/
+    # community_verdict_manager needed to move out on their own above.
+    await asyncio.gather(
+        coordinator.async_start(),
+        install_manager.async_load(),
+        rollout_manager.async_load(),
+        github_auth_manager.async_load(),
+        my_votes_manager.async_load(),
+    )
     install_manager.async_start()
     staging_skip_manager.async_start(bool(options.get(CONF_HIDE_POSTPONED, True)))
     rollout_manager.async_start()
 
-    hass.data[DOMAIN] = {
-        "coordinator": coordinator,
-        "install_log": install_log,
-        "install_manager": install_manager,
-        "staging_skip_manager": staging_skip_manager,
-        "rollout_manager": rollout_manager,
-        "community_verdict_manager": community_verdict_manager,
-        "github_auth_manager": github_auth_manager,
-        "my_votes_manager": my_votes_manager,
-    }
+    entry.runtime_data = UpdateManagerData(
+        coordinator=coordinator,
+        install_log=install_log,
+        install_manager=install_manager,
+        staging_skip_manager=staging_skip_manager,
+        rollout_manager=rollout_manager,
+        community_verdict_manager=community_verdict_manager,
+        github_auth_manager=github_auth_manager,
+        my_votes_manager=my_votes_manager,
+    )
     async_setup_websocket_api(hass)
     await async_register_update_manager_panel(hass)
 
@@ -176,14 +193,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        hass.data.pop(DOMAIN, None)
-    return unloaded
+async def async_unload_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> bool:
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
-async def update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def update_listener(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> None:
     """Applies newly-saved settings in place, not via a full entry reload
     (changed 2026-07-16): a rules-only change doesn't need the coordinator's
     cache rebuilt from scratch (a multi-second, recorder-querying bulk

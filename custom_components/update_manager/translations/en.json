@@ -4,11 +4,29 @@
         "step": {
             "user": {
                 "title": "Set up Update Manager",
-                "description": "Update Manager applies local, semver-aware staging rules to your Home Assistant updates. Manage the staging rules afterwards on Update Manager's own \"Update Manager\" sidebar panel, under its Instellingen tab."
+                "description": "Update Manager applies local, semver-aware staging rules to your Home Assistant updates. Manage the staging rules afterwards on Update Manager's own \"Update Manager\" sidebar panel, under its Settings tab."
             }
         },
         "abort": {
             "single_instance_allowed": "Update Manager is already set up. Only one instance is needed."
+        }
+    },
+    "entity": {
+        "sensor": {
+            "summary": {
+                "name": "Update Manager"
+            }
+        },
+        "switch": {
+            "enabled": {
+                "name": "Update Manager Enabled"
+            }
+        }
+    },
+    "issues": {
+        "github_link_expired": {
+            "title": "Update Manager's GitHub link has expired",
+            "description": "Your linked GitHub account, used to submit community votes on updates, is no longer valid (it was either revoked or hasn't been used in over 6 months). Open the Update Manager panel's Settings tab and re-link your GitHub account to keep voting.\n\nThis doesn't affect update staging or auto-install, only community voting."
         }
     }
 }

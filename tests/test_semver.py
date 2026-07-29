@@ -243,6 +243,18 @@ class TestClassifyVersionSize:
     def test_identical_short_semver_is_big(self):
         assert semver.classify_version_size("18.1", "18.1") == "big"
 
-    def test_mixed_short_semver_and_full_semver_is_big(self):
+    def test_mixed_short_semver_and_full_semver_major_change_is_big(self):
         assert semver.classify_version_size("18.0", "1.2.3") == "big"
         assert semver.classify_version_size("1.2.3", "18.0") == "big"
+
+    def test_mixed_short_semver_and_full_semver_minor_change_is_medium(self):
+        # Found live, 2026-07-27: "0.36.2" -> "0.37" used to be "big" purely
+        # for not being *both* short or *both* full semver, even though the
+        # minor component's own change (36 -> 37) is perfectly ordinary and
+        # detectable once "0.37"'s missing patch is just treated as 0.
+        assert semver.classify_version_size("0.36.2", "0.37") == "medium"
+
+    def test_mixed_short_semver_and_full_semver_patch_only_change_is_small(self):
+        # The short side's implicit patch=0 still participates normally in
+        # the small/medium/big tiering, not just major/minor.
+        assert semver.classify_version_size("1.2", "1.2.3") == "small"

@@ -13,12 +13,13 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_ENABLED, DOMAIN
 from .coordinator import UpdateManagerCoordinator
+from .runtime_data import UpdateManagerConfigEntry
 from .websocket_api import async_apply_options
 
 PARALLEL_UPDATES = 0
@@ -26,20 +27,31 @@ PARALLEL_UPDATES = 0
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: UpdateManagerConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator = hass.data[DOMAIN]["coordinator"]
-    async_add_entities([UpdateManagerEnabledSwitch(hass, config_entry, coordinator)])
+    async_add_entities(
+        [UpdateManagerEnabledSwitch(hass, config_entry, config_entry.runtime_data.coordinator)]
+    )
 
 
 class UpdateManagerEnabledSwitch(SwitchEntity):
     _attr_should_poll = False
     _attr_unique_id = f"{DOMAIN}_enabled"
-    _attr_name = "Update Manager Enabled"
-    _attr_icon = "mdi:update"
+    # has_entity_name + translation_key, not a bare _attr_name -- same
+    # reasoning as UpdateManagerSummarySensor's own comment (sensor.py):
+    # no device_info here either, so this is a pure compliance change, not
+    # a visible rename. Name/icon now come from translations/en.json and
+    # icons.json (state-aware: a different icon while paused).
+    _attr_has_entity_name = True
+    _attr_translation_key = "enabled"
+    # This toggles the integration's own automatic behavior, not a
+    # standalone physical switch -- quality-scale entity-category. Moves it
+    # into the entity's own "Configuration" grouping in the UI instead of
+    # sitting among primary controls.
+    _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry, coordinator: UpdateManagerCoordinator) -> None:
+    def __init__(self, hass: HomeAssistant, entry: UpdateManagerConfigEntry, coordinator: UpdateManagerCoordinator) -> None:
         self.hass = hass
         self._entry = entry
         self._coordinator = coordinator

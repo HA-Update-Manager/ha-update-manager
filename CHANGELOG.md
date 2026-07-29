@@ -2,6 +2,136 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.0] - 2026-07-29
+
+**Auto-install now stops itself when the community reports a problem**
+A pending update is now held back from auto-installing the moment anyone reports it as problematic for
+your exact version jump, no minimum number of votes needed. Previously, only a specifically trusted
+voter's own vote could do this; with no trusted voters configured, a completely negative community
+verdict had no effect on auto-install at all. A trusted voter's own "healthy" vote still overrides this,
+exactly as before, and the dialog now explains itself whenever this happens.
+
+**A repair notification when your GitHub link needs refreshing**
+If the GitHub account you linked for community voting can no longer be refreshed (revoked, or unused for
+6 months), Update Manager now shows a repair notification in Settings > System > Repairs asking you to
+re-link it. It clears itself automatically once you do.
+
+**Also in this release:**
+- Each reported problem now shows its own reason (and any notes/link the reporter added), instead of only
+  a bare count.
+- Clearing the "Excluded entities" or "Trusted voters" field down to nothing now saves correctly, instead
+  of failing silently.
+- A version jump missing just its patch number (e.g. 0.36.2 to 0.37) is now classified correctly instead
+  of always landing on the cautious "big" size.
+
+### Added
+- **Any problematic community vote now blocks auto-install for that exact jump**, not just a configured
+  trusted voter's vote. Direct user report: a 100% negative community verdict was still queued for
+  auto-install, because `effective_auto_install_state` only ever consulted `trusted_vote`, so with no
+  trusted voters configured (the default), the wider crowd's own verdict had zero effect on auto-install
+  whatsoever. No quorum or percentage needed: a single problematic vote, however small a minority, is
+  enough to block, the same reasoning `FUTURE.md`'s own "point 5" already worked out before trusted voters
+  existed (quorum only ever mattered for trusting the crowd enough to force an install, a feature that
+  doesn't exist yet). A configured trusted voter's own "healthy" vote still overrides this and forces
+  install regardless, confirmed with the user ("wat hebben we dan nog aan een trusted voter?"), since
+  naming someone as trusted would otherwise be pointless if any random untrusted report could override
+  them anyway. The Updates-tab dialog's "Auto-install held back" alert (previously trusted-voter-only) now
+  also fires for this general case, with a count-based message when it's not specifically a trusted
+  voter's own vote. When this alert applies to a "ready" update, the plain green "Ready to update" status
+  alert above it is skipped rather than shown right next to a warning saying the opposite, since the
+  header above already states "Ready to update" on its own and the two together read as contradictory
+  clutter rather than two different facts.
+- **A problematic vote's own reported reason is now visible.** `reason_category`/`notes`/`link` were
+  already collected on submission and persisted per-voter upstream, but no code here ever read them back,
+  so a vote's reason was write-only from this integration's perspective. The per-entity dialog's Community
+  section now lists each problematic voter's reported reason category, free-text notes, and an optional
+  link, capped at the 5 most recent. Not attributed to a specific username (including your own, if you're
+  one of them): the reason itself is the useful part, and your own vote is already named separately right
+  above ("You reported this jump as problematic").
+- **Known limitation, documented rather than fixed**: a vote (and this new block) is scoped to the exact
+  version jump, not to any known issue somewhere along the way. A negative verdict on 1.0.0 to 1.0.1 has
+  no bearing at all on a direct 1.0.0 to 1.0.2 jump (a separate file, separate `jumps` entry upstream).
+  Fixing this would need reasoning about every intermediate version silently skipped over, a much larger
+  change than this one; see the README's own Known limitations section.
+- A repair issue ("Update Manager's GitHub link has expired") now appears in Settings -> System ->
+  Repairs when the linked GitHub account (used for community voting) can no longer be refreshed -- either
+  the refresh token itself expired after 6 months unused, or GitHub explicitly rejected it (e.g. a revoked
+  token). Not raised for a plain network hiccup on the refresh call, only for a failure that actually needs
+  you to re-link via the panel's Settings tab. Clears itself automatically the moment you do.
+
+### Internal
+- Migrated off `hass.data[DOMAIN]` onto `ConfigEntry.runtime_data` (a new `UpdateManagerData` dataclass in
+  `runtime_data.py`), closing `quality_scale.yaml`'s own `runtime-data` gap. `websocket_api.py`'s
+  handlers (the one place with no `ConfigEntry` of their own, since websocket commands are registered
+  globally, not per-entry) resolve it through a small `_get_data(hass)` helper that reads the one entry
+  this single-instance integration ever has -- the same lookup `_handle_get_settings`/`_handle_save_settings`
+  already did by hand, now shared instead of duplicated a third time.
+- `install_manager.py`'s auto-install `reason` ("rules" or "trusted_voter") is now a real
+  `Literal["rules", "trusted_voter"]` type (`announcer.py`'s new `AutoInstallReason`) instead of a bare
+  `str`, so a future third reason value (or a typo comparing against one) would be caught by type-checking
+  instead of silently doing nothing.
+
+### Changed
+- README trimmed for conciseness throughout, and the "Automation examples" section removed entirely
+  (direct user feedback, 2026-07-29); `quality_scale.yaml`'s `docs-examples` reverted from done to todo to
+  reflect that, since those examples were its only content. Easy to add back later if ever wanted.
+- The default wait days used before the Settings tab has ever been saved: small 0 → 1, medium 1 → 3,
+  big 3 → 7. Only affects a config entry that's never had its own settings saved yet -- an
+  already-configured instance is unaffected. Also dropped the last remnants of a "profile" picker
+  (conservative/balanced/free) that was removed from the panel a while back: only the one set of numbers
+  above was still actually read anywhere, so const.py's own `PROFILE_PRESETS` (and the unused
+  conservative/free presets inside it) is gone, replaced by a single `DEFAULT_WAIT_DAYS`.
+- The "Update Manager Enabled" switch now has `entity_category: config` (it toggles the integration's own
+  automatic behavior, not a primary control) and shows a distinct icon while paused (`mdi:update-off`).
+- Added `quality_scale.yaml` tracking this project against Home Assistant's own integration quality
+  checklist, and closed most of the easy gaps it surfaced: both entities now use `has_entity_name` +
+  translated names/icons instead of hardcoded strings, and the README gained Removal, Configuration
+  parameters, Use cases, How data updates, Automation examples, Known limitations, and Troubleshooting
+  sections. A handful of larger items (test coverage, a GitHub-token reauth flow, migrating off
+  `hass.data`) are tracked as open, not silently marked done -- see the file itself.
+
+### Fixed
+- The config-flow's own English description mixed in a stray Dutch word ("Instellingen") instead of
+  saying "Settings".
+- The History tab's empty state ("No updates logged yet.") was a bare line of text with no card around
+  it, inconsistent with both every real History entry (always its own card) and the Updates tab's own
+  empty state. It now uses the exact same card treatment as that one.
+- The Settings tab's cards were spaced 16px apart, while Updates and History both space theirs (or their
+  date sections) 24px apart, the same value real HA itself uses on the equivalent page. All three tabs
+  now use the same 24px rhythm.
+- The release-notes link said "Release announcement" (pending update) or "Release page" (History entry),
+  neither matching real HA's own wording for this exact link ("Read release announcement"). Both now say
+  the same thing HA itself does.
+- A jump between a full semver version and one missing just its patch number (e.g. "0.36.2" -> "0.37")
+  was misclassified as "big": it fell through both the same-shape short-semver and full-semver checks,
+  landing on the conservative default even though the minor-version change (36 -> 37) was perfectly
+  ordinary and detectable. The missing patch is now just treated as 0, same as it already is when both
+  sides are short.
+- Clearing the "Excluded entities" or "Trusted voters" field down to nothing failed to save at all
+  ("required key not provided... Got None"): ha-form's own multi-value selector sends `null` once the
+  last chip is removed, not an empty list, and that null was passed straight through to the save
+  payload instead of being treated as "none".
+- Casting a vote in the dialog updated your own "You reported this jump as..." row, but left the
+  aggregate "N others reported..." row right below it stuck on its pre-vote perspective and count
+  (still counting your own just-cast vote) until the whole dialog was reopened.
+- Setup briefly showed a wrong (empty/stale) community verdict for whichever entities the startup scan
+  reached before the community-verdict cache had finished loading from disk -- an efficiency change
+  earlier this session gathered that load concurrently with the scan itself instead of awaiting it
+  first, quietly reintroducing the exact kind of startup race an earlier fix (for a different cache) had
+  already been written to avoid.
+
+### Internal
+- Found by a `/code-review` pass: the per-entity dialog's community-verdict fetch and your-own-vote
+  fetch ran as two sequential awaits instead of concurrently, needlessly doubling the dialog's network
+  latency on first open; `async_start`'s two independent Store reads were sequential for the same reason.
+  Both now run concurrently.
+- The healthy/problematic-to-icon choice was independently re-derived at five separate call sites in the
+  panel; consolidated into one `verdictIcon()` helper. `verdictBadge` also no longer needs a synthetic
+  `{ community_verdict: ... }` wrapper object built just to satisfy its own signature.
+- The coordinator's plain (no-argument) listener loop was duplicated across three call sites; extracted
+  into one shared `_fire_listeners()`, mirroring the install-listener loop that was already deduplicated
+  the same way earlier.
+
 ## [0.3.0] - 2026-07-27
 
 **Community voting redesigned: clearer, more complete information**

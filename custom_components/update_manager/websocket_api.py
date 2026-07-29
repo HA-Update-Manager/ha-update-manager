@@ -35,8 +35,8 @@ from .const import (
     CONF_SMALL_AUTO_INSTALL,
     CONF_SMALL_WAIT_DAYS,
     CONF_TRUSTED_VOTERS,
+    DEFAULT_WAIT_DAYS,
     DOMAIN,
-    PROFILE_PRESETS,
 )
 from .community_verdict import async_fetch_my_vote, async_fetch_verdict_uncached
 from .community_vote import async_submit_vote
@@ -49,9 +49,33 @@ from .coordinator import (
 from .device_identity import resolve_full_identity
 from .hacs_identity import ResolvedIdentity
 from .install_manager import auto_install_rules_from_options
+from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
 from .vote_issue_body import REASON_CATEGORIES
 
 _WS_REGISTERED = f"{DOMAIN}_ws_registered"
+
+
+def _get_entry(hass: HomeAssistant) -> UpdateManagerConfigEntry | None:
+    """The one entry this single-instance integration ever has (config_flow
+    enforces this, see this module's own docstring), or None before setup
+    has run. The single place every websocket handler below (none of which
+    receive a ConfigEntry of their own the way a platform's async_setup_entry
+    does) resolves it from -- found by review while migrating off
+    hass.data[DOMAIN] to entry.runtime_data: _handle_get_settings and
+    _handle_save_settings already looked this entry up by hand, duplicating
+    the same hass.config_entries.async_entries(DOMAIN) call every other
+    handler below now also needs."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    return entries[0] if entries else None
+
+
+def _get_data(hass: HomeAssistant) -> UpdateManagerData | None:
+    """entry.runtime_data for the one entry above, or None before setup has
+    run -- runtime_data itself defaults to None until async_setup_entry
+    assigns it, so this already reads exactly like the old
+    hass.data.get(DOMAIN) it replaces, no extra None-check needed here."""
+    entry = _get_entry(hass)
+    return entry.runtime_data if entry else None
 
 
 async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
@@ -63,7 +87,7 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
     re-application of the same already-applied state). Found by review:
     the two used to duplicate this exact sequence by hand, needing every
     future setting/manager added here to be edited in both places."""
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         return
     master_enabled = bool(options.get(CONF_ENABLED, True))
@@ -80,18 +104,18 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
     # other (both act on the same self._skipped dict via the same lock, so
     # gathering them wouldn't add real concurrency, only reorder which one
     # "wins" the lock first).
-    await data["coordinator"].async_update_rules(
+    await data.coordinator.async_update_rules(
         rules_from_options(options), excluded_entities_from_options(options)
     )
-    data["install_manager"].update_rules(auto_install_rules_from_options(options))
-    data["community_verdict_manager"].set_trusted_voters(trusted_voters_from_options(options))
+    data.install_manager.update_rules(auto_install_rules_from_options(options))
+    data.community_verdict_manager.set_trusted_voters(trusted_voters_from_options(options))
 
     async def _apply_staging_skip() -> None:
-        await data["staging_skip_manager"].async_update_enabled(options.get(CONF_HIDE_POSTPONED, True))
-        await data["staging_skip_manager"].async_set_master_enabled(master_enabled)
+        await data.staging_skip_manager.async_update_enabled(options.get(CONF_HIDE_POSTPONED, True))
+        await data.staging_skip_manager.async_set_master_enabled(master_enabled)
 
     await asyncio.gather(
-        data["install_manager"].async_set_master_enabled(master_enabled),
+        data.install_manager.async_set_master_enabled(master_enabled),
         _apply_staging_skip(),
     )
 
@@ -100,14 +124,14 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "update_manager/updates"})
 def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         connection.send_result(msg["id"], {"updates": []})
         return
 
-    install_manager = data["install_manager"]
+    install_manager = data.install_manager
     updates = []
-    for entry in data["coordinator"].cache.values():
+    for entry in data.coordinator.cache.values():
         pending = install_manager.pending_for(entry["entity_id"])
         updates.append(
             {
@@ -128,7 +152,7 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
             # already in flight, see rollout_manager.py's own docstring.
             # The panel renders these as their own queue card(s), above the
             # normal ready/waiting/blocked groups.
-            "rollout_groups": data["rollout_manager"].rollout_groups_snapshot(),
+            "rollout_groups": data.rollout_manager.rollout_groups_snapshot(),
         },
     )
 
@@ -146,11 +170,11 @@ async def _handle_refresh_community_verdicts(
     so the panel's own immediately-following update_manager/updates call
     sees the freshly-patched cache, not a stale one with a refresh still
     in flight."""
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
-    await data["coordinator"].async_force_refresh_community_verdicts()
+    await data.coordinator.async_force_refresh_community_verdicts()
     connection.send_result(msg["id"])
 
 
@@ -158,8 +182,8 @@ async def _handle_refresh_community_verdicts(
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "update_manager/install_log"})
 def _handle_install_log(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    data = hass.data.get(DOMAIN)
-    entries = data["install_log"].entries if data else []
+    data = _get_data(hass)
+    entries = data.install_log.entries if data else []
     connection.send_result(msg["id"], {"entries": entries})
 
 
@@ -179,11 +203,11 @@ def _handle_install_log(hass: HomeAssistant, connection: websocket_api.ActiveCon
 async def _handle_cancel_pending_install(
     hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
 ) -> None:
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
-    await data["install_manager"].async_cancel(msg["entity_id"], msg["to_version"])
+    await data.install_manager.async_cancel(msg["entity_id"], msg["to_version"])
     connection.send_result(msg["id"])
 
 
@@ -214,9 +238,9 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     normal hass state-push mechanism regardless (see the panel's own
     _updateInstallProgress/_updateDialogProgress)."""
     entity_id = msg["entity_id"]
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if data:
-        await data["staging_skip_manager"].async_forget(entity_id)
+        await data.staging_skip_manager.async_forget(entity_id)
     state = hass.states.get(entity_id)
     if state is not None and state.attributes.get("skipped_version"):
         await hass.services.async_call("update", "clear_skipped", {"entity_id": entity_id}, blocking=True)
@@ -235,7 +259,7 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     to_version = state.attributes.get("latest_version") if state else None
     queued = False
     if data and to_version:
-        result = await data["rollout_manager"].async_request_install(
+        result = await data.rollout_manager.async_request_install(
             entity_id, to_version, service_data, is_auto=False
         )
         queued = result == "queued"
@@ -248,7 +272,7 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
         # this handler returns and the panel's own post-call _loadAll()
         # re-fetches (same race already fixed once this session for
         # save_settings/staging_skip.py's own skip/unskip calls).
-        await data["coordinator"].async_refresh_one(entity_id)
+        await data.coordinator.async_refresh_one(entity_id)
     connection.send_result(msg["id"], {"queued": queued})
 
 
@@ -272,12 +296,12 @@ async def _handle_skip(hass: HomeAssistant, connection: websocket_api.ActiveConn
     immediately (since a no-op service call fires no event to trigger that
     on its own) fixes both halves of that."""
     entity_id = msg["entity_id"]
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if data:
-        await data["staging_skip_manager"].async_forget(entity_id)
+        await data.staging_skip_manager.async_forget(entity_id)
     await hass.services.async_call("update", "skip", {"entity_id": entity_id}, blocking=True)
     if data:
-        await data["coordinator"].async_refresh_one(entity_id)
+        await data.coordinator.async_refresh_one(entity_id)
     connection.send_result(msg["id"])
 
 
@@ -300,9 +324,9 @@ async def _handle_unskip(hass: HomeAssistant, connection: websocket_api.ActiveCo
     # _handle_install).
     entity_id = msg["entity_id"]
     await hass.services.async_call("update", "clear_skipped", {"entity_id": entity_id}, blocking=True)
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if data:
-        await data["coordinator"].async_refresh_one(entity_id)
+        await data.coordinator.async_refresh_one(entity_id)
     connection.send_result(msg["id"])
 
 
@@ -310,13 +334,13 @@ async def _handle_unskip(hass: HomeAssistant, connection: websocket_api.ActiveCo
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "update_manager/get_settings"})
 def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    entries = hass.config_entries.async_entries(DOMAIN)
-    options = dict(entries[0].options) if entries else {}
+    entry = _get_entry(hass)
+    options = dict(entry.options) if entry else {}
     connection.send_result(
         msg["id"],
         {
             "options": options,
-            "profiles": PROFILE_PRESETS,
+            "defaults": DEFAULT_WAIT_DAYS,
             "hard_excluded_entities": hard_excluded_entity_ids(hass),
         },
     )
@@ -354,12 +378,12 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
     )
 )
 async def _handle_save_settings(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries:
+    entry = _get_entry(hass)
+    if not entry:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
     options = {k: v for k, v in msg.items() if k not in ("type", "id")}
-    hass.config_entries.async_update_entry(entries[0], options=options)
+    hass.config_entries.async_update_entry(entry, options=options)
     # Applied directly here too, awaited -- not just left to HA's own
     # config entry update-listener (__init__.py's update_listener), which
     # still also fires on its own (harmless: re-applying the same
@@ -377,11 +401,11 @@ async def _handle_save_settings(hass: HomeAssistant, connection: websocket_api.A
 @websocket_api.async_response
 @websocket_api.websocket_command({vol.Required("type"): "update_manager/github_link_start"})
 async def _handle_github_link_start(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
-    result = await data["github_auth_manager"].async_start_device_flow()
+    result = await data.github_auth_manager.async_start_device_flow()
     connection.send_result(msg["id"], result)
 
 
@@ -389,8 +413,8 @@ async def _handle_github_link_start(hass: HomeAssistant, connection: websocket_a
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "update_manager/github_link_status"})
 def _handle_github_link_status(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    data = hass.data.get(DOMAIN)
-    status = data["github_auth_manager"].link_status() if data else {"status": "idle", "username": None}
+    data = _get_data(hass)
+    status = data.github_auth_manager.link_status() if data else {"status": "idle", "username": None}
     connection.send_result(msg["id"], status)
 
 
@@ -398,15 +422,15 @@ def _handle_github_link_status(hass: HomeAssistant, connection: websocket_api.Ac
 @websocket_api.async_response
 @websocket_api.websocket_command({vol.Required("type"): "update_manager/github_unlink"})
 async def _handle_github_unlink(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
-    await data["github_auth_manager"].async_unlink()
+    await data.github_auth_manager.async_unlink()
     connection.send_result(msg["id"])
 
 
-def _release_url_for_version(hass: HomeAssistant, data: dict, entity_id: str, version: str) -> str | None:
+def _release_url_for_version(hass: HomeAssistant, data: UpdateManagerData, entity_id: str, version: str) -> str | None:
     """The release_url that applies to this exact (entity_id, version) pair,
     the single place that decides this instead of trusting each caller to
     reconstruct it correctly (found by review, 2026-07-22: a first version
@@ -417,7 +441,7 @@ def _release_url_for_version(hass: HomeAssistant, data: dict, entity_id: str, ve
     since that's authoritative for a version that isn't the entity's current
     one; the entity's live state second, for the still-pending, not-yet-
     installed case, where no install_log entry exists yet."""
-    for entry in reversed(data["install_log"].entries):
+    for entry in reversed(data.install_log.entries):
         if entry["entity_id"] == entity_id and entry["to_version"] == version:
             return entry.get("release_url")
     state = hass.states.get(entity_id)
@@ -426,7 +450,7 @@ def _release_url_for_version(hass: HomeAssistant, data: dict, entity_id: str, ve
     return None
 
 
-def _from_version_for_version(hass: HomeAssistant, data: dict, entity_id: str, version: str) -> str | None:
+def _from_version_for_version(hass: HomeAssistant, data: UpdateManagerData, entity_id: str, version: str) -> str | None:
     """The from_version (the version upgraded *from*) that applies to this
     exact (entity_id, version) pair -- mirrors _release_url_for_version's
     own two-case shape exactly, so a vote/verdict lookup resolves the whole
@@ -436,7 +460,7 @@ def _from_version_for_version(hass: HomeAssistant, data: dict, entity_id: str, v
     e.g. voting from the History tab, already carries its own from_version)
     first; the entity's live installed_version state second, for the
     still-pending, not-yet-installed case."""
-    for entry in reversed(data["install_log"].entries):
+    for entry in reversed(data.install_log.entries):
         if entry["entity_id"] == entity_id and entry["to_version"] == version:
             return entry.get("from_version")
     state = hass.states.get(entity_id)
@@ -446,7 +470,7 @@ def _from_version_for_version(hass: HomeAssistant, data: dict, entity_id: str, v
 
 
 def _resolve_identity_for_version(
-    hass: HomeAssistant, data: dict, entity_id: str, version: str
+    hass: HomeAssistant, data: UpdateManagerData, entity_id: str, version: str
 ) -> ResolvedIdentity | None:
     """_release_url_for_version + _from_version_for_version +
     resolve_full_identity, the one pairing both _handle_verdict_for_version
@@ -463,7 +487,7 @@ def _resolve_identity_for_version(
     return resolve_full_identity(hass, entity_id, release_url, version, from_version)
 
 
-async def _async_resolve_my_verdict(hass: HomeAssistant, data: dict, identity: ResolvedIdentity) -> str | None:
+async def _async_resolve_my_verdict(hass: HomeAssistant, data: UpdateManagerData, identity: ResolvedIdentity) -> str | None:
     """Your own past verdict on this exact identity, local-cache-first
     (my_votes.py, immediately available even just after voting, before
     community-votes' own Action has processed it), falling back to your
@@ -476,15 +500,15 @@ async def _async_resolve_my_verdict(hass: HomeAssistant, data: dict, identity: R
     by hand, and the _handle_vote copy was missing the backfill, silently
     paying the extra request again on every future check until an actual
     vote was cast)."""
-    my_verdict = data["my_votes_manager"].my_verdict(identity.jump_key)
+    my_verdict = data.my_votes_manager.my_verdict(identity.jump_key)
     if my_verdict is not None:
         return my_verdict
-    username = data["github_auth_manager"].linked_username
+    username = data.github_auth_manager.linked_username
     if not username:
         return None
     my_verdict = await async_fetch_my_vote(hass, identity, username)
     if my_verdict is not None:
-        await data["my_votes_manager"].async_remember(identity.jump_key, my_verdict)
+        await data.my_votes_manager.async_remember(identity.jump_key, my_verdict)
     return my_verdict
 
 
@@ -498,7 +522,7 @@ async def _async_resolve_my_verdict(hass: HomeAssistant, data: dict, identity: R
     }
 )
 async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
@@ -521,12 +545,23 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     # early. One extra live HTTP GET per dialog open is the right,
     # deliberate price for "always tell the truth right now" on an
     # interactive, user-initiated check.
-    verdict, other_jumps, trusted_vote, trusted_voters_matched = (
-        await async_fetch_verdict_uncached(hass, identity, data["community_verdict_manager"].trusted_voters)
-        if identity is not None
-        else (None, [], None, [])
-    )
-    my_verdict = await _async_resolve_my_verdict(hass, data, identity) if identity is not None else None
+    # Gathered concurrently, not two sequential awaits -- found by code
+    # review, 2026-07-27: these are fully independent (the community-verdict
+    # fetch never depends on your own vote, or vice versa), but
+    # _async_resolve_my_verdict's own fallback path (no local my_votes.py
+    # record yet) does its own separate live HTTP GET too, so the old
+    # sequential order doubled this dialog-open's real network latency in
+    # exactly that case.
+    if identity is not None:
+        (verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons), my_verdict = (
+            await asyncio.gather(
+                async_fetch_verdict_uncached(hass, identity, data.community_verdict_manager.trusted_voters),
+                _async_resolve_my_verdict(hass, data, identity),
+            )
+        )
+    else:
+        verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons = (None, [], None, [], [])
+        my_verdict = None
     connection.send_result(
         msg["id"],
         {
@@ -545,6 +580,11 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
             # available for an arbitrary History entry's jump.
             "trusted_vote": trusted_vote,
             "trusted_voters_matched": trusted_voters_matched,
+            # Every problematic voter's own reason_category/notes/link for
+            # my own jump (direct user feedback, 2026-07-29): a vote's
+            # reason used to be write-only, collected on submission but
+            # never read back anywhere.
+            "problematic_reasons": problematic_reasons,
         },
     )
 
@@ -567,7 +607,7 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     }
 )
 async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    data = hass.data.get(DOMAIN)
+    data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
@@ -577,7 +617,7 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
         connection.send_error(msg["id"], "not_identifiable", "This update can't be identified for voting yet")
         return
 
-    access_token = await data["github_auth_manager"].async_get_valid_access_token()
+    access_token = await data.github_auth_manager.async_get_valid_access_token()
     if access_token is None:
         connection.send_error(msg["id"], "not_linked", "Link your GitHub account first")
         return
@@ -606,7 +646,7 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
     except Exception:
         connection.send_error(msg["id"], "vote_failed", "Couldn't submit the vote, try again")
         return
-    await data["my_votes_manager"].async_remember(identity.jump_key, msg["verdict"])
+    await data.my_votes_manager.async_remember(identity.jump_key, msg["verdict"])
     connection.send_result(msg["id"], {"updated": is_vote_update})
 
 

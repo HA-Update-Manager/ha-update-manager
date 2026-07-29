@@ -1,0 +1,17 @@
+{
+    "entity": {
+        "sensor": {
+            "summary": {
+                "default": "mdi:update"
+            }
+        },
+        "switch": {
+            "enabled": {
+                "default": "mdi:update",
+                "state": {
+                    "off": "mdi:update-off"
+                }
+            }
+        }
+    }
+}

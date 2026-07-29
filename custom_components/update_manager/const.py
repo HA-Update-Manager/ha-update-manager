@@ -52,46 +52,27 @@ CONF_HIDE_POSTPONED = "hide_postponed"
 # disagreement among them is resolved.
 CONF_TRUSTED_VOTERS = "trusted_voters"
 
-PROFILE_CONSERVATIVE = "conservative"
-PROFILE_BALANCED = "balanced"
-PROFILE_FREE = "free"
-
-# A profile only pre-fills the detailed fields below it -- it never hides
-# them (decided 2026-07-15, see FUTURE.md). "custom" means "keep whatever
-# is already configured (or the balanced defaults, the first time)" rather
-# than a distinct set of values of its own.
+# The wait/auto-install values a freshly-created config entry (options == {})
+# reads as, before anyone's ever opened the Settings tab and saved anything
+# of their own -- not a distinct, still-selectable "profile": this used to
+# be one of three (conservative/balanced/free), but the picker itself was
+# removed from the panel a while back, leaving only this one set of numbers
+# actually read anywhere (rules_from_options' own fallback, and the
+# Settings tab's own pre-fill for a not-yet-saved field). Found live,
+# 2026-07-27, direct user feedback: "we hebben helemaal geen profiles meer"
+# -- the old conservative/free presets and the "profile" vocabulary around
+# them were dead code, not a real, current feature.
 #
-# Every profile defaults auto_install to False everywhere: auto-install is
-# a large enough step up in consequence (Update Manager actually calling
-# update.install) that no profile should switch it on silently; a user has
-# to opt in per size by hand (see FUTURE.md's auto-install design note,
-# 2026-07-15).
-PROFILE_PRESETS: dict[str, dict[str, int | bool]] = {
-    PROFILE_CONSERVATIVE: {
-        CONF_SMALL_WAIT_DAYS: 3,
-        CONF_SMALL_AUTO_INSTALL: False,
-        CONF_MEDIUM_WAIT_DAYS: 14,
-        CONF_MEDIUM_AUTO_INSTALL: False,
-        CONF_BIG_WAIT_DAYS: 60,
-        CONF_BIG_AUTO_INSTALL: False,
-        CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
-    },
-    PROFILE_BALANCED: {
-        CONF_SMALL_WAIT_DAYS: 0,
-        CONF_SMALL_AUTO_INSTALL: False,
-        CONF_MEDIUM_WAIT_DAYS: 1,
-        CONF_MEDIUM_AUTO_INSTALL: False,
-        CONF_BIG_WAIT_DAYS: 3,
-        CONF_BIG_AUTO_INSTALL: False,
-        CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
-    },
-    PROFILE_FREE: {
-        CONF_SMALL_WAIT_DAYS: 0,
-        CONF_SMALL_AUTO_INSTALL: False,
-        CONF_MEDIUM_WAIT_DAYS: 0,
-        CONF_MEDIUM_AUTO_INSTALL: False,
-        CONF_BIG_WAIT_DAYS: 30,
-        CONF_BIG_AUTO_INSTALL: False,
-        CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
-    },
+# auto_install defaults to False everywhere: auto-install is a large enough
+# step up in consequence (Update Manager actually calling update.install)
+# that it should never switch on silently; a user has to opt in per size
+# by hand (see FUTURE.md's auto-install design note, 2026-07-15).
+DEFAULT_WAIT_DAYS: dict[str, int | bool] = {
+    CONF_SMALL_WAIT_DAYS: 1,
+    CONF_SMALL_AUTO_INSTALL: False,
+    CONF_MEDIUM_WAIT_DAYS: 3,
+    CONF_MEDIUM_AUTO_INSTALL: False,
+    CONF_BIG_WAIT_DAYS: 7,
+    CONF_BIG_AUTO_INSTALL: False,
+    CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
 }

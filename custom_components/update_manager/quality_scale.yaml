@@ -1,0 +1,179 @@
+rules:
+  # Bronze
+  action-setup:
+    status: exempt
+    comment: >-
+      No custom services/actions are registered. The panel talks to this integration
+      entirely over its own websocket commands, not HA service actions.
+  appropriate-polling: done
+  brands: done
+  common-modules: done
+  config-flow-test-coverage:
+    status: todo
+    comment: >-
+      No test file for config_flow.py. Needs pytest-homeassistant-custom-component,
+      which doesn't build locally on this machine's Python (lru-dict build failure,
+      same blocker noted for previous-state-tracker) -- needs a different
+      environment or a newer local Python.
+  config-flow: done
+  dependency-transparency: done
+  docs-actions:
+    status: exempt
+    comment: No custom actions exist.
+  docs-triggers:
+    status: exempt
+    comment: No triggers exist.
+  docs-conditions:
+    status: exempt
+    comment: No conditions exist.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data:
+    status: done
+    comment: >-
+      entry.runtime_data holds a single UpdateManagerData dataclass
+      (runtime_data.py), replacing hass.data[DOMAIN]. websocket_api.py's
+      handlers (the one place with no ConfigEntry of their own) resolve it
+      via a small _get_data(hass) helper that reads the one entry this
+      single-instance integration ever has.
+  test-before-configure:
+    status: exempt
+    comment: >-
+      No external connection or credentials to validate during setup -- a
+      single-instance, local rule engine with no user-supplied fields at all.
+  test-before-setup:
+    status: exempt
+    comment: >-
+      iot_class: calculated -- async_setup_entry makes no device/cloud-API
+      call that could transiently fail, only local Store reads via HA's own
+      helpers/storage.Store. ConfigEntryNotReady exists to let HA retry a
+      *transient* failure with backoff; a corrupted local JSON file would
+      fail identically on every retry, so it wouldn't meaningfully help here.
+  unique-config-entry: done
+
+  # Silver
+  action-exceptions:
+    status: exempt
+    comment: No actions are registered.
+  config-entry-unloading: done
+  docs-configuration-parameters: done
+  docs-installation-parameters:
+    status: exempt
+    comment: No installation-time parameters exist (single-instance, no fields).
+  entity-unavailable:
+    status: exempt
+    comment: >-
+      iot_class is "calculated" -- both entities always reflect locally computed
+      state, there's no remote connection for them to become unavailable from.
+  integration-owner: done
+  log-when-unavailable:
+    status: exempt
+    comment: Same reasoning as entity-unavailable -- no remote connection to log.
+  parallel-updates: done
+  reauthentication-flow:
+    status: exempt
+    comment: >-
+      This rule is about re-collecting a credential the config_flow itself
+      asked for at setup -- this integration's own config_flow asks for
+      nothing at all (data={}, see config_flow.py). The GitHub account link
+      (github_auth.py) is a separate, optional, panel-only sub-feature with
+      no bearing on whether the config entry itself is set up; see
+      repair-issues below for how an expired/revoked link is now surfaced
+      instead.
+  test-coverage:
+    status: todo
+    comment: >-
+      Only the HA-independent pure-logic modules (semver/staging/hacs_identity/
+      rollout/announcer/community_verdict_payload/vote_issue_body) have tests.
+      Everything touching hass (coordinator, config_flow, websocket_api,
+      __init__, entity platforms) has none -- same
+      pytest-homeassistant-custom-component local-build blocker as
+      config-flow-test-coverage above.
+
+  # Gold
+  devices:
+    status: exempt
+    comment: >-
+      A system-wide rule engine with two domain-level entities -- no natural
+      per-device grouping exists to create devices for.
+  diagnostics: done
+  discovery-update-info:
+    status: exempt
+    comment: No discovery.
+  discovery:
+    status: exempt
+    comment: >-
+      Nothing to discover -- this manages HA's own existing update. entities,
+      not a network device of its own.
+  docs-data-update: done
+  docs-examples:
+    status: todo
+    comment: >-
+      README used to have an "Automation examples" section (switch.turn_off/
+      state-trigger snippets for the master pause switch and summary sensor);
+      removed 2026-07-29 for conciseness (direct user feedback). Easy to add
+      back if ever wanted -- both entities are plain, automatable HA entities
+      with nothing special about them.
+  docs-known-limitations: done
+  docs-supported-devices:
+    status: exempt
+    comment: >-
+      No physical devices involved -- covers whatever update. entities already
+      exist on the system (HACS, Core/Supervisor/OS, Zigbee firmware, add-ons).
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices:
+    status: exempt
+    comment: No devices at all, see devices above.
+  entity-category: done
+  entity-device-class:
+    status: exempt
+    comment: >-
+      Neither entity (a custom summary sensor, an enable/disable switch) maps to
+      any of HA's standard device classes.
+  entity-disabled-by-default:
+    status: exempt
+    comment: Only two entities exist, both central to the integration's purpose, neither is noisy.
+  entity-translations: done
+  exception-translations:
+    status: exempt
+    comment: No exceptions are raised anywhere in the codebase currently.
+  icon-translations: done
+  reconfiguration-flow:
+    status: exempt
+    comment: >-
+      Nothing to reconfigure via config_flow (no fields at all). Settings live on
+      the panel's own Settings tab instead of a config_flow options step -- see
+      FUTURE.md's "Tussenstap" note for why that's a deliberate, if nonstandard,
+      choice for this integration specifically.
+  repair-issues:
+    status: done
+    comment: >-
+      github_auth.py raises a github_link_expired issue the moment the GitHub
+      link becomes unusable in a way only a fresh re-link can fix (the refresh
+      token itself expired after 6 months unused, or GitHub explicitly
+      rejected the refresh, e.g. a revoked token) -- not for a plain network
+      exception on the refresh call, which is just as likely transient.
+      Cleared automatically the moment a fresh device-flow link succeeds.
+  stale-devices:
+    status: exempt
+    comment: No devices at all, see devices above.
+
+  # Platinum
+  async-dependency:
+    status: exempt
+    comment: >-
+      No third-party PyPI dependency at all (requirements: []) -- all I/O goes
+      straight through Home Assistant's own async aiohttp client.
+  inject-websession: done
+  strict-typing:
+    status: todo
+    comment: >-
+      Type hints are used pervasively (from __future__ import annotations, typed
+      signatures throughout) but there's no py.typed marker or enforced mypy
+      config yet.

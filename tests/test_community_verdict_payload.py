@@ -206,3 +206,85 @@ class TestOtherJumpsFromPayload:
                 "auto_install_eligible": False,
             }
         ]
+
+
+class TestProblematicReasonsFromPayload:
+    def test_empty_when_payload_is_none(self):
+        assert community_verdict_payload.problematic_reasons_from_payload(None, "3.5.1") == []
+
+    def test_empty_when_no_problematic_votes_on_this_jump(self):
+        payload = _payload(**{"3.5.1": {"votes": {"alice": {"verdict": "healthy"}}, "verdict": {}}})
+        assert community_verdict_payload.problematic_reasons_from_payload(payload, "3.5.1") == []
+
+    def test_healthy_votes_are_excluded_even_though_reason_category_is_none(self):
+        # A healthy vote never carries a reason (vote_issue_body.py only
+        # renders one for a problematic verdict), so reason_category is
+        # always None for these -- must not be mistaken for "an
+        # unspecified problematic reason" and included anyway.
+        payload = _payload(
+            **{"3.5.1": {"votes": {"alice": {"verdict": "healthy", "reason_category": None}}, "verdict": {}}}
+        )
+        assert community_verdict_payload.problematic_reasons_from_payload(payload, "3.5.1") == []
+
+    def test_returns_reason_fields_for_a_problematic_vote(self):
+        payload = _payload(
+            **{
+                "3.5.1": {
+                    "votes": {
+                        "alice": {
+                            "verdict": "problematic",
+                            "reason_category": "breaking change",
+                            "notes": "Broke my dashboard",
+                            "link": "https://github.com/example/example/issues/1",
+                            "created_at": "2026-07-20T00:00:00+00:00",
+                        }
+                    },
+                    "verdict": {},
+                }
+            }
+        )
+        assert community_verdict_payload.problematic_reasons_from_payload(payload, "3.5.1") == [
+            {
+                "username": "alice",
+                "reason_category": "breaking change",
+                "notes": "Broke my dashboard",
+                "link": "https://github.com/example/example/issues/1",
+                "created_at": "2026-07-20T00:00:00+00:00",
+            }
+        ]
+
+    def test_scoped_to_my_own_jump_not_a_different_one(self):
+        payload = _payload(
+            **{
+                "0.1.0": {"votes": {"alice": {"verdict": "problematic", "reason_category": "other"}}, "verdict": {}},
+                "3.5.1": {"votes": {}, "verdict": {}},
+            }
+        )
+        assert community_verdict_payload.problematic_reasons_from_payload(payload, "3.5.1") == []
+
+    def test_sorted_most_recent_first(self):
+        payload = _payload(
+            **{
+                "3.5.1": {
+                    "votes": {
+                        "alice": {"verdict": "problematic", "created_at": "2026-07-10T00:00:00+00:00"},
+                        "bob": {"verdict": "problematic", "created_at": "2026-07-25T00:00:00+00:00"},
+                        "carol": {"verdict": "problematic", "created_at": "2026-07-15T00:00:00+00:00"},
+                    },
+                    "verdict": {},
+                }
+            }
+        )
+        reasons = community_verdict_payload.problematic_reasons_from_payload(payload, "3.5.1")
+        assert [r["username"] for r in reasons] == ["bob", "carol", "alice"]
+
+    def test_capped_at_max_problematic_reasons(self):
+        votes = {
+            f"voter{i}": {"verdict": "problematic", "created_at": f"2026-07-{i + 1:02d}T00:00:00+00:00"}
+            for i in range(10)
+        }
+        payload = _payload(**{"3.5.1": {"votes": votes, "verdict": {}}})
+        reasons = community_verdict_payload.problematic_reasons_from_payload(payload, "3.5.1")
+        assert len(reasons) == community_verdict_payload.MAX_PROBLEMATIC_REASONS
+        # Most recent kept, not an arbitrary/first-N slice.
+        assert [r["username"] for r in reasons] == ["voter9", "voter8", "voter7", "voter6", "voter5"]

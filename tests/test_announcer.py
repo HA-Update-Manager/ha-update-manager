@@ -62,9 +62,76 @@ class TestEffectiveAutoInstallState:
         ) == (True, True, "trusted_voter")
 
     def test_trusted_problematic_blocks_even_when_otherwise_eligible(self):
+        # A trusted voter's own problematic vote is itself always counted
+        # inside the aggregate community_problematic_count (the real call
+        # site, install_manager.py, reads it straight from the same
+        # verdict payload trusted_vote is derived from) -- there's no
+        # longer a separate branch just for trusted_vote == "problematic",
+        # see test_community_problematic_count_blocks_with_no_trusted_vote
+        # below for the case that dedicated branch used to only cover.
         assert announcer.effective_auto_install_state(
-            status="ready", size_enabled=True, auto_install_excluded=False, trusted_vote="problematic"
+            status="ready",
+            size_enabled=True,
+            auto_install_excluded=False,
+            trusted_vote="problematic",
+            community_problematic_count=1,
         ) == (True, False, None)
+
+    def test_community_problematic_count_blocks_with_no_trusted_vote_at_all(self):
+        # The bug this was built for: a 100% negative community verdict
+        # with no trusted voters configured (trusted_vote stays None) used
+        # to have zero effect on auto-install. Any problematic vote at all
+        # blocks now, no quorum needed -- direct user feedback, 2026-07-29.
+        assert announcer.effective_auto_install_state(
+            status="ready",
+            size_enabled=True,
+            auto_install_excluded=False,
+            trusted_vote=None,
+            community_problematic_count=1,
+        ) == (True, False, None)
+        # A single problematic vote is enough, same as a lopsided majority --
+        # no percentage/majority logic, matches FUTURE.md's own "point 5".
+        assert announcer.effective_auto_install_state(
+            status="ready",
+            size_enabled=True,
+            auto_install_excluded=False,
+            trusted_vote=None,
+            community_problematic_count=1,
+        ) == announcer.effective_auto_install_state(
+            status="ready",
+            size_enabled=True,
+            auto_install_excluded=False,
+            trusted_vote=None,
+            community_problematic_count=50,
+        )
+
+    def test_community_problematic_count_of_zero_has_no_effect(self):
+        # Default value, and the common case (no votes, or all healthy):
+        # falls straight through to the plain rules/size-toggle behavior,
+        # unchanged from before this parameter existed.
+        assert announcer.effective_auto_install_state(
+            status="ready", size_enabled=True, auto_install_excluded=False, trusted_vote=None
+        ) == announcer.effective_auto_install_state(
+            status="ready",
+            size_enabled=True,
+            auto_install_excluded=False,
+            trusted_vote=None,
+            community_problematic_count=0,
+        )
+
+    def test_trusted_healthy_wins_over_a_nonzero_community_problematic_count(self):
+        # Direct user feedback, 2026-07-29 ("wat hebben we dan nog aan een
+        # trusted voter?"): a trusted healthy vote must still force install
+        # even when some other, untrusted voter reported a problem on the
+        # same jump -- otherwise naming someone as trusted would be
+        # pointless, any random negative report could override them anyway.
+        assert announcer.effective_auto_install_state(
+            status="waiting",
+            size_enabled=False,
+            auto_install_excluded=False,
+            trusted_vote="healthy",
+            community_problematic_count=3,
+        ) == (True, True, "trusted_voter")
 
     def test_auto_install_excluded_wins_over_a_healthy_trusted_vote(self):
         # Core/Supervisor/OS, or anything explicitly excluded: never

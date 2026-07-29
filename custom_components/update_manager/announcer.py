@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from .semver import Size
 
 AnnouncementAction = Literal["none", "announce", "execute", "remove"]
+AutoInstallReason = Literal["rules", "trusted_voter"]
 
 
 class AutoInstallRules(NamedTuple):
@@ -41,7 +42,7 @@ class AutoInstallContext(NamedTuple):
     Zigbee-paced install that doesn't actually dispatch until later."""
 
     to_version: str
-    reason: str  # "rules" or "trusted_voter"
+    reason: AutoInstallReason
     trusted_voter_usernames: list[str]  # only non-empty for that reason
     announced_at: datetime | None  # None only if somehow executed with no announcement on record
 
@@ -55,13 +56,19 @@ def size_auto_install_enabled(size: Size, rules: AutoInstallRules) -> bool:
 
 
 def effective_auto_install_state(
-    *, status: str, size_enabled: bool, auto_install_excluded: bool, trusted_vote: str | None
-) -> tuple[bool, bool, str | None]:
-    """(is_ready, auto_install_enabled, reason) after folding in a trusted
-    voter's already-aggregated verdict for this exact pending version, if
-    any (see community_verdict.py's own async_get_verdict for how a list of
-    trusted usernames' individual votes becomes this single value -- this
-    function only ever sees the result, never the raw list). Direct user
+    *,
+    status: str,
+    size_enabled: bool,
+    auto_install_excluded: bool,
+    trusted_vote: str | None,
+    community_problematic_count: int = 0,
+) -> tuple[bool, bool, AutoInstallReason | None]:
+    """(is_ready, auto_install_enabled, reason) after folding in (a) a
+    trusted voter's already-aggregated verdict for this exact pending
+    version, if any (see community_verdict.py's own async_get_verdict for
+    how a list of trusted usernames' individual votes becomes this single
+    value -- this function only ever sees the result, never the raw list),
+    and (b) the wider crowd's own raw problematic count. Direct user
     feedback, 2026-07-23 ("installeer altijd automatisch als [klaptafel]
     een update als healthy heeft beoordeeld, ongeacht mijn eigen rules" ->
     confirmed symmetric while planning: a trusted "problematic" verdict
@@ -84,18 +91,33 @@ def effective_auto_install_state(
     A trusted "healthy" vote overrides *both* the size-based toggle and the
     staging wait period (`is_ready`) for anything else -- the whole point of
     naming someone more trusted than your own rules is that their
-    judgement can skip the wait, not just the toggle. A trusted
-    "problematic" vote blocks eligibility outright, even when status is
-    already "ready" and the size's own toggle is on: same reasoning, the
-    other direction. Neither changes how decide_action itself sequences
-    announce/execute -- only what feeds into it."""
+    judgement can skip the wait, not just the toggle -- and it wins even
+    when community_problematic_count is nonzero: direct user feedback,
+    2026-07-29 ("wat hebben we dan nog aan een trusted voter?") when asked
+    whether a stray untrusted problematic report should override a trusted
+    healthy vote. So this check comes first, unconditionally.
+
+    Only once there's no trusted-healthy override in play does
+    community_problematic_count matter: any problematic vote at all, from
+    anyone, however small a minority, blocks eligibility outright -- no
+    quorum, no percentage, same asymmetric-safety reasoning FUTURE.md's own
+    "point 5" already worked out before trusted_voters existed (quorum only
+    ever mattered for trusting the crowd enough to force an install, a
+    feature that doesn't exist yet; blocking needs no quorum, since erring
+    towards caution is always the safe direction). This subsumes the old,
+    narrower "a trusted voter's own problematic vote blocks" rule: a
+    trusted voter's problematic vote is itself already counted inside the
+    aggregate community_problematic_count, so that case no longer needs its
+    own separate branch. Neither this nor the trusted-healthy override
+    changes how decide_action itself sequences announce/execute -- only
+    what feeds into it."""
     is_ready = status == "ready"
     if auto_install_excluded or status == "skipped":
         return is_ready, False, None
-    if trusted_vote == "problematic":
-        return is_ready, False, None
     if trusted_vote == "healthy":
         return True, True, "trusted_voter"
+    if community_problematic_count > 0:
+        return is_ready, False, None
     return is_ready, size_enabled, ("rules" if size_enabled else None)
 
 

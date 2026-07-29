@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -41,6 +42,33 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_github_auth"
+
+# Repair issue raised the moment the link becomes unusable in a way only a
+# fresh device-flow re-link (not a plain retry) can fix -- see
+# _async_create_link_expired_issue's own docstring for exactly which two
+# failure modes count. Not raised for a plain network hiccup on the refresh
+# call itself, that's the existing debug-log-and-retry-next-time path,
+# unchanged (quality_scale.yaml's own reauthentication-flow/repair-issues
+# entries, closed 2026-07-27: no reauth flow fits here, this integration's
+# own config_flow collects no credential at all for HA's reauth mechanism
+# to re-run, this is the real, proportionate fix for the actual gap that
+# rule was pointing at).
+_ISSUE_LINK_EXPIRED = "github_link_expired"
+
+
+def _async_create_link_expired_issue(hass: HomeAssistant) -> None:
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        _ISSUE_LINK_EXPIRED,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key=_ISSUE_LINK_EXPIRED,
+    )
+
+
+def _async_clear_link_expired_issue(hass: HomeAssistant) -> None:
+    ir.async_delete_issue(hass, DOMAIN, _ISSUE_LINK_EXPIRED)
 
 # Public value, safe to commit: Device Flow's whole design relies on this
 # being the case (a public client can't hold a secret safely, so GitHub
@@ -176,6 +204,10 @@ class GitHubAuthManager:
         }
         await self._store.async_save(self._data)
         self._link_status = "linked"
+        # A fresh device-flow link always fixes whatever the old one's
+        # repair issue (if any) was complaining about -- nothing left to
+        # act on.
+        _async_clear_link_expired_issue(self.hass)
 
     async def _async_fetch_username(self, access_token: str) -> str | None:
         session = async_get_clientsession(self.hass)
@@ -198,7 +230,13 @@ class GitHubAuthManager:
         token itself has expired after 6 months unused: only a fresh
         async_start_device_flow, not this method, can recover from that).
         Not consumed by anything yet in this slice, this exists so a future
-        voting feature has a single, already-correct place to call."""
+        voting feature has a single, already-correct place to call.
+
+        Raises the _ISSUE_LINK_EXPIRED repair issue for the two failure
+        modes below that only a fresh re-link can fix -- not for a plain
+        network exception on the refresh call itself (caught further down),
+        which is just as likely a transient blip as a real problem, and
+        would resolve itself on the very next call anyway."""
         if not self.is_linked:
             return None
 
@@ -208,6 +246,7 @@ class GitHubAuthManager:
 
         refresh_expires_at = dt_util.parse_datetime(self._data.get("refresh_token_expires_at", ""))
         if refresh_expires_at is not None and dt_util.utcnow() >= refresh_expires_at:
+            _async_create_link_expired_issue(self.hass)
             return None
 
         session = async_get_clientsession(self.hass)
@@ -229,6 +268,7 @@ class GitHubAuthManager:
 
         if "error" in payload:
             _LOGGER.warning("GitHub token refresh failed: %s", payload["error"])
+            _async_create_link_expired_issue(self.hass)
             return None
 
         now = dt_util.utcnow()

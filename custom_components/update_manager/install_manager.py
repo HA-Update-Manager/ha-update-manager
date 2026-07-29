@@ -22,6 +22,7 @@ from homeassistant.util import dt as dt_util
 
 from .announcer import (
     AutoInstallContext,
+    AutoInstallReason,
     AutoInstallRules,
     PendingAnnouncement,
     decide_action,
@@ -364,10 +365,13 @@ class InstallManager:
         # A trusted voter's own already-aggregated verdict for this exact
         # version (coordinator.py's own trusted_vote/trusted_voters_matched,
         # see community_verdict.py) can override both is_ready and the
-        # size's own toggle below -- see effective_auto_install_state's own
-        # docstring for the full reasoning (including why a "healthy"
-        # override still respects auto_install_excluded and an explicit
-        # user skip).
+        # size's own toggle below, and any problematic vote at all (from
+        # anyone, not just a trusted voter -- coordinator.py's own
+        # community_verdict.problematic_count) blocks eligibility outright
+        # unless a trusted "healthy" override already applies -- see
+        # effective_auto_install_state's own docstring for the full
+        # reasoning (including why a "healthy" override still respects
+        # auto_install_excluded and an explicit user skip).
         if cached:
             size_enabled = size_auto_install_enabled(cached["version_size"], self._rules)
             is_ready, rules_enabled, reason = effective_auto_install_state(
@@ -375,6 +379,7 @@ class InstallManager:
                 size_enabled=size_enabled,
                 auto_install_excluded=cached["auto_install_excluded"],
                 trusted_vote=cached.get("trusted_vote"),
+                community_problematic_count=(cached.get("community_verdict") or {}).get("problematic_count", 0),
             )
             trusted_voter_usernames = cached.get("trusted_voters_matched", []) if reason == "trusted_voter" else []
         else:
@@ -420,7 +425,7 @@ class InstallManager:
         )
 
     async def _async_execute(
-        self, entity_id: str, to_version: str, reason: str, trusted_voter_usernames: list[str]
+        self, entity_id: str, to_version: str, reason: AutoInstallReason, trusted_voter_usernames: list[str]
     ) -> None:
         # The pending announcement's own announced_at is read *before*
         # _async_remove clears it -- install_log.py wants this for the

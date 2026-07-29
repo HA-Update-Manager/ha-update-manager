@@ -31,9 +31,8 @@ from .const import (
     CONF_MEDIUM_WAIT_DAYS,
     CONF_SMALL_WAIT_DAYS,
     CONF_TRUSTED_VOTERS,
+    DEFAULT_WAIT_DAYS,
     DOMAIN,
-    PROFILE_BALANCED,
-    PROFILE_PRESETS,
 )
 from .semver import classify_version_size
 from .staging import StagingRules, evaluate_staging, wait_for_size
@@ -170,19 +169,17 @@ InstallListener = Callable[[str, str, str, State], None]
 
 def rules_from_options(options: dict) -> StagingRules:
     """Builds a StagingRules from the settings panel's stored values, falling
-    back to the "balanced" profile's own numbers for anything not set yet
-    (e.g. before the settings have ever been saved) -- not staging.py's own
-    DEFAULT_RULES, whose big_wait=None means "always blocked". Every real
-    profile (const.py's PROFILE_PRESETS) gives "big" a real, finite wait, so
-    a freshly-created config entry (options == {}) should read exactly like
-    a freshly-saved "balanced" profile, not like a deliberate "block all
-    major updates forever" choice nobody actually made. Fixed 2026-07-16:
-    found live -- a brand new install showed a major update as blocked/red
-    before anyone had ever opened the settings tab."""
-    balanced = PROFILE_PRESETS[PROFILE_BALANCED]
+    back to const.py's own DEFAULT_WAIT_DAYS for anything not set yet (e.g.
+    before the settings have ever been saved) -- not staging.py's own
+    DEFAULT_RULES, whose big_wait=None means "always blocked". DEFAULT_WAIT_DAYS
+    gives "big" a real, finite wait, so a freshly-created config entry
+    (options == {}) reads like a freshly-saved default setup, not like a
+    deliberate "block all major updates forever" choice nobody actually
+    made. Fixed 2026-07-16: found live -- a brand new install showed a major
+    update as blocked/red before anyone had ever opened the settings tab."""
 
     def _wait(days_key: str) -> timedelta:
-        return timedelta(days=options.get(days_key, balanced[days_key]))
+        return timedelta(days=options.get(days_key, DEFAULT_WAIT_DAYS[days_key]))
 
     return StagingRules(
         small_wait=_wait(CONF_SMALL_WAIT_DAYS),
@@ -342,8 +339,13 @@ class UpdateManagerCoordinator:
         self._is_own_skip = checker
 
     async def async_start(self) -> None:
-        self._available_since = await self._available_since_store.async_load() or {}
-        self._last_installed_version = await self._last_installed_store.async_load() or {}
+        # Gathered, not two sequential awaits -- these are two fully
+        # independent Store reads, found by code review, 2026-07-27.
+        available_since, last_installed_version = await asyncio.gather(
+            self._available_since_store.async_load(), self._last_installed_store.async_load()
+        )
+        self._available_since = available_since or {}
+        self._last_installed_version = last_installed_version or {}
 
         # Subscribe *before* the initial bulk scan, not after -- found via
         # live testing on a real instance (some pending updates never
@@ -380,7 +382,23 @@ class UpdateManagerCoordinator:
         restart, no entry yet), so the listener's own available_since
         naturally comes back None here -- an honest "we don't know", not a
         guess, since HA genuinely wasn't running to observe when this
-        update actually became available."""
+        update actually became available.
+
+        Known limitation, found by code review, 2026-07-27: for the same
+        reason, __init__.py's own _on_install always logs this as a manual
+        install, never an auto-install, even if install_manager.py's own
+        InstallManager actually dispatched it right before the restart --
+        was_auto_installed() reads InstallManager._recently_executed, an
+        in-memory-only dict that can't survive a restart any more than
+        this coordinator's own un-persisted cache can. Today this is only
+        ever *actually* wrong for a non-Core/Supervisor/OS entity that's
+        both auto-install-eligible in this integration's own rules and
+        happens to need a restart before its own installed_version updates
+        (Core/Supervisor/OS themselves are hard-excluded from auto-install
+        entirely, so "manual" is always correct for them regardless) --
+        narrow enough, and persisting dispatch records across a restart
+        invasive enough, that this is left as a documented gap rather than
+        fixed here."""
         state = self.hass.states.get(entity_id)
         if state is None:
             return
@@ -389,8 +407,27 @@ class UpdateManagerCoordinator:
             return
         old_installed = self._last_installed_version.get(entity_id)
         if old_installed is not None and old_installed != new_installed:
-            for listener in list(self._install_listeners):
-                listener(entity_id, old_installed, new_installed, state)
+            self._fire_install_listeners(entity_id, old_installed, new_installed, state)
+
+    def _fire_install_listeners(self, entity_id: str, old_installed: str, new_installed: str, state: State) -> None:
+        """The one place every install listener actually gets called, shared
+        by the live path (_handle_state_changed) and the restart-recovery
+        path (_recover_install_across_restart above) -- found by review,
+        these previously each had their own identical `for listener in
+        list(self._install_listeners): listener(...)` loop."""
+        for listener in list(self._install_listeners):
+            listener(entity_id, old_installed, new_installed, state)
+
+    def _fire_listeners(self) -> None:
+        """The one place every plain (no-argument) listener actually gets
+        called -- found by code review, 2026-07-27: this exact `for listener
+        in list(self._listeners): listener()` loop was independently
+        duplicated at three call sites (_async_periodic_recheck,
+        async_update_rules, _async_handle_changed), mirroring the same
+        duplication _fire_install_listeners above was already extracted to
+        fix for the install-listener list."""
+        for listener in list(self._listeners):
+            listener()
 
     @callback
     def async_stop(self) -> None:
@@ -445,8 +482,7 @@ class UpdateManagerCoordinator:
     @callback
     def _async_periodic_recheck(self, now: datetime) -> None:
         self._recompute_all(now)
-        for listener in list(self._listeners):
-            listener()
+        self._fire_listeners()
 
     async def async_update_rules(self, rules: StagingRules, excluded_entities: frozenset[str] | None = None) -> None:
         """Applies newly-saved staging rules (and, since 2026-07-16, the
@@ -463,8 +499,7 @@ class UpdateManagerCoordinator:
         if excluded_entities is not None:
             self.excluded_entities = excluded_entities
         self._recompute_all(dt_util.utcnow())
-        for listener in list(self._listeners):
-            listener()
+        self._fire_listeners()
 
     @callback
     def _handle_state_changed(self, event: Event[EventStateChangedData]) -> None:
@@ -478,8 +513,7 @@ class UpdateManagerCoordinator:
         old_installed = old_state.attributes.get("installed_version") if old_state else None
         new_installed = new_state.attributes.get("installed_version") if new_state else None
         if old_installed is not None and new_installed is not None and old_installed != new_installed:
-            for listener in list(self._install_listeners):
-                listener(entity_id, old_installed, new_installed, new_state)
+            self._fire_install_listeners(entity_id, old_installed, new_installed, new_state)
 
         old_latest = old_state.attributes.get("latest_version") if old_state else None
         new_latest = new_state.attributes.get("latest_version") if new_state else None
@@ -495,8 +529,7 @@ class UpdateManagerCoordinator:
 
     async def _async_handle_changed(self, entity_id: str) -> None:
         await self._async_refresh_one(entity_id)
-        for listener in list(self._listeners):
-            listener()
+        self._fire_listeners()
 
     async def async_refresh_one(self, entity_id: str) -> None:
         """Public entry point for a caller that changed something

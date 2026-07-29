@@ -17,30 +17,35 @@ wired up yet.
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
+from .runtime_data import UpdateManagerConfigEntry
 
 PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: UpdateManagerConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator = hass.data[DOMAIN]["coordinator"]
-    async_add_entities([UpdateManagerSummarySensor(coordinator)])
+    async_add_entities([UpdateManagerSummarySensor(config_entry.runtime_data.coordinator)])
 
 
 class UpdateManagerSummarySensor(SensorEntity):
     _attr_should_poll = False
     _attr_unique_id = f"{DOMAIN}_summary"
-    _attr_name = "Update Manager"
-    _attr_icon = "mdi:update"
+    # has_entity_name + translation_key, not a bare _attr_name -- quality-scale
+    # has-entity-name/entity-translations. No device_info exists on this
+    # entity, so friendly_name is just entity.name unchanged (confirmed
+    # against HA's own entity-naming docs): this is a pure compliance change,
+    # not a visible rename. Name/icon now come from translations/en.json and
+    # icons.json respectively, not hardcoded here.
+    _attr_has_entity_name = True
+    _attr_translation_key = "summary"
 
     def __init__(self, coordinator: UpdateManagerCoordinator) -> None:
         self._coordinator = coordinator

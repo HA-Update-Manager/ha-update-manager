@@ -79,6 +79,14 @@ const ICON_THUMB_UP =
   "M23 10a2 2 0 0 0-2-2h-6.32l.96-4.57c.02-.1.03-.21.03-.32c0-.41-.17-.79-.44-1.06L14.17 1L7.59 7.58C7.22 7.95 7 8.45 7 9v10a2 2 0 0 0 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73zM1 21h4V9H1z";
 const ICON_ALERT = "M13 14h-2V9h2m0 9h-2v-2h2M1 21h22L12 2z";
 
+// The one place "problematic -> alert icon, else thumb-up" gets decided --
+// found by code review, 2026-07-27: this exact ternary (or its count>0
+// equivalent) was independently re-derived at five call sites across this
+// file, risking the two spellings silently drifting apart.
+function verdictIcon(isProblematic) {
+  return isProblematic ? ICON_ALERT : ICON_THUMB_UP;
+}
+
 // hass.language-driven, same convention this project family's other files
 // use (see cover-media-card.js's TRANSLATIONS/_tr) -- flat keys, English as
 // the base/fallback language. Found live: a user with hass.language "en"
@@ -208,6 +216,7 @@ const TRANSLATIONS = {
     community_trusted_vote_problematic: (names) => `Trusted vote: ${names} reported this jump as problematic.`,
     community_other_jumps_heading: "Other jumps to this version",
     community_other_jump_line: (fromVersion, badgeTitle) => `From ${fromVersion}: ${badgeTitle}`,
+    community_problematic_reasons_heading: "Reported reasons",
     community_report_toggle: "Report a known issue",
     community_report_intro:
       "Already know this update will cause problems, e.g. from the release notes? Report it before installing, so others are warned before they update too.",
@@ -232,12 +241,17 @@ const TRANSLATIONS = {
     vote_reason_dev_build: "Dev/pre-release build",
     vote_reason_breaking_change: "Breaking change",
     vote_reason_other: "Other",
-    dialog_release_announcement: "Release announcement",
+    // Matches real HA's own more-info-update.ts wording exactly (confirmed
+    // against its real source/translation string, not approximated) --
+    // found live, 2026-07-27, direct user feedback: this used to say
+    // "Release announcement" here and "Release page" for the History
+    // entry's own equivalent link below, neither matching HA's actual text.
+    dialog_release_announcement: "Read release announcement",
     dialog_history_heading: "History",
     // No reason recorded at all: an entry logged before this field existed
     // (2026-07-23) -- the generic fallback, not "unknown".
     dialog_history_auto: "Automatically updated",
-    dialog_history_release_link: "Release page",
+    dialog_history_release_link: "Read release announcement",
     dialog_history_changelog: "View changelog",
     dialog_history_available_since: "Available since",
     dialog_history_announced: "Announced",
@@ -248,6 +262,10 @@ const TRANSLATIONS = {
     dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
     list_and: "and",
     dialog_auto_install_held_back: (names) => `Auto-install held back: ${names} reported this jump as problematic.`,
+    dialog_auto_install_held_back_community: (count) =>
+      count === 1
+        ? "Auto-install held back: 1 person reported this jump as problematic."
+        : `Auto-install held back: ${count} people reported this jump as problematic.`,
     dialog_more_info: "More info",
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
     // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
@@ -434,6 +452,7 @@ const TRANSLATIONS = {
       `Vertrouwde stem: deze sprong is door ${names} als problematisch beoordeeld.`,
     community_other_jumps_heading: "Andere sprongen naar deze versie",
     community_other_jump_line: (fromVersion, badgeTitle) => `Van ${fromVersion}: ${badgeTitle}`,
+    community_problematic_reasons_heading: "Gerapporteerde redenen",
     community_report_toggle: "Meld een bekend probleem",
     community_report_intro:
       "Weet je al dat deze update problemen gaat geven, bijvoorbeeld via de release notes? Meld dat vast voordat je 'm installeert, zodat anderen gewaarschuwd zijn voordat ze zelf updaten.",
@@ -453,10 +472,10 @@ const TRANSLATIONS = {
     vote_reason_dev_build: "Dev/pre-release-build",
     vote_reason_breaking_change: "Breaking change",
     vote_reason_other: "Anders",
-    dialog_release_announcement: "Release-aankondiging",
+    dialog_release_announcement: "Lees de release-aankondiging",
     dialog_history_heading: "Geschiedenis",
     dialog_history_auto: "Automatisch geüpdatet",
-    dialog_history_release_link: "Release-pagina",
+    dialog_history_release_link: "Lees de release-aankondiging",
     dialog_history_changelog: "Changelog bekijken",
     dialog_history_available_since: "Beschikbaar sinds",
     dialog_history_announced: "Aangekondigd",
@@ -471,6 +490,10 @@ const TRANSLATIONS = {
     // possibly multi-name subject.
     dialog_auto_install_held_back: (names) =>
       `Auto-installatie tegengehouden: deze sprong is door ${names} als problematisch beoordeeld.`,
+    dialog_auto_install_held_back_community: (count) =>
+      count === 1
+        ? "Auto-installatie tegengehouden: 1 persoon heeft deze sprong als problematisch gerapporteerd."
+        : `Auto-installatie tegengehouden: ${count} mensen hebben deze sprong als problematisch gerapporteerd.`,
     dialog_more_info: "Meer info",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
     enabled_section_title: "Algemeen",
@@ -626,11 +649,22 @@ function knownSettingsFields() {
   return names;
 }
 
+// Fields whose value must always be a real array, never null/undefined --
+// ha-form's own multiple:true selector emits null once the last chip is
+// removed (found live, 2026-07-27), and save_settings' own schema requires
+// a real list for both. Coerced here too, not just at each field's own
+// value-changed handler (see entitiesForm/trustedForm below): this is the
+// one place every settings field already passes through before being sent,
+// so a future third list-typed field is covered automatically instead of
+// needing to remember this same fix on its own.
+const LIST_SETTINGS_FIELDS = new Set(["excluded_entities", "trusted_voters"]);
+
 function pickKnownSettings(data) {
   const known = knownSettingsFields();
   const result = {};
   for (const key of known) {
-    if (key in data) result[key] = data[key];
+    if (!(key in data)) continue;
+    result[key] = LIST_SETTINGS_FIELDS.has(key) ? data[key] || [] : data[key];
   }
   return result;
 }
@@ -832,10 +866,17 @@ function timerBadge(tr, u, settings, hass) {
 // own aggregate row when you haven't voted yourself), "others" when there
 // is one and these counts already exclude you.
 function aggregateVerdictText(tr, healthyCount, problematicCount, perspective) {
-  const key = (suffix) => tr[`community_verdict_${perspective === "others" ? "others_" : ""}${suffix}`];
-  if (healthyCount > 0 && problematicCount > 0) return key("mixed")(healthyCount, problematicCount);
-  if (problematicCount > 0) return key("problematic")(problematicCount);
-  if (healthyCount > 0) return key("healthy")(healthyCount);
+  // A closed, fixed set of six translation functions (2 perspectives x 3
+  // shapes) -- an explicit lookup, not a dynamically-built tr[...] property
+  // name: found by review, a typo'd key there would fail silently (calling
+  // undefined) instead of at a lint/reference-check level.
+  const strings =
+    perspective === "others"
+      ? { mixed: tr.community_verdict_others_mixed, problematic: tr.community_verdict_others_problematic, healthy: tr.community_verdict_others_healthy }
+      : { mixed: tr.community_verdict_mixed, problematic: tr.community_verdict_problematic, healthy: tr.community_verdict_healthy };
+  if (healthyCount > 0 && problematicCount > 0) return strings.mixed(healthyCount, problematicCount);
+  if (problematicCount > 0) return strings.problematic(problematicCount);
+  if (healthyCount > 0) return strings.healthy(healthyCount);
   return null;
 }
 
@@ -853,10 +894,29 @@ function applyMyVerdictRow(verdictRow, verdictText, tr, verdict) {
   verdictText.textContent = verdict === "problematic" ? tr.community_verdict_you_problematic : tr.community_verdict_you_healthy;
   const existingIcon = verdictRow.querySelector("ha-svg-icon");
   if (existingIcon) existingIcon.remove();
-  const verdictIcon = document.createElement("ha-svg-icon");
-  verdictIcon.path = verdict === "problematic" ? ICON_ALERT : ICON_THUMB_UP;
-  verdictRow.insertBefore(verdictIcon, verdictText);
+  const iconEl = document.createElement("ha-svg-icon");
+  iconEl.path = verdictIcon(verdict === "problematic");
+  verdictRow.insertBefore(iconEl, verdictText);
   verdictRow.hidden = false;
+}
+
+// The shared "icon + one line of text" row shape every fact in the
+// Community section's own infoGroup uses (the aggregate row, the
+// trusted-vote row, each other-jump row) -- found by review: three near-
+// identical div/ha-svg-icon/span builds in _buildCommunitySection, now one
+// shared builder. `title` (the disclaimer tooltip) is optional: only the
+// primary aggregate row carries it, matching the original per-row behavior.
+function buildVerdictLineRow(iconPath, text, title) {
+  const row = document.createElement("div");
+  row.className = "dialog-community-verdict-line";
+  if (title) row.title = title;
+  const icon = document.createElement("ha-svg-icon");
+  icon.path = iconPath;
+  const span = document.createElement("span");
+  span.textContent = text;
+  row.appendChild(icon);
+  row.appendChild(span);
+  return row;
 }
 
 // A second, independent pill (see _buildListRow's own verdictBadgeInfo
@@ -868,14 +928,11 @@ function applyMyVerdictRow(verdictRow, verdictText, tr, verdict) {
 // digit stay single-number (problematic leads, asymmetric safety) -- a
 // badge can't show two counts -- but the hover tooltip gets the fuller
 // "both counts when mixed" treatment via aggregateVerdictText.
-function verdictBadge(tr, u) {
-  const verdict = u.community_verdict;
+function verdictBadge(tr, verdict) {
   if (!verdict || (verdict.healthy_count === 0 && verdict.problematic_count === 0)) return null;
   const title = aggregateVerdictText(tr, verdict.healthy_count, verdict.problematic_count, "people");
-  if (verdict.problematic_count > 0) {
-    return { icon: ICON_ALERT, text: String(verdict.problematic_count), title };
-  }
-  return { icon: ICON_THUMB_UP, text: String(verdict.healthy_count), title };
+  const isProblematic = verdict.problematic_count > 0;
+  return { icon: verdictIcon(isProblematic), text: String(isProblematic ? verdict.problematic_count : verdict.healthy_count), title };
 }
 
 // The shared .dialog-rows/.row/.key/.value fact-list building block --
@@ -902,6 +959,20 @@ function buildKeyValueRows(pairs) {
     rows.appendChild(row);
   });
   return rows;
+}
+
+// The Updates tab's own empty state (matches ha-config-section-updates.ts's
+// real source exactly: an outlined ha-card containing a .no-updates div)
+// and the History tab's own empty state both build this same shape -- found
+// by review: independently hand-rolled twice rather than shared once.
+function buildEmptyStateCard(text) {
+  const card = document.createElement("ha-card");
+  card.outlined = true;
+  const empty = document.createElement("div");
+  empty.className = "no-updates";
+  empty.textContent = text;
+  card.appendChild(empty);
+  return card;
 }
 
 // "@a", "@a and @b", "@a, @b and @c" -- used wherever more than one trusted
@@ -1227,7 +1298,7 @@ class UpdateManagerPanel extends HTMLElement {
     this._rolloutGroups = [];
     this._installLog = null;
     this._settings = null;
-    this._profiles = null;
+    this._defaults = null;
     this._hardExcludedEntities = [];
     this._dialogEntityId = null;
     this._dialogLastState = null;
@@ -1331,20 +1402,21 @@ class UpdateManagerPanel extends HTMLElement {
       this._rolloutGroups = updatesResp.rollout_groups || [];
       this._installLog = logResp.entries.slice().reverse();
       this._settings = settingsResp.options;
-      this._profiles = settingsResp.profiles;
+      this._defaults = settingsResp.defaults;
       this._hardExcludedEntities = settingsResp.hard_excluded_entities || [];
       if (!this._formData) {
-        // "balanced" as the silent fallback for anything not actually
-        // stored yet, not an empty object -- otherwise a field missing from
-        // this._settings (a fresh install, or one of this session's field
-        // renames leaving old keys behind) ends up completely absent from
-        // _formData, and pickKnownSettings then leaves it out of the save
-        // payload entirely: save_settings's vol.Required(...) schema
-        // rejected that outright ("required key not provided"), found live.
-        // excluded_entities/trusted_voters aren't part of any profile preset
-        // (plain lists, not wait/auto-install tuning values), so both need
-        // their own explicit empty-array default the same way.
-        const fallback = (this._profiles && this._profiles.balanced) || {};
+        // const.py's own DEFAULT_WAIT_DAYS as the silent fallback for
+        // anything not actually stored yet, not an empty object --
+        // otherwise a field missing from this._settings (a fresh install,
+        // or one of this session's field renames leaving old keys behind)
+        // ends up completely absent from _formData, and pickKnownSettings
+        // then leaves it out of the save payload entirely: save_settings's
+        // vol.Required(...) schema rejected that outright ("required key
+        // not provided"), found live. excluded_entities/trusted_voters
+        // aren't part of it (plain lists, not wait/auto-install tuning
+        // values), so both need their own explicit empty-array default the
+        // same way.
+        const fallback = this._defaults || {};
         this._formData = {
           enabled: true,
           excluded_entities: [],
@@ -1559,26 +1631,22 @@ class UpdateManagerPanel extends HTMLElement {
       }
     }
     this._installSnapshots = next;
-    if (anyVersionChanged) {
-      this._loadAll().then(() => {
-        this._renderContent();
-        // Reopens the dialog in place if it's open for the entity that just
-        // finished installing -- direct user feedback, 2026-07-27 ("na het
-        // installeren van een update vanuit een dialog verwacht je dat je
-        // het history-dialog te zien krijgt voor die entity"). The Install
-        // button itself is deliberately fire-and-forget (see its own click
-        // handler's comment: awaiting it either closed the dialog too early
-        // or left it stuck spinning for a slow install), so nothing
-        // previously told an already-open dialog its own install had
-        // actually finished -- it kept showing the stale pending facts and
-        // an enabled Install button indefinitely. Every other dialog action
-        // (Cancel/Skip/Unskip) already reopens itself this same way as soon
-        // as its own websocket call resolves (see _afterDialogAction) --
-        // this covers the one action that can't simply await its own
-        // completion. Preserves whichever History entry was expanded, same
-        // as _afterDialogAction, via this._dialogHistoryEntry.
-        if (dialogEntityVersionChanged) this._openDetailDialog(this._dialogEntityId, this._dialogHistoryEntry);
-      });
+    if (dialogEntityVersionChanged) {
+      // _afterDialogAction already does exactly loadAll + reopen-in-place
+      // (if this._dialogEntityId still matches) + renderContent -- direct
+      // user feedback, 2026-07-27 ("na het installeren van een update
+      // vanuit een dialog verwacht je dat je het history-dialog te zien
+      // krijgt voor die entity"). The Install button itself is deliberately
+      // fire-and-forget (see its own click handler's comment: awaiting it
+      // either closed the dialog too early or left it stuck spinning for a
+      // slow install), so nothing previously told an already-open dialog
+      // its own install had actually finished -- it kept showing the stale
+      // pending facts and an enabled Install button indefinitely. Reusing
+      // this method rather than re-inlining its own loadAll/reopen/render
+      // sequence a second time.
+      this._afterDialogAction(this._dialogEntityId);
+    } else if (anyVersionChanged) {
+      this._loadAll().then(() => this._renderContent());
     } else if (installingChanged && this._tab === "updates") {
       this._renderContent();
     }
@@ -1903,13 +1971,7 @@ class UpdateManagerPanel extends HTMLElement {
     }
 
     if (!this._updates.length) {
-      const card = document.createElement("ha-card");
-      card.outlined = true;
-      const empty = document.createElement("div");
-      empty.className = "no-updates";
-      empty.textContent = tr.updates_empty;
-      card.appendChild(empty);
-      outer.appendChild(card);
+      outer.appendChild(buildEmptyStateCard(tr.updates_empty));
       return outer;
     }
 
@@ -1980,7 +2042,7 @@ class UpdateManagerPanel extends HTMLElement {
                 .join(" ⋅ "),
               () => this._openDetailDialog(u.entity_id),
               timerBadge(tr, u, this._settings, this._hass),
-              verdictBadge(tr, u)
+              verdictBadge(tr, u.community_verdict)
             )
           );
         });
@@ -2003,10 +2065,13 @@ class UpdateManagerPanel extends HTMLElement {
   _buildHistoryList() {
     const tr = this._tr;
     if (!this._installLog.length) {
-      const empty = document.createElement("div");
-      empty.className = "empty";
-      empty.textContent = tr.history_empty;
-      return empty;
+      // Same buildEmptyStateCard the Updates tab's own empty state uses
+      // (which already matches ha-config-section-updates.ts's real source
+      // exactly) -- direct user feedback, 2026-07-27: a bare, cardless line
+      // of text here read as inconsistent with both that tab and with
+      // every other History entry on this same tab, which is always its
+      // own ha-card.
+      return buildEmptyStateCard(tr.history_empty);
     }
 
     const outer = document.createElement("div");
@@ -2099,6 +2164,11 @@ class UpdateManagerPanel extends HTMLElement {
     const state = entityState(this._hass, entityId);
     const u = this._updates.find((x) => x.entity_id === entityId);
     const sizeShort = u ? tr[`size_${u.version_size}_short`] || u.version_size : null;
+    // Named once, used at both spots that gate the pending-update block
+    // (body content and its own action buttons) -- opened for one specific
+    // History entry means the user wants that one past install, not also
+    // the entity's unrelated current pending update dragged in above it.
+    const showPendingUpdate = u && !historyEntry;
 
     // state-info + a right-aligned ".state" value, in a
     // ".horizontal.justified.layout" row -- not hand-laid-out, this is the
@@ -2156,14 +2226,15 @@ class UpdateManagerPanel extends HTMLElement {
     // its own History entries below instead (see the entries.forEach loop
     // further down), consistently, whether or not something's pending.
 
-    // `!historyEntry`, not just `u`: opened via a specific History-tab row
-    // (historyEntry set) means the user wants that one past install, not
-    // also the entity's unrelated current pending update dragged in above
-    // it -- direct user feedback, 2026-07-27 ("je verwacht die bovenkant
-    // helemaal niet"). Same signal _openDetailDialog's own defaultExpandIndex
-    // already uses for the same reasoning. The Updates-tab/rollout-queue
-    // entry points (both `u` truthy, no historyEntry) are unaffected.
-    if (u && !historyEntry) {
+    // showPendingUpdate (`u && !historyEntry`, not just `u`): opened via a
+    // specific History-tab row (historyEntry set) means the user wants
+    // that one past install, not also the entity's unrelated current
+    // pending update dragged in above it -- direct user feedback,
+    // 2026-07-27 ("je verwacht die bovenkant helemaal niet"). Same signal
+    // _openDetailDialog's own defaultExpandIndex already uses for the same
+    // reasoning. The Updates-tab/rollout-queue entry points (both `u`
+    // truthy, no historyEntry) are unaffected.
+    if (showPendingUpdate) {
       // A live install-progress bar (indeterminate, or percentage-based
       // when the entity supports it) -- matching more-info-update.ts's own
       // placement exactly (confirmed against its real source): below the
@@ -2190,91 +2261,122 @@ class UpdateManagerPanel extends HTMLElement {
         body.appendChild(titleEl);
       }
 
-      const statusAlertType = STATUS_ALERT_TYPE[u.status] || STATUS_ALERT_TYPE[_FALLBACK_STATUS];
-      const statusAlert = document.createElement("ha-alert");
-      statusAlert.alertType = statusAlertType;
-      // ha-alert's own default icon (checkmark/info/warning, based on
-      // alertType) is replaced by the same icon the Updates list's pill
-      // uses (see timerBadge) whenever there's a real countdown to show --
-      // ha-alert supports this via its own slot="icon" (confirmed against
-      // its real source), the text itself already explains what's
-      // happening (statusText), the icon just ties it visually to the
-      // same download/clock icon used elsewhere for "when".
-      const dialogBadge = timerBadge(tr, u, this._settings, this._hass);
-      if (dialogBadge) {
-        const customIcon = document.createElement("ha-svg-icon");
-        customIcon.slot = "icon";
-        customIcon.path = dialogBadge.icon;
-        statusAlert.appendChild(customIcon);
+      // Whether the community-block alert below is about to fire, computed
+      // up front (moved ahead of the plain status alert, found by review
+      // after a screenshot showed the actual result, 2026-07-29): for
+      // status "ready" specifically, statusText(...) below renders the
+      // exact same string the header's own .state value already shows a
+      // few lines up ("Ready to update"), and stacking that a second time
+      // right above a warning saying the opposite ("held back") read as
+      // contradictory clutter, not two different facts. Mirrors
+      // announcer.py's own effective_auto_install_state: that function
+      // checks auto_install_excluded/skipped and a trusted-healthy
+      // override FIRST, before ever looking at the aggregate problematic
+      // count, so for an always-excluded entity (Core/Supervisor/OS), an
+      // already-skipped one, or one with a trusted "healthy" vote in play,
+      // a problematic report was never actually the reason auto-install
+      // won't happen -- showing the alert there would falsely blame the
+      // vote for a block that either didn't exist, or was already
+      // overridden.
+      const communityProblematicCount = (u.community_verdict && u.community_verdict.problematic_count) || 0;
+      const heldBackByCommunity =
+        communityProblematicCount > 0 &&
+        u.trusted_vote !== "healthy" &&
+        !u.auto_install_excluded &&
+        u.status !== "skipped";
+
+      // Skipped entirely for "ready" + held-back (see heldBackByCommunity
+      // above): cancelToVersion is never truthy in that combination either
+      // (nothing is actually projected/announced once auto-install is
+      // blocked), so no action button is lost by skipping this whole
+      // block, only the redundant repeated text.
+      if (!(u.status === "ready" && heldBackByCommunity)) {
+        const statusAlertType = STATUS_ALERT_TYPE[u.status] || STATUS_ALERT_TYPE[_FALLBACK_STATUS];
+        const statusAlert = document.createElement("ha-alert");
+        statusAlert.alertType = statusAlertType;
+        // ha-alert's own default icon (checkmark/info/warning, based on
+        // alertType) is replaced by the same icon the Updates list's pill
+        // uses (see timerBadge) whenever there's a real countdown to show --
+        // ha-alert supports this via its own slot="icon" (confirmed against
+        // its real source), the text itself already explains what's
+        // happening (statusText), the icon just ties it visually to the
+        // same download/clock icon used elsewhere for "when".
+        const dialogBadge = timerBadge(tr, u, this._settings, this._hass);
+        if (dialogBadge) {
+          const customIcon = document.createElement("ha-svg-icon");
+          customIcon.slot = "icon";
+          customIcon.path = dialogBadge.icon;
+          statusAlert.appendChild(customIcon);
+        }
+        // Kept as its own text node reference, not a one-shot string --
+        // _updateDialogProgress re-sets its own .textContent live as hass
+        // pushes come in, so this reflects "Installing…" (statusText's own
+        // installing override) the moment an install actually starts,
+        // instead of staying frozen on whatever status this was at the
+        // moment the dialog opened.
+        this._dialogStatusTextNode = document.createTextNode(statusText(tr, u, this._settings, this._hass));
+        statusAlert.appendChild(this._dialogStatusTextNode);
+        // Buttons pushed onto this._dialogActionButtons below (reset
+        // unconditionally at the top of this method) get disabled while
+        // actually installing (see _updateDialogProgress), same as
+        // more-info-update.ts's own Skip button
+        // (.disabled=${... || updateIsInstalling(stateObj)}) -- none of
+        // these actions make sense mid-install.
+        // Cancellable even before a real announcement exists yet -- still
+        // "waiting" but auto-install is projected to happen (see
+        // projectedAutoInstallTime above), not just once actually "ready"
+        // and formally announced. Direct user feedback: seeing "will update
+        // automatically" with no way to act on it read as a real gap.
+        // install_manager.py's async_cancel already supports this (records
+        // the cancellation regardless of whether a PendingAnnouncement
+        // exists yet), so only the to_version to send needs picking: the
+        // real announcement's own target once one exists, else whatever
+        // version is currently projected.
+        const cancelToVersion = u.pending_install
+          ? u.pending_install.to_version
+          : projectedAutoInstallTime(u, this._settings)
+            ? u.latest_version
+            : null;
+        if (cancelToVersion) {
+          const cancelBtn = document.createElement("ha-progress-button");
+          cancelBtn.slot = "action";
+          cancelBtn.label = tr.cancel_auto_install;
+          cancelBtn.disabled = updateIsInstalling(this._dialogLastState);
+          cancelBtn.addEventListener("click", () =>
+            _runProgressAction(cancelBtn, async () => {
+              await this._hass.callWS({
+                type: "update_manager/cancel_pending_install",
+                entity_id: entityId,
+                to_version: cancelToVersion,
+              });
+              await this._afterDialogAction(entityId);
+            })
+          );
+          statusAlert.appendChild(cancelBtn);
+          this._dialogActionButtons.push(cancelBtn);
+        }
+        // A real, user-initiated skip (see coordinator.py's own
+        // is_own_skip distinction -- our own staging_skip.py auto-skips
+        // never reach this status at all, they just read as "waiting") --
+        // one-click undo via HA's own real update.clear_skipped, not
+        // something you'd otherwise have to remember to do from HA's own
+        // device page instead.
+        if (u.status === "skipped") {
+          const unskipBtn = document.createElement("ha-progress-button");
+          unskipBtn.slot = "action";
+          unskipBtn.label = tr.dialog_unskip;
+          unskipBtn.disabled = updateIsInstalling(this._dialogLastState);
+          unskipBtn.addEventListener("click", () =>
+            _runProgressAction(unskipBtn, async () => {
+              await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
+              await this._afterDialogAction(entityId);
+            })
+          );
+          statusAlert.appendChild(unskipBtn);
+          this._dialogActionButtons.push(unskipBtn);
+        }
+        body.appendChild(statusAlert);
       }
-      // Kept as its own text node reference, not a one-shot string --
-      // _updateDialogProgress re-sets its own .textContent live as hass
-      // pushes come in, so this reflects "Installing…" (statusText's own
-      // installing override) the moment an install actually starts,
-      // instead of staying frozen on whatever status this was at the
-      // moment the dialog opened.
-      this._dialogStatusTextNode = document.createTextNode(statusText(tr, u, this._settings, this._hass));
-      statusAlert.appendChild(this._dialogStatusTextNode);
-      // Buttons pushed onto this._dialogActionButtons below (reset
-      // unconditionally at the top of this method) get disabled while
-      // actually installing (see _updateDialogProgress), same as
-      // more-info-update.ts's own Skip button
-      // (.disabled=${... || updateIsInstalling(stateObj)}) -- none of
-      // these actions make sense mid-install.
-      // Cancellable even before a real announcement exists yet -- still
-      // "waiting" but auto-install is projected to happen (see
-      // projectedAutoInstallTime above), not just once actually "ready"
-      // and formally announced. Direct user feedback: seeing "will update
-      // automatically" with no way to act on it read as a real gap.
-      // install_manager.py's async_cancel already supports this (records
-      // the cancellation regardless of whether a PendingAnnouncement
-      // exists yet), so only the to_version to send needs picking: the
-      // real announcement's own target once one exists, else whatever
-      // version is currently projected.
-      const cancelToVersion = u.pending_install
-        ? u.pending_install.to_version
-        : projectedAutoInstallTime(u, this._settings)
-          ? u.latest_version
-          : null;
-      if (cancelToVersion) {
-        const cancelBtn = document.createElement("ha-progress-button");
-        cancelBtn.slot = "action";
-        cancelBtn.label = tr.cancel_auto_install;
-        cancelBtn.disabled = updateIsInstalling(this._dialogLastState);
-        cancelBtn.addEventListener("click", () =>
-          _runProgressAction(cancelBtn, async () => {
-            await this._hass.callWS({
-              type: "update_manager/cancel_pending_install",
-              entity_id: entityId,
-              to_version: cancelToVersion,
-            });
-            await this._afterDialogAction(entityId);
-          })
-        );
-        statusAlert.appendChild(cancelBtn);
-        this._dialogActionButtons.push(cancelBtn);
-      }
-      // A real, user-initiated skip (see coordinator.py's own
-      // is_own_skip distinction -- our own staging_skip.py auto-skips
-      // never reach this status at all, they just read as "waiting") --
-      // one-click undo via HA's own real update.clear_skipped, not
-      // something you'd otherwise have to remember to do from HA's own
-      // device page instead.
-      if (u.status === "skipped") {
-        const unskipBtn = document.createElement("ha-progress-button");
-        unskipBtn.slot = "action";
-        unskipBtn.label = tr.dialog_unskip;
-        unskipBtn.disabled = updateIsInstalling(this._dialogLastState);
-        unskipBtn.addEventListener("click", () =>
-          _runProgressAction(unskipBtn, async () => {
-            await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
-            await this._afterDialogAction(entityId);
-          })
-        );
-        statusAlert.appendChild(unskipBtn);
-        this._dialogActionButtons.push(unskipBtn);
-      }
-      body.appendChild(statusAlert);
 
       // Shown regardless of whatever the status alert above already says
       // (e.g. still "waiting" on its own postponement period) -- direct
@@ -2283,18 +2385,21 @@ class UpdateManagerPanel extends HTMLElement {
       // from "why hasn't this auto-installed even though it's ready and the
       // toggle is on". Distinct wording from the unrelated "blocked"
       // *staging* status (a discouraged size/jump) on purpose: this is
-      // about one specific trusted vote overriding auto-install, not that.
-      // Also gated on !auto_install_excluded/!skipped (found by review):
-      // announcer.py's effective_auto_install_state checks those hard
-      // gates FIRST, before ever looking at trusted_vote at all, so for an
-      // always-excluded entity (Core/Supervisor/OS) or an already-skipped
-      // one, a trusted "problematic" vote was never actually the reason
-      // auto-install won't happen -- showing this alert there would
-      // falsely blame the vote for a block that already existed anyway.
-      if (u.trusted_vote === "problematic" && !u.auto_install_excluded && u.status !== "skipped") {
+      // about a community vote overriding auto-install, not that. Named
+      // ("@user reported this...") when it's specifically a trusted
+      // voter's own problematic vote -- more meaningful, someone you
+      // deliberately trust flagged it -- falling back to the generic
+      // count-based message otherwise (any problematic vote at all
+      // blocks, direct user feedback, 2026-07-29: a 100% negative verdict
+      // with no trusted voters configured used to have no effect on
+      // auto-install whatsoever).
+      if (heldBackByCommunity) {
         const heldBackAlert = document.createElement("ha-alert");
         heldBackAlert.alertType = "warning";
-        heldBackAlert.textContent = tr.dialog_auto_install_held_back(joinUsernames(tr, u.trusted_voters_matched || []));
+        heldBackAlert.textContent =
+          u.trusted_vote === "problematic"
+            ? tr.dialog_auto_install_held_back(joinUsernames(tr, u.trusted_voters_matched || []))
+            : tr.dialog_auto_install_held_back_community(communityProblematicCount);
         body.appendChild(heldBackAlert);
       }
 
@@ -2607,10 +2712,10 @@ class UpdateManagerPanel extends HTMLElement {
     });
     actions.appendChild(moreInfoBtn);
 
-    // Same `!historyEntry` guard as the body content above -- no
+    // Same showPendingUpdate guard as the body content above -- no
     // Skip/Install buttons for the entity's unrelated pending update either
     // when this dialog was opened for one specific past History entry.
-    if (u && !historyEntry) {
+    if (showPendingUpdate) {
       // Already skipped: the alert's own "Clear skipped" button (see
       // above) covers the only relevant action here, showing this too
       // would just be a redundant, no-op way to skip an already-skipped
@@ -3029,22 +3134,41 @@ class UpdateManagerPanel extends HTMLElement {
       // Row 2: everyone else's votes, if any beyond your own -- both counts
       // shown when genuinely mixed (see aggregateVerdictText), "others"
       // perspective when Row 1 above already shows your own vote (these
-      // counts then exclude it), "people" perspective otherwise.
-      const othersHealthy = Math.max(0, counts.healthy_count - (myVerdict === "healthy" ? 1 : 0));
-      const othersProblematic = Math.max(0, counts.problematic_count - (myVerdict === "problematic" ? 1 : 0));
-      const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, myVerdict ? "others" : "people");
-      if (aggregateText) {
-        const aggregateRow = document.createElement("div");
-        aggregateRow.className = "dialog-community-verdict-line";
-        aggregateRow.title = tr.dialog_community_verdict_disclaimer;
-        const aggregateIcon = document.createElement("ha-svg-icon");
-        aggregateIcon.path = othersProblematic > 0 ? ICON_ALERT : ICON_THUMB_UP;
-        const aggregateSpan = document.createElement("span");
-        aggregateSpan.textContent = aggregateText;
-        aggregateRow.appendChild(aggregateIcon);
-        aggregateRow.appendChild(aggregateSpan);
-        infoGroup.appendChild(aggregateRow);
-      }
+      // counts then exclude it), "people" perspective otherwise. Rebuilt
+      // (not just built once here), via updateAggregateRow below, after you
+      // cast a vote -- direct user feedback, 2026-07-27, found by code
+      // review: casting a vote used to only update Row 1, leaving this row
+      // stuck on its pre-vote perspective/count (still "people", still
+      // counting your own just-cast vote in its total) instead of switching
+      // to "others" and excluding it. `counts` itself stays frozen at this
+      // one fetch's numbers throughout (the external aggregate hasn't
+      // processed your vote yet either way) -- same deliberately optimistic
+      // principle already used for the vote confirmation text itself.
+      let aggregateRow = null;
+      const updateAggregateRow = (currentMyVerdict) => {
+        const othersHealthy = Math.max(0, counts.healthy_count - (currentMyVerdict === "healthy" ? 1 : 0));
+        const othersProblematic = Math.max(0, counts.problematic_count - (currentMyVerdict === "problematic" ? 1 : 0));
+        const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, currentMyVerdict ? "others" : "people");
+        if (!aggregateText) {
+          if (aggregateRow) aggregateRow.remove();
+          aggregateRow = null;
+          return;
+        }
+        if (aggregateRow) {
+          aggregateRow.querySelector("ha-svg-icon").path = verdictIcon(othersProblematic > 0);
+          aggregateRow.querySelector("span").textContent = aggregateText;
+        } else {
+          aggregateRow = buildVerdictLineRow(verdictIcon(othersProblematic > 0), aggregateText, tr.dialog_community_verdict_disclaimer);
+          // Right after Row 1, not just appended at infoGroup's current end
+          // -- infoGroup is still empty of everything else at this point in
+          // the build (trusted-vote/other-jumps rows are only added below),
+          // but inserting relative to verdictRow rather than relying on
+          // build order keeps this correct even if that ordering ever
+          // changes.
+          infoGroup.insertBefore(aggregateRow, verdictRow.nextSibling);
+        }
+      };
+      updateAggregateRow(myVerdict);
 
       // Whether a configured trusted voter is among the people who voted
       // on this exact jump -- direct user feedback, 2026-07-27 ("toevallig
@@ -3059,19 +3183,12 @@ class UpdateManagerPanel extends HTMLElement {
       // left as a minor known simplification rather than plumbing your own
       // linked username through here just to de-duplicate one line.
       if (result.trusted_voters_matched && result.trusted_voters_matched.length) {
-        const trustedRow = document.createElement("div");
-        trustedRow.className = "dialog-community-verdict-line";
-        const trustedIcon = document.createElement("ha-svg-icon");
-        trustedIcon.path = result.trusted_vote === "problematic" ? ICON_ALERT : ICON_THUMB_UP;
-        const trustedText = document.createElement("span");
         const names = joinUsernames(tr, result.trusted_voters_matched);
-        trustedText.textContent =
+        const text =
           result.trusted_vote === "problematic"
             ? tr.community_trusted_vote_problematic(names)
             : tr.community_trusted_vote_healthy(names);
-        trustedRow.appendChild(trustedIcon);
-        trustedRow.appendChild(trustedText);
-        infoGroup.appendChild(trustedRow);
+        infoGroup.appendChild(buildVerdictLineRow(verdictIcon(result.trusted_vote === "problematic"), text));
       }
 
       // Other jumps landing on this same destination version, if any --
@@ -3092,17 +3209,59 @@ class UpdateManagerPanel extends HTMLElement {
           // derivation the Updates-tab row's own pill and this section's
           // own verdictRow above already use), rather than re-deriving the
           // icon/count/direction logic a third time.
-          const badge = verdictBadge(tr, { community_verdict: jump });
+          const badge = verdictBadge(tr, jump);
           if (!badge) return;
-          const otherRow = document.createElement("div");
-          otherRow.className = "dialog-community-verdict-line";
-          const otherIcon = document.createElement("ha-svg-icon");
-          otherIcon.path = badge.icon;
-          const otherText = document.createElement("span");
-          otherText.textContent = tr.community_other_jump_line(jump.from_version, badge.title);
-          otherRow.appendChild(otherIcon);
-          otherRow.appendChild(otherText);
-          infoGroup.appendChild(otherRow);
+          infoGroup.appendChild(buildVerdictLineRow(badge.icon, tr.community_other_jump_line(jump.from_version, badge.title)));
+        });
+      }
+
+      // Every problematic voter's own reason for this exact jump -- direct
+      // user feedback, 2026-07-29: "ik zie in de interface nergens de
+      // reden staan. Dat had ik wel verwacht." A vote's reason was
+      // collected on submission (see _buildVoteControls/_VOTE_REASON_LABEL_KEYS
+      // below) but never read back anywhere until now; reusing that same
+      // label map here so the vocabulary reads identically going in and
+      // coming back out. No "@username:" prefix (changed after a
+      // screenshot showed it live, 2026-07-29): your own vote is already
+      // named right above ("You reported this jump as problematic"), so
+      // this list echoing your own username back at you read as
+      // redundant clutter rather than new information -- the reason
+      // itself is the useful part, not who reported it. Each reason gets
+      // its own wrapper div (.community-reason-item, styled below) rather
+      // than appending category/notes/link as loose flat siblings, so
+      // multiple reasons don't visually run together and a reason's own
+      // notes/link read as clearly grouped under its own category line.
+      // Nothing rendered when there aren't any yet, same reasoning as
+      // other_jumps above.
+      if (result.problematic_reasons && result.problematic_reasons.length) {
+        const reasonsHeading = document.createElement("p");
+        reasonsHeading.className = "hint";
+        reasonsHeading.textContent = tr.community_problematic_reasons_heading;
+        infoGroup.appendChild(reasonsHeading);
+        result.problematic_reasons.forEach((reason) => {
+          const categoryLabel =
+            (reason.reason_category && tr[_VOTE_REASON_LABEL_KEYS[reason.reason_category]]) || tr.vote_reason_other;
+          const item = document.createElement("div");
+          item.className = "community-reason-item";
+          item.appendChild(buildVerdictLineRow(ICON_ALERT, categoryLabel));
+          if (reason.notes) {
+            const notes = document.createElement("p");
+            notes.className = "hint";
+            notes.textContent = reason.notes;
+            item.appendChild(notes);
+          }
+          if (reason.link) {
+            const linkRow = document.createElement("p");
+            linkRow.className = "hint";
+            const link = document.createElement("a");
+            link.href = reason.link;
+            link.target = "_blank";
+            link.rel = "noreferrer";
+            link.textContent = reason.link;
+            linkRow.appendChild(link);
+            item.appendChild(linkRow);
+          }
+          infoGroup.appendChild(item);
         });
       }
 
@@ -3115,9 +3274,10 @@ class UpdateManagerPanel extends HTMLElement {
         controlsContainer.appendChild(prompt);
         return;
       }
-      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, (verdict) =>
-        applyMyVerdictRow(verdictRow, verdictText, tr, verdict)
-      );
+      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, (verdict) => {
+        applyMyVerdictRow(verdictRow, verdictText, tr, verdict);
+        updateAggregateRow(verdict);
+      });
     })();
 
     return section;
@@ -3435,7 +3595,14 @@ class UpdateManagerPanel extends HTMLElement {
     entitiesForm.computeLabel = () => "";
     entitiesForm.computeHelper = () => "";
     entitiesForm.addEventListener("value-changed", (e) => {
-      const chosen = e.detail.value.excluded_entities.filter((id) => !this._hardExcludedEntities.includes(id));
+      // `|| []`, not a bare e.detail.value.excluded_entities -- .filter
+      // below would throw immediately on the null ha-form's own
+      // multiple:true selector emits once the last chip is removed (found
+      // live, 2026-07-27). pickKnownSettings has its own LIST_SETTINGS_FIELDS
+      // coercion too (for save_settings' own schema, which also rejects a
+      // null list outright), but that runs later, at save time -- doesn't
+      // help here, where the crash would already have happened.
+      const chosen = (e.detail.value.excluded_entities || []).filter((id) => !this._hardExcludedEntities.includes(id));
       this._formData = { ...this._formData, excluded_entities: chosen };
       entitiesForm.data = { ...this._formData, excluded_entities: this._mergedExcludedEntities() };
       this._scheduleAutosave();
@@ -3471,7 +3638,11 @@ class UpdateManagerPanel extends HTMLElement {
     trustedForm.computeLabel = () => "";
     trustedForm.computeHelper = () => "";
     trustedForm.addEventListener("value-changed", (e) => {
-      this._formData = { ...this._formData, ...e.detail.value };
+      // `|| []`, not the bare selector value -- keeps this._formData itself
+      // clean (a real array, matching every other field's own always-a-
+      // value shape), on top of pickKnownSettings' own LIST_SETTINGS_FIELDS
+      // coercion at save time.
+      this._formData = { ...this._formData, trusted_voters: e.detail.value.trusted_voters || [] };
       trustedForm.data = this._formData;
       this._scheduleAutosave();
     });
@@ -3514,7 +3685,7 @@ class UpdateManagerPanel extends HTMLElement {
       @keyframes um-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
       .content { display: block; }
-      .loading, .empty {
+      .loading {
         color: var(--secondary-text-color); padding: 32px 0; text-align: center;
         font-size: var(--ha-font-size-m, 14px);
       }
@@ -3523,9 +3694,9 @@ class UpdateManagerPanel extends HTMLElement {
          a loading/error message shown there stacked its own vertical
          padding on top of the container's, landing at a different (larger)
          amount than the rest of the page. */
-      .content--groups .loading, .content--groups .empty, .content--groups .error,
-      .content--form .loading, .content--form .empty, .content--form .error,
-      .content--list .loading, .content--list .empty, .content--list .error { padding: 0; }
+      .content--groups .loading, .content--groups .error,
+      .content--form .loading, .content--form .error,
+      .content--list .loading, .content--list .error { padding: 0; }
       .error { color: var(--error-color); padding: 16px 0; font-size: var(--ha-font-size-m, 14px); }
       ha-list-base { display: block; }
       /* Confirmed against ha-config-updates.ts's real static styles: without
@@ -3553,23 +3724,24 @@ class UpdateManagerPanel extends HTMLElement {
          last section, but .settings-cards had nothing of its own, so
          Settings was the one tab that ended flush with no space at all
          below its last card. */
-      .settings-cards { display: flex; flex-direction: column; gap: 16px; }
+      /* Card-to-card gap is --ha-space-6 (24px), not an arbitrary 16px --
+         found live, 2026-07-27, direct user feedback: matches Updates' own
+         per-card margin-bottom below (confirmed against
+         ha-config-section-updates.ts's real static styles: margin-bottom:
+         max(24px, var(--safe-area-inset-bottom))) and History's own
+         between-section margin, so all three tabs read as one consistent
+         rhythm regardless of which one a given card sits on. */
+      .settings-cards { display: flex; flex-direction: column; gap: var(--ha-space-6, 24px); }
       /* Same 600px per-card width as .update-groups ha-card below. All
          three tabs' cards read as one consistent-width column regardless
          of which tab put them there (2026-07-21, direct user feedback).
-         Explicit width: 100% (not left at the default auto) plus
-         max-width and margin: 0 auto together, not align-self: the
-         "Auto-update" card isn't a direct child of .settings-cards (it
-         sits inside its own autoInstallSlot wrapper div, see
-         _buildSettingsCard, so it can be shown/hidden without disturbing
-         its siblings). A plain descendant selector reaches it too, but
-         align-self only has any effect on a flex container's own direct
-         children, so it would have centered every other card while
-         leaving this one flush left. width: 100% first (a flex item's
-         auto margins would otherwise disable stretch-to-fill and shrink
-         it to content width instead, found live) means margin: 0 auto can
-         do the centering here exactly like it already does for
-         .update-groups ha-card below, in a plain block context. */
+         Explicit width: 100% (not left at the default auto) plus max-width
+         and margin: 0 auto together, not align-self -- a flex item's auto
+         margins otherwise disable stretch-to-fill and shrink it to content
+         width instead (found live), so align-self alone wouldn't reliably
+         center every card here the way width: 100% + margin: 0 auto does.
+         Same centering mechanism .update-groups ha-card below already uses
+         in its own plain block context, just adapted for this flex one. */
       .settings-cards ha-card { width: 100%; max-width: 600px; margin: 0 auto; }
       ha-card { margin: 0; }
       .card-content { padding: 0 16px 16px; display: flex; flex-direction: column; }
@@ -3614,19 +3786,25 @@ class UpdateManagerPanel extends HTMLElement {
          never collapses, so this is the more robust fix for this one
          container specifically. */
       .content--form { padding-bottom: var(--ha-space-6, 24px); }
-      .update-groups-outer > ha-alert { display: block; max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); }
-      /* The rollout-queue cards (_buildRolloutGroupCard) are appended
-         directly to .update-groups-outer, not .update-groups -- found live,
-         2026-07-27, direct user feedback ("hij staat meer naar rechts"):
-         .update-groups ha-card below only matches a ha-card with a
-         .update-groups ancestor specifically, so these cards fell through
-         with no width cap or centering at all, rendering full-width instead
-         of the same capped/centered 600px column every other card gets. */
-      .update-groups-outer > ha-card { max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); }
-      .update-groups { display: block; }
+      /* One rule for every capped/centered 600px card/alert on this tab,
+         not a separate copy per DOM depth -- found by review: the rollout-
+         queue-card fix (below) originally added its own third literal copy
+         of this exact declaration next to two that already existed. The
+         rollout-queue cards (_buildRolloutGroupCard) and the empty-state
+         card are appended directly to .update-groups-outer, not
+         .update-groups -- found live, 2026-07-27, direct user feedback
+         ("hij staat meer naar rechts"): a selector scoped to only
+         .update-groups ha-card doesn't match those, so they fell through
+         with no width cap or centering at all, rendering full-width
+         instead of the same capped/centered 600px column every other card
+         gets. A future sibling-level card type only needs adding to this
+         one selector list, not a fourth copy of the declaration. */
+      .update-groups-outer > ha-alert,
+      .update-groups-outer > ha-card,
       .update-groups ha-card {
-        max-width: 600px; margin: 0 auto var(--ha-space-6, 24px);
+        display: block; max-width: 600px; margin: 0 auto var(--ha-space-6, 24px);
       }
+      .update-groups { display: block; }
       .update-groups .card-content { padding: 0; display: block; }
       .update-groups .card-header {
         display: flex; align-items: center; justify-content: space-between;
@@ -3635,7 +3813,10 @@ class UpdateManagerPanel extends HTMLElement {
       }
       .update-groups .title { font-size: var(--ha-font-size-l, 18px); }
       .update-groups ha-list-base { margin-bottom: var(--ha-space-2, 8px); }
-      .update-groups .no-updates { padding: 16px; }
+      /* Not scoped to .update-groups: the History tab's own empty state
+         (see _buildHistoryList) reuses this same class/markup shape, not
+         just the Updates tab's. */
+      .no-updates { padding: 16px; }
 
       /* History tab: one outlined ha-card per entry (see _buildHistoryList),
          same 600px width as the Updates/Settings cards above, grouped under
@@ -3718,6 +3899,15 @@ class UpdateManagerPanel extends HTMLElement {
       .dialog-community-info > .hint { margin-top: var(--ha-space-2, 8px); }
       .dialog-community-verdict-line { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       .dialog-community-verdict-line ha-svg-icon { --mdc-icon-size: 18px; flex-shrink: 0; }
+      /* Each reported problematic reason (category line + its own optional
+         notes/link) as one visually grouped block -- direct user feedback,
+         2026-07-29, from an actual screenshot: notes/link floating as
+         plain unindented lines read as orphaned, disconnected from the
+         category line above them, especially with more than one reason
+         stacked back to back. Indented to align under the category text
+         itself (18px icon + 8px gap), not under the icon. */
+      .community-reason-item:not(:first-child) { margin-top: var(--ha-space-2, 8px); }
+      .community-reason-item > .hint { margin-left: 26px; margin-top: var(--ha-space-1, 4px); }
       .dialog-vote { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ha-space-2, 8px); }
       .dialog-vote > div { width: 100%; }
       /* :not(:first-child), not an unconditional margin-top -- found live,

@@ -160,6 +160,24 @@ def _parse_short_semver(version: str) -> ParsedVersion:
     return ParsedVersion(major, minor, 0)
 
 
+def _parse_semver_or_short(version: str) -> ParsedVersion | None:
+    """Strict semver if it matches that shape, else the two-component short
+    form (patch implicitly 0), else None -- one shared parse used for every
+    non-calendar, non-commit-hash jump in classify_version_size below, so a
+    *mixed* pair (one side full semver, the other missing just the patch,
+    e.g. "0.36.2" -> "0.37") gets compared the same major/minor/patch way a
+    same-shape pair would, instead of needing its own special case. Found
+    live, 2026-07-27: this exact mixed case used to fall through both the
+    "both short" and "both full" branches entirely (neither "both" condition
+    was true) straight to the conservative "big" default, even though the
+    minor component's own change (36 -> 37) was perfectly ordinary and
+    detectable once the short side's missing patch is just treated as 0."""
+    parsed = parse_semver(version)
+    if parsed is not None:
+        return parsed
+    return _parse_short_semver(version) if is_short_semver_version(version) else None
+
+
 def classify_version_size(previous: str, current: str) -> Size:
     """Classify how big a change the jump from `previous` to `current` is.
 
@@ -179,20 +197,22 @@ def classify_version_size(previous: str, current: str) -> Size:
     rather than truly unknown either.
 
     A two-component major.minor version (no patch at all, e.g. "18.0" ->
-    "18.1") on *both* sides is "medium" when the minor component changes,
-    same reasoning as the git-commit-hash case: there's no third, more
-    granular tier to call "small" against, so a real, ordered jump between
-    two recognized short-semver versions is a deliberately-tracked scheme,
-    not something to fall back to "big" for. Found live, 2026-07-25: this
-    used to be classified "big" purely for not being strict three-part
-    semver.
+    "18.1") is handled on the same terms as full semver (see
+    _parse_semver_or_short): its missing patch is treated as 0, so "medium"
+    still means the minor component changed, same reasoning as the
+    git-commit-hash case for why this isn't left as unrecognized/"big" --
+    a real, ordered jump between two recognized versions is a
+    deliberately-tracked scheme. This also covers a *mixed* pair, one side
+    full semver and the other short (e.g. "0.36.2" -> "0.37") the same way,
+    found live 2026-07-27: this used to fall through to "big" for not being
+    strict three-part semver *and* not being short on both sides at once.
 
     "big" (treated conservatively, i.e. as if it might be a breaking change)
-    covers everything else: either side not strict semver, exactly one side
-    (not both) using HA Core's calendar scheme, a commit hash, or short
-    semver, identical hashes/versions (no real jump to classify), or
-    `current` not actually newer than `previous` (e.g. a rollback or a
-    re-announced identical version)."""
+    covers everything else: either side not recognized as semver or short
+    semver at all, exactly one side (not both) using HA Core's calendar
+    scheme or a commit hash, identical hashes/versions (no real jump to
+    classify), or `current` not actually newer than `previous` (e.g. a
+    rollback or a re-announced identical version)."""
     prev_is_calendar = is_calendar_version(previous)
     curr_is_calendar = is_calendar_version(current)
     if prev_is_calendar and curr_is_calendar:
@@ -213,21 +233,8 @@ def classify_version_size(previous: str, current: str) -> Size:
     if prev_is_commit or curr_is_commit:
         return "big"
 
-    prev_is_short = is_short_semver_version(previous)
-    curr_is_short = is_short_semver_version(current)
-    if prev_is_short and curr_is_short:
-        prev = _parse_short_semver(previous)
-        curr = _parse_short_semver(current)
-        if curr <= prev:
-            return "big"
-        if curr.major != prev.major:
-            return "big"
-        return "medium"
-    if prev_is_short or curr_is_short:
-        return "big"
-
-    prev = parse_semver(previous)
-    curr = parse_semver(current)
+    prev = _parse_semver_or_short(previous)
+    curr = _parse_semver_or_short(current)
     if prev is None or curr is None:
         return "big"
     if curr <= prev:

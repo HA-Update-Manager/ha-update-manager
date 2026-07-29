@@ -25,6 +25,9 @@ from typing import Any
 # text in a compact dialog section.
 MAX_OTHER_JUMPS = 5
 
+# Same reasoning as MAX_OTHER_JUMPS above, applied to problematic_reasons_from_payload.
+MAX_PROBLEMATIC_REASONS = 5
+
 
 def verdict_from_payload(payload: dict[str, Any] | None, from_version: str) -> dict[str, Any] | None:
     """My own jump's aggregate verdict from an already-fetched to_version
@@ -100,3 +103,32 @@ def other_jumps_from_payload(payload: dict[str, Any] | None, from_version: str) 
         )
     others.sort(key=lambda j: j["healthy_count"] + j["problematic_count"], reverse=True)
     return others[:MAX_OTHER_JUMPS]
+
+
+def problematic_reasons_from_payload(payload: dict[str, Any] | None, from_version: str) -> list[dict[str, Any]]:
+    """Every problematic voter's own reason for my exact jump, most recent
+    first, capped like other_jumps_from_payload above. reason_category/
+    notes/link are collected at submission time (vote_issue_body.py, the
+    panel's own vote dialog) and are persisted per-voter upstream
+    (community-votes' process-vote.yml writes them straight into each
+    jump.votes[username] entry), but no function in this module used to
+    read anything past the bare verdict string -- a vote's reason was
+    write-only from this integration's own perspective. Direct user
+    feedback, 2026-07-29: "ik zie in de interface nergens de reden staan.
+    Dat had ik wel verwacht." """
+    if not payload:
+        return []
+    votes = payload.get("jumps", {}).get(from_version, {}).get("votes", {})
+    reasons = [
+        {
+            "username": username,
+            "reason_category": entry.get("reason_category"),
+            "notes": entry.get("notes"),
+            "link": entry.get("link"),
+            "created_at": entry.get("created_at"),
+        }
+        for username, entry in votes.items()
+        if entry.get("verdict") == "problematic"
+    ]
+    reasons.sort(key=lambda r: r["created_at"] or "", reverse=True)
+    return reasons[:MAX_PROBLEMATIC_REASONS]
