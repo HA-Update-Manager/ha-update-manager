@@ -16,6 +16,14 @@ from .runtime_data import UpdateManagerConfigEntry
 
 async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> dict[str, Any]:
     data = entry.runtime_data
+    # None-guarded, found by code review, 2026-07-29: runtime_data is None
+    # both before setup completes and (see __init__.py's own
+    # async_unload_entry) after a clean unload -- HA's own UI normally only
+    # offers "Download diagnostics" for a currently-loaded entry, but this
+    # degrades gracefully instead of raising AttributeError on the narrower
+    # race windows around that (a reload's unload-then-setup gap, for one).
+    if data is None:
+        return {"options": dict(entry.options)}
     return {
         # The raw, actually-persisted settings -- added 2026-07-16 to check
         # a save without needing the browser console/websocket_api either.

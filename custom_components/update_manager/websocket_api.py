@@ -38,7 +38,7 @@ from .const import (
     DEFAULT_WAIT_DAYS,
     DOMAIN,
 )
-from .community_verdict import async_fetch_my_vote, async_fetch_verdict_uncached
+from .community_verdict import EMPTY_VERDICT_RESULT, async_fetch_my_vote, async_fetch_verdict_uncached
 from .community_vote import async_submit_vote
 from .coordinator import (
     excluded_entities_from_options,
@@ -552,29 +552,27 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     # record yet) does its own separate live HTTP GET too, so the old
     # sequential order doubled this dialog-open's real network latency in
     # exactly that case.
+    # Resolved up front, not after the fetch: passed straight into
+    # async_fetch_verdict_uncached so it can exclude your own entry from
+    # the generic list *before* capping it, and find your own reason via a
+    # direct, cap-independent lookup instead of searching the (possibly
+    # already-missing-you) capped result afterward -- found by review,
+    # 2026-07-29: the previous post-hoc "search the capped list for my own
+    # username" approach could silently come back empty whenever enough
+    # other, more recent votes existed, even though a real reason existed
+    # (see problematic_reasons_from_payload's own docstring for the full
+    # reasoning).
+    username = data.github_auth_manager.linked_username if data else None
     if identity is not None:
-        (verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons), my_verdict = (
+        (verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons, my_reason), my_verdict = (
             await asyncio.gather(
-                async_fetch_verdict_uncached(hass, identity, data.community_verdict_manager.trusted_voters),
+                async_fetch_verdict_uncached(hass, identity, data.community_verdict_manager.trusted_voters, username),
                 _async_resolve_my_verdict(hass, data, identity),
             )
         )
     else:
-        verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons = (None, [], None, [], [])
+        verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons, my_reason = EMPTY_VERDICT_RESULT
         my_verdict = None
-    # Your own reason (if you voted problematic and gave one) split out from
-    # the rest, found by review, 2026-07-29: the dialog already shows "You
-    # reported this jump as problematic" as its own fact, so your own reason
-    # showing up a second time, anonymously, in the generic reasons list read
-    # as a confusing, unattributed duplicate of information already given.
-    # The same linked_username _async_resolve_my_verdict's own fallback path
-    # already needs is reused here, no extra lookup.
-    my_reason = None
-    username = data.github_auth_manager.linked_username if data else None
-    if username:
-        my_reason = next((r for r in problematic_reasons if r["username"] == username), None)
-        if my_reason:
-            problematic_reasons = [r for r in problematic_reasons if r["username"] != username]
     connection.send_result(
         msg["id"],
         {

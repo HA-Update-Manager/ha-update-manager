@@ -38,10 +38,18 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+# async_fetch_verdict_uncached's own empty return: (verdict, other_jumps,
+# trusted_vote, trusted_voters_matched, problematic_reasons, my_reason), all
+# "nothing to report" -- shared with websocket_api.py's own identity-is-None
+# fallback so the two tuples can't drift apart as this shape grows further
+# (it already grew once, 5 elements to 6, when my_reason was added).
+EMPTY_VERDICT_RESULT: tuple[Any, ...] = (None, [], None, [], [], None)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .community_verdict_payload import (
+    my_problematic_reason_from_payload,
     my_vote_from_payload,
     other_jumps_from_payload,
     problematic_reasons_from_payload,
@@ -275,8 +283,11 @@ class CommunityVerdictManager:
 
 
 async def async_fetch_verdict_uncached(
-    hass: HomeAssistant, identity: ResolvedIdentity, trusted_voters: list[str] | None = None
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None, list[str], list[dict[str, Any]]]:
+    hass: HomeAssistant,
+    identity: ResolvedIdentity,
+    trusted_voters: list[str] | None = None,
+    username: str | None = None,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None, list[str], list[dict[str, Any]], dict[str, Any] | None]:
     """A direct, uncached lookup for an arbitrary already-resolved identity,
     not necessarily the entity's own current pending jump, e.g. reading/
     voting from a specific History entry. Deliberately NOT
@@ -292,22 +303,30 @@ async def async_fetch_verdict_uncached(
     resolve it a second time here.
 
     Returns (my own jump's verdict, other jumps to this same destination,
-    trusted vote, trusted voters matched, problematic voters' own reasons)
-    -- all derived from the one fetch, direct user feedback 2026-07-24
-    (other_jumps), 2026-07-27 (trusted_vote/trusted_voters_matched,
-    "toevallig mijn trusted voter die heeft gestemd, maar dat zie ik niet
-    terug" -- the dialog's own verdict line for a specific jump had no idea
-    whether a trusted voter was among the people who voted on it, even
-    though that's exactly what changes auto-install behavior for this
-    jump), and 2026-07-29 (problematic_reasons, "ik zie in de interface
-    nergens de reden staan"). trusted_voters defaults to none (not every
+    trusted vote, trusted voters matched, *other* problematic voters' own
+    reasons, my own problematic reason) -- all derived from the one fetch,
+    direct user feedback 2026-07-24 (other_jumps), 2026-07-27 (trusted_vote/
+    trusted_voters_matched, "toevallig mijn trusted voter die heeft
+    gestemd, maar dat zie ik niet terug" -- the dialog's own verdict line
+    for a specific jump had no idea whether a trusted voter was among the
+    people who voted on it, even though that's exactly what changes
+    auto-install behavior for this jump), and 2026-07-29 (problematic_
+    reasons/my_reason, "ik zie in de interface nergens de reden staan").
+    `username` (the caller's own linked GitHub username, if any) is
+    resolved once here and used for both excluding your own entry from the
+    generic list and finding it directly for my_reason -- found by review,
+    2026-07-29: the previous version left the caller (websocket_api.py) to
+    search the already-capped problematic_reasons list for its own
+    username, which could silently miss it whenever enough other, more
+    recent votes existed (see problematic_reasons_from_payload's own
+    docstring). trusted_voters/username both default to none (not every
     caller cares, e.g. a caller that already knows this entity has no
     pending update at all)."""
     try:
         payload = await _fetch_to_version_json(hass, identity.to_version_path)
     except Exception:
         _LOGGER.debug("Couldn't fetch community verdict for %s", identity.to_version_path, exc_info=True)
-        return None, [], None, [], []
+        return EMPTY_VERDICT_RESULT
     trusted_vote, trusted_voters_matched = trusted_vote_from_payload(
         payload, identity.from_version, trusted_voters or []
     )
@@ -316,5 +335,6 @@ async def async_fetch_verdict_uncached(
         other_jumps_from_payload(payload, identity.from_version),
         trusted_vote,
         trusted_voters_matched,
-        problematic_reasons_from_payload(payload, identity.from_version),
+        problematic_reasons_from_payload(payload, identity.from_version, exclude_username=username),
+        my_problematic_reason_from_payload(payload, identity.from_version, username),
     )

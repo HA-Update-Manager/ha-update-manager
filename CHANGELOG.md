@@ -2,6 +2,108 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.5.0] - 2026-07-29
+
+Opening an update's details now hands the actual "Install" action off to Home Assistant's own update dialog, complete with its real install button, live progress, and backup option, instead of Update Manager's own copy. Update Manager's own dialog now focuses purely on the decision: staging status, community verdict, and auto-install scheduling.
+
+### Changed
+- **The per-entity dialog no longer mimics HA's own more-info-update dialog for the actual install
+  action.** Its own Install button and live install-progress bar are gone; a new "Open update" button
+  (replacing the old separate "More info" button too, for a pending update) opens Home Assistant's real
+  more-info dialog for that entity instead, where the actual Install button, live progress, and backup
+  checkbox already live natively. Direct user feedback: our own copy was "namaak," not a real addition,
+  and re-implementing it was exactly what both real bugs found earlier this session (`release_summary`
+  rendering raw HTML as literal text, a `[hidden]` CSS-specificity bug) had in common. Changelog/release-
+  notes rendering stays as it was (low duplication risk, already delegating to the same `ha-markdown`
+  component and `update/release_notes` data HA's own dialog uses, and central to spotting a breaking
+  change before deciding), as does Cancel/Unskip, "Update all," and the Zigbee rollout queue (none of
+  those are HA-dialog duplication in the first place). A queued Zigbee rollout device still can't jump
+  the line via this button either, same "Waiting for X" disabled state the old Install button had, now
+  carried over. `appearance="accent"` (the genuinely strong/primary look, confirmed against `ha-button`'s
+  own real source: "filled" is deliberately the softer fill, "accent" the loud one meant for a page's one
+  primary action) only once the update is actually `ready`; otherwise `appearance="plain"`, since
+  encouraging a manual install with the loudest button in the dialog would work against the whole point
+  of staging while still waiting/skipped/blocked.
+- **Skip is now only shown when the exact jump has a reported problem** (`community_verdict.problematic
+  _count > 0`), not unconditionally. Shown with no reason attached, Skip was the same kind of
+  undifferentiated duplication of HA's own generic skip capability Install was -- it earns its place in
+  this dialog specifically as a reaction to a negative community vote, not as a bare convenience (HA's
+  own dialog, reachable via "Open update," already offers Skip too). Not gated the same way the
+  "held back" alert is (which also checks `auto_install_excluded`/a trusted-healthy override): Skip is a
+  personal choice independent of whether auto-install would have run anyway.
+- **"Clear skipped" moved out of the status alert into the dialog's own footer**, next to Skip -- turning
+  postponement-hiding on and off for an update now lives in one consistent place. Cancel stays exactly
+  where it was, in the alert's own `slot="action"`, right next to the "will update automatically at X"
+  message it actually cancels (direct user feedback, after briefly trying both the footer and a plain
+  sibling element instead: both lost the context that mattered, "die moet gewoon in de alert die aangeeft
+  wanneer de auto update gepland staat"), just toned down to `appearance="plain"` instead of the bolder
+  `"accent"` default `ha-progress-button` uses when left unset. That change on its own turned out to have a
+  real WCAG problem: `appearance="plain"`'s own text color (`--wa-color-on-normal`, a webawesome design
+  token) isn't adapted to sit on a colored background at all, unlike `ha-alert`'s own legacy `--mdc-theme-
+  primary` mechanism for MWC-era action-slot buttons, which this newer button component never reads --
+  blue text on the alert's green wash, "hele slechte wcag/contrast." Fixed before this ever shipped by
+  overriding that same custom property to `--primary-text-color` instead (confirmed against `ha-button`'s
+  real source), getting the same "readable on any alert color" result `ha-alert` always intended.
+- **The status alert itself is now skipped entirely when it would only repeat the header's own bare
+  status word** (e.g. a plain "Skipped" or "Ready to update" with nothing else to add) -- direct user
+  feedback: "die alert mag wel weg. want de status is al skipped en clear skipped staat in de footer."
+  Never silently drops a real Cancel button in the process: a genuine pending/projected auto-install
+  always makes the alert's own text richer than the bare word to begin with.
+- **"Report a known issue"/"Report as problematic" is now a filled button, not a plain text link** --
+  direct user feedback: this is an action genuinely worth encouraging, and a soft-background button
+  reads as more inviting/actionable than a bare link, matching the "Mark as healthy" button's own visual
+  weight right next to it.
+
+### Fixed
+- A "waiting" update with a projected auto-install time *and* a negative community vote showed a
+  contradiction: "will update automatically at X" (with a working Cancel button) right next to "Auto-
+  install held back," even though the community block means it was never actually going to run. The
+  status alert (and Cancel) is now suppressed whenever genuinely held back by the community, for any
+  status this happens to be in -- not just the narrower "ready + held back" case fixed earlier this
+  session. The header's own brief status value (e.g. "Ready to update," "Skipped") always shows the plain
+  current status regardless of what the alert says, unaffected either way -- direct user feedback, after a
+  follow-up screenshot showed "Skipped" twice, briefly led to hiding the header instead (the wrong fix for
+  the wrong problem; the real fix was to stop showing a now-redundant alert, not to hide the header).
+- Casting a vote in an earlier session and reopening the dialog later still showed "Mark as healthy" as
+  an option even after already voting healthy -- `_buildVoteControls` never checked your own already-cast
+  verdict before building it. Omitted now once already healthy (nothing left to add by repeating the
+  exact same content-free vote); "Report as problematic" stays available regardless of your current vote,
+  since a problematic vote always has real fields (reason/notes/link) worth revisiting or updating, even
+  without changing the verdict itself.
+- Plain `<a>` links this panel builds by hand (release-announcement, a reported reason's link, the
+  GitHub-link verification URL) fell back to the browser's own default link color (blue) instead of HA's
+  own -- confirmed against `more-info-update.ts`'s real source: its own `a` rule sets color only, the
+  underline stays exactly as the browser draws it by default.
+- The status alert showed "success" green for a scheduled auto-install ("Will update automatically at
+  X"), even though that's a scheduled fact, not an accomplishment -- direct user feedback: "het is info
+  en geen success toch?" Now "info" (blue) whenever there's an actual countdown to show, regardless of
+  which underlying status (most often "ready," but not exclusively) happens to have it.
+- **A Zigbee rollout-group member that wasn't yet queued could bypass rollout pacing entirely** by handing
+  off to HA's own dialog and installing there (`update.install` directly, invisible to
+  `rollout_manager.py`) instead of through `update_manager/install`, the only path that actually consults
+  it -- found by `/code-review`: two identical devices could then reflash simultaneously, exactly the mesh
+  instability rollout pacing exists to prevent. Disabling the button while queued was never the whole
+  fix; any rollout-group member now installs through the coordinated path directly instead of opening
+  HA's dialog at all, regardless of queue position.
+- **Your own problematic vote's reason could silently vanish from `my_reason`** if 5 or more other people
+  had voted more recently on the same jump -- found by `/code-review`: the reason list was capped to the 5
+  most recent *before* your own entry was searched for, so it could already be gone by the time that
+  search ran. Your own reason is now found with its own direct, cap-independent lookup; only the generic
+  "other people's reasons" list is capped, and now correctly excludes yours before capping rather than
+  after.
+- **The Updates-tab list's own "will auto-install at X" pill could disagree with that same entity's
+  dialog**, which correctly shows "held back" -- found by `/code-review`: the pill's own projection never
+  checked the community verdict at all. Now mirrors the same trusted-vote/problematic-count priority the
+  dialog and the real backend decision both already use.
+- **`entry.runtime_data` was never reset after unloading the integration**, unlike the `hass.data.pop(...)`
+  it replaced -- found by `/code-review`: a websocket call arriving in that window could silently operate
+  on already-stopped managers instead of hitting the normal "not set up" guard. Diagnostics gained a
+  matching `None` guard for the same reason, degrading gracefully instead of raising `AttributeError`.
+- The "Open update" button could still show its loudest, primary styling for a `ready` update the
+  community had actually flagged as a problem -- found by `/code-review`: the accent/plain choice never
+  checked `heldBackByCommunity` at all, so it kept inviting the exact manual install the warning right
+  above it was discouraging.
+
 ## [0.4.1] - 2026-07-29
 
 Small fixes to the Community section and auto-install messaging added in 0.4.0:

@@ -299,7 +299,7 @@ const TRANSLATIONS = {
     save: "Save",
     settings_saved_toast: "Settings saved",
     cancel_auto_install: "Cancel",
-    dialog_install: "Update",
+    dialog_open_update: "Open update",
     dialog_skip: "Skip",
     dialog_unskip: "Clear skipped",
     group_ready: "Ready to update",
@@ -520,7 +520,7 @@ const TRANSLATIONS = {
     save: "Opslaan",
     settings_saved_toast: "Instellingen opgeslagen",
     cancel_auto_install: "Annuleren",
-    dialog_install: "Updaten",
+    dialog_open_update: "Update openen",
     dialog_skip: "Overslaan",
     dialog_unskip: "Overslaan ongedaan maken",
     group_ready: "Klaar om te updaten",
@@ -739,6 +739,18 @@ function compareUpdates(a, b, settings) {
   return secondaryOf(a) - secondaryOf(b);
 }
 
+// Mirrors announcer.py's own effective_auto_install_state (found by code
+// review, 2026-07-29): a trusted "healthy" vote overrides a community block,
+// same as it does server-side, but otherwise any problematic vote means
+// auto-install genuinely won't happen. Shared by autoInstallEnabledFor below
+// and _openDetailDialog's own heldBackByCommunity, so the two can't drift
+// apart the way they already once did (the Updates-tab list row's own "will
+// auto-install at X" pill disagreeing with that same entity's dialog).
+function communityBlocksAutoInstall(u) {
+  if (u.trusted_vote === "healthy") return false;
+  return ((u.community_verdict && u.community_verdict.problematic_count) || 0) > 0;
+}
+
 // Will this update ever auto-install itself, as currently configured?
 // Installable, not excluded (hard or user-picked), and the *_auto_install
 // setting for its size is on. `settings` is the saved settings object
@@ -751,6 +763,7 @@ function autoInstallEnabledFor(u, settings) {
   // showing a "will update automatically" projection while paused would be
   // actively misleading, since nothing will actually happen.
   if (!settings || settings.enabled === false || !u.installable || u.auto_install_excluded) return false;
+  if (communityBlocksAutoInstall(u)) return false;
   return !!settings[`${u.version_size}_auto_install`];
 }
 
@@ -1237,18 +1250,6 @@ function updateButtonIsDisabled(state) {
 function updateIsInstalling(state) {
   return !!(state && state.attributes && state.attributes.in_progress);
 }
-function installProgressBar(state) {
-  if (!updateIsInstalling(state)) return null;
-  const bar = document.createElement("ha-progress-bar");
-  const supportsProgress = (state.attributes.supported_features || 0) & 4 && state.attributes.update_percentage != null;
-  if (supportsProgress) {
-    bar.loading = true;
-    bar.value = state.attributes.update_percentage;
-  } else {
-    bar.indeterminate = true;
-  }
-  return bar;
-}
 
 // The Updates list row's own trailing indicator while installing (see
 // _buildListRow) -- matches ha-config-updates.ts's own real
@@ -1340,8 +1341,6 @@ class UpdateManagerPanel extends HTMLElement {
     this._hardExcludedEntities = [];
     this._dialogEntityId = null;
     this._dialogLastState = null;
-    this._dialogProgressContainer = null;
-    this._dialogInstallBtn = null;
     this._dialogStatusTextNode = null;
     this._dialogActionButtons = [];
     this._installSnapshots = null;
@@ -1611,21 +1610,21 @@ class UpdateManagerPanel extends HTMLElement {
   // an install actually finishes is handled globally instead (see
   // _updateInstallProgress below), not duplicated here, since that also
   // has to work when the dialog isn't even open.
+  // No progress bar of our own to redraw here anymore (see "Open update",
+  // 2026-07-29: the actual install/its live progress happens in HA's own
+  // dialog now) -- what's left is still needed regardless of how an
+  // install got started (this dialog's own former Install button, "Update
+  // all", auto-install, or the rollout queue): Skip/Cancel/Unskip must
+  // still disable themselves while one is genuinely running, and the
+  // status alert's own text needs to keep reflecting reality live (its
+  // own "Installing…" override, independent of any progress bar).
   _updateDialogProgress() {
-    if (!this._dialogEntityId || !this._dialogProgressContainer) return;
+    if (!this._dialogEntityId) return;
     const state = entityState(this._hass, this._dialogEntityId);
     if (state === this._dialogLastState) return;
     this._dialogLastState = state;
 
-    this._dialogProgressContainer.innerHTML = "";
-    const bar = installProgressBar(state);
-    if (bar) this._dialogProgressContainer.appendChild(bar);
-
     const installing = updateIsInstalling(state);
-    if (this._dialogInstallBtn) {
-      this._dialogInstallBtn.progress = installing;
-      this._dialogInstallBtn.disabled = updateButtonIsDisabled(state);
-    }
     for (const btn of this._dialogActionButtons) btn.disabled = installing;
 
     if (this._dialogStatusTextNode) {
@@ -2190,7 +2189,6 @@ class UpdateManagerPanel extends HTMLElement {
     // own reactive stateObj -- not something this one-shot render call
     // itself keeps current.
     this._dialogLastState = entityState(this._hass, entityId) || null;
-    this._dialogInstallBtn = null;
     this._dialogStatusTextNode = null;
     this._dialogActionButtons = [];
     dialog.innerHTML = "";
@@ -2207,6 +2205,50 @@ class UpdateManagerPanel extends HTMLElement {
     // History entry means the user wants that one past install, not also
     // the entity's unrelated current pending update dragged in above it.
     const showPendingUpdate = u && !historyEntry;
+
+    // Hoisted above the header, direct user feedback 2026-07-29: the
+    // header's own brief .state value always shows the plain status
+    // (ready/waiting/skipped/blocked) regardless of what the alert below
+    // says -- it's the one place answering "which group is this filed
+    // under", not something to hide just because the alert repeats the
+    // same word. `heldBackByCommunity` is still used to gate the plain
+    // status alert (and Cancel inside it, see below): a real community
+    // block means auto-install genuinely won't run, so "ready"/"will
+    // update automatically at X" would be flatly false regardless of
+    // which staging status this happens to be in right now -- not just
+    // "ready" specifically (found by a follow-up screenshot, 2026-07-29:
+    // a "waiting" entity with a projected auto-install time and a
+    // negative vote showed both "will update automatically" *and* "held
+    // back" side by side, and a Cancel button for an install that was
+    // never actually going to run).
+    const communityProblematicCount = showPendingUpdate
+      ? (u.community_verdict && u.community_verdict.problematic_count) || 0
+      : 0;
+    const heldBackByCommunity =
+      showPendingUpdate && communityBlocksAutoInstall(u) && !u.auto_install_excluded && u.status !== "skipped";
+    // Hoisted so both the header (always uses it) and this check (compares
+    // against it) share one computation. The status alert itself is now
+    // skipped entirely whenever it would add nothing beyond the header's
+    // own bare word -- direct user feedback, 2026-07-29, after "Skipped"
+    // still showed twice even once the header/alert dedup only omitted
+    // the header: "die alert mag wel weg. want de status is al skipped en
+    // clear skipped staat in de footer" -- Unskip already lives in the
+    // footer (see below), so a plain "Skipped"/"Ready to update"/
+    // "Discouraged" alert with nothing else to say no longer has any
+    // reason to exist at all, not just a reason to go quiet. Never
+    // silently drops Cancel: a truthy cancelToVersion always coincides
+    // with statusText returning something richer than the bare word
+    // (pending_install's own sentence, or "waiting"'s own countdown,
+    // which is never the bare word to begin with), so there's no case
+    // where suppressing "identical text" also suppresses a real Cancel.
+    const headerStateText = showPendingUpdate
+      ? (u.status === "waiting" ? tr.status_waiting_short : tr[`status_${u.status}`]) || u.status
+      : null;
+    // Computed once here (rather than again down at the alert's own text
+    // node below) since both need the exact same value: this comparison,
+    // and, if it turns out to differ, the alert's initial text itself.
+    const dialogStatusText = showPendingUpdate ? statusText(tr, u, this._settings, this._hass) : null;
+    const willShowStatusAlert = showPendingUpdate && !heldBackByCommunity && headerStateText !== dialogStatusText;
 
     // state-info + a right-aligned ".state" value, in a
     // ".horizontal.justified.layout" row -- not hand-laid-out, this is the
@@ -2250,10 +2292,15 @@ class UpdateManagerPanel extends HTMLElement {
         // own source code instead of calling it. status_waiting_short is
         // the deliberately unparameterized, brief form for this small
         // header value (the full countdown sentence already lives in the
-        // alert body below via statusText).
+        // alert body below via statusText). Always shown, direct user
+        // feedback 2026-07-29 (reverting an earlier attempt this same
+        // session to omit it when it'd repeat the alert below): this is
+        // the one place answering "which group is this filed under"
+        // (Ready/Postponed/Skipped/Blocked) at a glance, regardless of
+        // whatever else the alert below goes on to say.
         const stateValue = document.createElement("div");
         stateValue.className = "state";
-        stateValue.textContent = (u.status === "waiting" ? tr.status_waiting_short : tr[`status_${u.status}`]) || u.status;
+        stateValue.textContent = headerStateText;
         header.appendChild(stateValue);
       }
       body.appendChild(header);
@@ -2273,21 +2320,10 @@ class UpdateManagerPanel extends HTMLElement {
     // reasoning. The Updates-tab/rollout-queue entry points (both `u`
     // truthy, no historyEntry) are unaffected.
     if (showPendingUpdate) {
-      // A live install-progress bar (indeterminate, or percentage-based
-      // when the entity supports it) -- matching more-info-update.ts's own
-      // placement exactly (confirmed against its real source): below the
-      // shared entity header (state-info above, icon/name/state -- that's
-      // a separate, domain-agnostic component in real HA too, not part of
-      // more-info-update.ts itself), at the very top of the domain-
-      // specific content, before the title. Shown only while
-      // attributes.in_progress is true, updated in place as that changes
-      // (see _updateDialogProgress) rather than by rebuilding this whole
-      // dialog on every hass push.
-      this._dialogProgressContainer = document.createElement("div");
-      this._dialogProgressContainer.className = "dialog-progress";
-      const initialBar = installProgressBar(this._dialogLastState);
-      if (initialBar) this._dialogProgressContainer.appendChild(initialBar);
-      body.appendChild(this._dialogProgressContainer);
+      // No progress bar of our own here anymore (see "Open update",
+      // 2026-07-29): live install progress now lives entirely in HA's own
+      // more-info dialog, reached via that button below, instead of being
+      // mirrored here too.
 
       // The entity's own "title" attribute (e.g. "Frontend"), not
       // necessarily the same string as its friendly name in state-info
@@ -2299,37 +2335,28 @@ class UpdateManagerPanel extends HTMLElement {
         body.appendChild(titleEl);
       }
 
-      // Whether the community-block alert below is about to fire, computed
-      // up front (moved ahead of the plain status alert, found by review
-      // after a screenshot showed the actual result, 2026-07-29): for
-      // status "ready" specifically, statusText(...) below renders the
-      // exact same string the header's own .state value already shows a
-      // few lines up ("Ready to update"), and stacking that a second time
-      // right above a warning saying the opposite ("held back") read as
-      // contradictory clutter, not two different facts. Mirrors
-      // announcer.py's own effective_auto_install_state: that function
-      // checks auto_install_excluded/skipped and a trusted-healthy
-      // override FIRST, before ever looking at the aggregate problematic
-      // count, so for an always-excluded entity (Core/Supervisor/OS), an
-      // already-skipped one, or one with a trusted "healthy" vote in play,
-      // a problematic report was never actually the reason auto-install
-      // won't happen -- showing the alert there would falsely blame the
-      // vote for a block that either didn't exist, or was already
-      // overridden.
-      const communityProblematicCount = (u.community_verdict && u.community_verdict.problematic_count) || 0;
-      const heldBackByCommunity =
-        communityProblematicCount > 0 &&
-        u.trusted_vote !== "healthy" &&
-        !u.auto_install_excluded &&
-        u.status !== "skipped";
-
-      // Skipped entirely for "ready" + held-back (see heldBackByCommunity
-      // above): cancelToVersion is never truthy in that combination either
-      // (nothing is actually projected/announced once auto-install is
-      // blocked), so no action button is lost by skipping this whole
-      // block, only the redundant repeated text.
-      if (!(u.status === "ready" && heldBackByCommunity)) {
-        const statusAlertType = STATUS_ALERT_TYPE[u.status] || STATUS_ALERT_TYPE[_FALLBACK_STATUS];
+      // communityProblematicCount/heldBackByCommunity: hoisted above the
+      // header now (see that block's own comment) -- reused here as-is.
+      //
+      // Skipped entirely for "ready" + held-back: cancelToVersion is never
+      // truthy in that combination either (nothing is actually projected/
+      // announced once auto-install is blocked), so no action button is
+      // lost by skipping this whole block, only the redundant repeated
+      // text.
+      if (willShowStatusAlert) {
+        // "info" (blue), not the status-driven default, whenever there's
+        // an actual scheduled auto-install countdown (u.pending_install)
+        // to show -- direct user feedback, 2026-07-29: "zou het niet
+        // logischer zijn als de alert met 'will update automatically...'
+        // blauw is ipv groen? het is info en geen success toch?" A plain
+        // "ready" with nothing scheduled yet is a genuinely positive
+        // status worth "success" green; "will update automatically at X"
+        // is a scheduled fact, not an accomplishment, regardless of which
+        // underlying status (most often "ready", but not exclusively)
+        // happens to have that schedule attached to it.
+        const statusAlertType = u.pending_install
+          ? "info"
+          : STATUS_ALERT_TYPE[u.status] || STATUS_ALERT_TYPE[_FALLBACK_STATUS];
         const statusAlert = document.createElement("ha-alert");
         statusAlert.alertType = statusAlertType;
         // ha-alert's own default icon (checkmark/info/warning, based on
@@ -2352,32 +2379,48 @@ class UpdateManagerPanel extends HTMLElement {
         // installing override) the moment an install actually starts,
         // instead of staying frozen on whatever status this was at the
         // moment the dialog opened.
-        this._dialogStatusTextNode = document.createTextNode(statusText(tr, u, this._settings, this._hass));
+        this._dialogStatusTextNode = document.createTextNode(dialogStatusText);
         statusAlert.appendChild(this._dialogStatusTextNode);
-        // Buttons pushed onto this._dialogActionButtons below (reset
-        // unconditionally at the top of this method) get disabled while
-        // actually installing (see _updateDialogProgress), same as
-        // more-info-update.ts's own Skip button
-        // (.disabled=${... || updateIsInstalling(stateObj)}) -- none of
-        // these actions make sense mid-install.
         // Cancellable even before a real announcement exists yet -- still
         // "waiting" but auto-install is projected to happen (see
-        // projectedAutoInstallTime above), not just once actually "ready"
+        // projectedAutoInstallTime below), not just once actually "ready"
         // and formally announced. Direct user feedback: seeing "will update
         // automatically" with no way to act on it read as a real gap.
         // install_manager.py's async_cancel already supports this (records
         // the cancellation regardless of whether a PendingAnnouncement
         // exists yet), so only the to_version to send needs picking: the
         // real announcement's own target once one exists, else whatever
-        // version is currently projected.
+        // version is currently projected. Never reachable here at all
+        // while heldBackByCommunity is true (this whole block is gated on
+        // willShowStatusAlert, see its own comment above), so there's no
+        // separate guard needed against showing a Cancel button for an
+        // install that was never actually going to run.
         const cancelToVersion = u.pending_install
           ? u.pending_install.to_version
           : projectedAutoInstallTime(u, this._settings)
             ? u.latest_version
             : null;
         if (cancelToVersion) {
+          // Back in the alert's own slot="action" (2026-07-29, round two --
+          // moving it out to a plain sibling instead, tried right before
+          // this, looked worse: floating disconnected from the message it
+          // actually acts on, exactly the "context" the first move back in
+          // was already about). The real, narrower problem was only ever
+          // the *color* -- ha-alert's own action slot expects an MWC-era
+          // button honoring --mdc-theme-primary (set to --primary-text-
+          // color, a neutral tone that reads on any of its tinted
+          // backgrounds), but this project's actual ha-progress-button (a
+          // newer webawesome-based component) never reads that legacy
+          // variable, so its own "plain" appearance fell back to its usual
+          // link-blue regardless of the alert underneath it. Overriding
+          // the specific custom property that component's own "plain"
+          // style actually reads (confirmed against ha-button's real
+          // source) gets the same "readable on any alert color" result
+          // ha-alert always intended, without needing to relocate anything.
           const cancelBtn = document.createElement("ha-progress-button");
           cancelBtn.slot = "action";
+          cancelBtn.style.setProperty("--wa-color-on-normal", "var(--primary-text-color)");
+          cancelBtn.appearance = "plain";
           cancelBtn.label = tr.cancel_auto_install;
           cancelBtn.disabled = updateIsInstalling(this._dialogLastState);
           cancelBtn.addEventListener("click", () =>
@@ -2392,26 +2435,6 @@ class UpdateManagerPanel extends HTMLElement {
           );
           statusAlert.appendChild(cancelBtn);
           this._dialogActionButtons.push(cancelBtn);
-        }
-        // A real, user-initiated skip (see coordinator.py's own
-        // is_own_skip distinction -- our own staging_skip.py auto-skips
-        // never reach this status at all, they just read as "waiting") --
-        // one-click undo via HA's own real update.clear_skipped, not
-        // something you'd otherwise have to remember to do from HA's own
-        // device page instead.
-        if (u.status === "skipped") {
-          const unskipBtn = document.createElement("ha-progress-button");
-          unskipBtn.slot = "action";
-          unskipBtn.label = tr.dialog_unskip;
-          unskipBtn.disabled = updateIsInstalling(this._dialogLastState);
-          unskipBtn.addEventListener("click", () =>
-            _runProgressAction(unskipBtn, async () => {
-              await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
-              await this._afterDialogAction(entityId);
-            })
-          );
-          statusAlert.appendChild(unskipBtn);
-          this._dialogActionButtons.push(unskipBtn);
         }
         body.appendChild(statusAlert);
       }
@@ -2652,10 +2675,18 @@ class UpdateManagerPanel extends HTMLElement {
           markdown.content = entry.release_notes;
           expandWrap.appendChild(markdown);
         } else if (entry.release_summary) {
-          const notesEl = document.createElement("div");
-          notesEl.className = "dialog-history-notes";
-          notesEl.textContent = entry.release_summary;
-          expandWrap.appendChild(notesEl);
+          // ha-markdown, not a plain .textContent div -- found live,
+          // 2026-07-29 (screenshot): release_summary can itself contain
+          // real markup (e.g. HA Core's own "<ha-alert alert-type='error'>
+          // Restart of Home Assistant required</ha-alert>"), same as the
+          // pending-update's own release_summary fallback right above in
+          // this same dialog (see the showPendingUpdate section) already
+          // renders it. This History-tab path was the one place still
+          // showing that markup as literal, escaped text instead of a
+          // real rendered alert.
+          const markdown = document.createElement("ha-markdown");
+          markdown.content = entry.release_summary;
+          expandWrap.appendChild(markdown);
         }
         // A release_url with no full notes used to navigate away on click
         // instead (external-link icon, no expand) -- now just one more link
@@ -2734,106 +2765,171 @@ class UpdateManagerPanel extends HTMLElement {
     // scrolling and cramped-looking buttons: an unslotted sticky-positioned
     // div was landing inside ha-dialog's own scrollable body alongside
     // everything else instead of in its dedicated footer slot. Same real
-    // update.install/update.skip services HA's own dialog calls (verified
-    // against update/services.yaml, not guessed) -- More info and Skip are
-    // plain/text-style (secondary), Install is filled (primary, the one
-    // action that actually changes something right now).
+    // update.clear_skipped service HA's own dialog calls (verified
+    // against update/services.yaml, not guessed) -- Unskip/Skip are
+    // plain/text-style (secondary), Open update is the one filled
+    // (primary) action when it's actually the recommended next step
+    // (see canOpenUpdate below).
     const actions = document.createElement("div");
     actions.slot = "footer";
 
-    const moreInfoBtn = document.createElement("ha-progress-button");
-    moreInfoBtn.appearance = "plain";
-    moreInfoBtn.label = tr.dialog_more_info;
-    moreInfoBtn.addEventListener("click", () => {
-      dialog.open = false;
-      this._openMoreInfo(entityId);
-    });
-    actions.appendChild(moreInfoBtn);
-
-    // Same showPendingUpdate guard as the body content above -- no
-    // Skip/Install buttons for the entity's unrelated pending update either
-    // when this dialog was opened for one specific past History entry.
+    // Unskip specifically (not Cancel, see the status-alert block above --
+    // direct user feedback, 2026-07-29: Cancel belongs right next to the
+    // "will update automatically at X" text it actually cancels, moving
+    // it here made it read as closing the dialog rather than acting on
+    // that specific scheduled install) lives in the same footer as Skip,
+    // its own opposite action -- turning postponement-hiding on and off
+    // for this update belong in one consistent place.
     if (showPendingUpdate) {
-      // Already skipped: the alert's own "Clear skipped" button (see
-      // above) covers the only relevant action here, showing this too
-      // would just be a redundant, no-op way to skip an already-skipped
-      // update again. Install stays available either way (skipping
-      // doesn't prevent installing, it's only "don't bug me about this").
-      if (u.status !== "skipped") {
-        const skipBtn = document.createElement("ha-progress-button");
-        skipBtn.appearance = "plain";
-        skipBtn.label = tr.dialog_skip;
-        skipBtn.disabled = updateIsInstalling(this._dialogLastState);
-        skipBtn.addEventListener("click", () =>
-          _runProgressAction(skipBtn, async () => {
-            // update_manager/skip, not a plain hass.callService -- this
-            // entity might already be auto-skipped by our own
-            // hide_postponed feature (staging_skip.py), in which case a
-            // bare update.skip service call is a genuine no-op (skipped_
-            // version already equals latest_version) and nothing would
-            // visibly change. The websocket command also relinquishes
-            // staging_skip.py's own record first, so this explicit,
-            // user-initiated skip is actually reflected.
-            await this._hass.callWS({ type: "update_manager/skip", entity_id: entityId });
+      // A real, user-initiated skip (see coordinator.py's own
+      // is_own_skip distinction -- our own staging_skip.py auto-skips
+      // never reach this status at all, they just read as "waiting") --
+      // one-click undo via HA's own real update.clear_skipped, not
+      // something you'd otherwise have to remember to do from HA's own
+      // device page instead.
+      if (u.status === "skipped") {
+        const unskipBtn = document.createElement("ha-progress-button");
+        unskipBtn.appearance = "plain";
+        unskipBtn.label = tr.dialog_unskip;
+        unskipBtn.disabled = updateIsInstalling(this._dialogLastState);
+        unskipBtn.addEventListener("click", () =>
+          _runProgressAction(unskipBtn, async () => {
+            await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
             await this._afterDialogAction(entityId);
           })
         );
-        actions.appendChild(skipBtn);
-        this._dialogActionButtons.push(skipBtn);
-      }
-
-      if (u.installable) {
-        // A queued (not yet dispatched) Zigbee rollout entry can't jump
-        // the line from here either (no-override decision, see
-        // rollout_manager.py's own docstring): same "waiting for X" text
-        // the queue card itself shows, button disabled instead of a
-        // working Install.
-        const rolloutStatus = this._rolloutStatusFor(entityId);
-        const isQueued = !!(rolloutStatus && rolloutStatus.status === "queued");
-        const installBtn = document.createElement("ha-progress-button");
-        installBtn.appearance = "filled";
-        installBtn.label = isQueued
-          ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId))
-          : tr.dialog_install;
-        installBtn.disabled = isQueued || updateButtonIsDisabled(this._dialogLastState);
-        installBtn.progress = updateIsInstalling(this._dialogLastState);
-        this._dialogInstallBtn = installBtn;
-        // Fire-and-forget, not awaited before reacting -- matches
-        // more-info-update.ts's own _handleInstall exactly (confirmed
-        // against its real source): it doesn't await this call either.
-        // Direct user feedback: HA's own dialog shows a live progress bar
-        // and eventually the entity's new state right there, it doesn't
-        // just wait on the service call and then close -- some updates
-        // (e.g. a slow HAOS/add-on install) can run long after the
-        // service call itself returns, so gating our own UI on that
-        // promise either closed the dialog too early or left it stuck
-        // spinning for no visible reason. The button's own .progress/
-        // .disabled now instead track the entity's real in_progress/state
-        // attributes live (see _updateDialogProgress, driven by set hass),
-        // same as HA's own .loading=${updateIsInstalling(stateObj)}.
-        installBtn.addEventListener("click", () => {
-          const msg = { type: "update_manager/install", entity_id: entityId };
-          // UpdateEntityFeature.BACKUP = 8 (homeassistant/components/
-          // update/const.py) -- same condition install_manager.py's own
-          // auto-install already uses, kept consistent here.
-          if (state && (state.attributes.supported_features || 0) & 8) {
-            msg.backup = true;
-          }
-          // update_manager/install, not a plain hass.callService -- this
-          // entity might currently be postponed or skipped (either a real
-          // user skip, or our own hide_postponed auto-skip); the websocket
-          // command clears that immediately as part of installing, instead
-          // of leaving it looking postponed/skipped until the install
-          // itself finishes. Not awaited before reacting, same reasoning
-          // as before: the command dispatches update.install as its own
-          // task rather than blocking on the full install either.
-          this._hass.callWS(msg).catch((err) => {
-            this._showToast((err && err.message) || String(err));
-          });
-        });
-        actions.appendChild(installBtn);
+        actions.appendChild(unskipBtn);
+        this._dialogActionButtons.push(unskipBtn);
       }
     }
+
+    // Same showPendingUpdate guard as the body content above -- no Skip
+    // for the entity's unrelated pending update either when this dialog
+    // was opened for one specific past History entry. Only shown as a
+    // reaction to our own community-verdict signal (found by review,
+    // 2026-07-29, part of handing Install off to HA's own dialog below):
+    // shown unconditionally, Skip was just as much "namaak" of HA's own
+    // generic skip capability as Install was, now that "Open update"
+    // below gives access to HA's own Skip too -- it earns its place here
+    // specifically as a reaction to a reported problem on this exact
+    // jump, not as a bare, context-free convenience. Deliberately not the
+    // same condition as the "held back" alert above (which also checks
+    // auto_install_excluded/trusted_vote): Skip is a personal decision
+    // independent of whether auto-install would have happened anyway --
+    // even an always-manual Core/Supervisor/OS update, or one with a
+    // trusted-healthy override in play, can still be worth skipping
+    // yourself over a reported problem.
+    // Reuses communityProblematicCount (hoisted near the top of this
+    // method, alongside heldBackByCommunity) instead of re-deriving the
+    // same u.community_verdict.problematic_count independently a second
+    // time (found by code review, 2026-07-29) -- one shared fact, not two
+    // copies that could silently drift apart.
+    const hasProblematicVote = communityProblematicCount > 0;
+    if (showPendingUpdate && u.status !== "skipped" && hasProblematicVote) {
+      const skipBtn = document.createElement("ha-progress-button");
+      skipBtn.appearance = "plain";
+      skipBtn.label = tr.dialog_skip;
+      skipBtn.disabled = updateIsInstalling(this._dialogLastState);
+      skipBtn.addEventListener("click", () =>
+        _runProgressAction(skipBtn, async () => {
+          // update_manager/skip, not a plain hass.callService -- this
+          // entity might already be auto-skipped by our own
+          // hide_postponed feature (staging_skip.py), in which case a
+          // bare update.skip service call is a genuine no-op (skipped_
+          // version already equals latest_version) and nothing would
+          // visibly change. The websocket command also relinquishes
+          // staging_skip.py's own record first, so this explicit,
+          // user-initiated skip is actually reflected.
+          await this._hass.callWS({ type: "update_manager/skip", entity_id: entityId });
+          await this._afterDialogAction(entityId);
+        })
+      );
+      actions.appendChild(skipBtn);
+      this._dialogActionButtons.push(skipBtn);
+    }
+
+    // The primary action: hand off to HA's own real more-info-update
+    // dialog (its own Install button, live progress, and backup
+    // checkbox) instead of mimicking it ourselves -- direct user
+    // feedback, 2026-07-29: our own copy was "namaak", not a real
+    // addition, and re-implementing it is exactly what both real bugs
+    // this session (release_summary rendering raw HTML as literal text,
+    // a [hidden] CSS-specificity bug) had in common. "Open update" only
+    // when there's an actual pending, installable update to open (same
+    // condition the old Install button used); otherwise -- opened
+    // directly from the History tab, or a pending update that isn't
+    // installable at all, e.g. manual-flash-only firmware -- falls back
+    // to a plain, generic "More info", since there's nothing specific to
+    // "open" in either of those cases.
+    //
+    // Doesn't close this dialog first (changed from this button's own
+    // previous "More info" behavior -- no reason found in this file's
+    // history for why it used to): closing HA's own dialog should
+    // naturally reveal this one again underneath, instead of leaving the
+    // user back at the bare Updates list.
+    const canOpenUpdate = !!(showPendingUpdate && u.installable);
+    const openBtn = document.createElement("ha-progress-button");
+    if (canOpenUpdate) {
+      // A queued (not yet dispatched) Zigbee rollout entry can't jump the
+      // line from here either (no-override decision, see
+      // rollout_manager.py's own docstring): same "waiting for X" text
+      // the queue card itself shows, button disabled instead of opening
+      // HA's own dialog -- opening it would let someone install directly
+      // there, bypassing the whole point of pacing.
+      const rolloutStatus = this._rolloutStatusFor(entityId);
+      const isQueued = !!(rolloutStatus && rolloutStatus.status === "queued");
+      // "accent" (not "filled") for the genuinely strong/primary look --
+      // confirmed against ha-button's own real source: "filled" uses the
+      // softer --wa-color-fill-normal, "accent" the bolder --wa-color-
+      // fill-loud, exactly the "loud" variant meant for a page's one
+      // primary action. Direct user feedback, 2026-07-29, after seeing
+      // "filled" render as a pale, secondary-looking blue: "voelt
+      // secondair ipv primair." Only "accent" once this is actually ready
+      // -- "bij een update die ready is kan de open update knop wel
+      // gewoon primair zijn" -- while still waiting/skipped/blocked,
+      // encouraging manual install with the loudest button in the dialog
+      // would work against the whole point of staging in the first
+      // place. Still the exact same button either way, just quieter
+      // until there's actually something to act on now. Also plain, not
+      // accent, whenever heldBackByCommunity (found by code review,
+      // 2026-07-29): a "ready" update the community has flagged still had
+      // its loudest button inviting exactly the manual install the
+      // warning right above it is discouraging.
+      openBtn.appearance = u.status === "ready" && !heldBackByCommunity ? "accent" : "plain";
+      openBtn.label = isQueued
+        ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId))
+        : tr.dialog_open_update;
+      openBtn.disabled = isQueued || updateButtonIsDisabled(this._dialogLastState);
+    } else {
+      openBtn.appearance = "plain";
+      openBtn.label = tr.dialog_more_info;
+    }
+    openBtn.addEventListener("click", () => {
+      // A rollout-group member (any status, not just "queued") installs
+      // via update_manager/install directly instead of opening HA's own
+      // dialog -- found by code review, 2026-07-29: rollout_manager.py's
+      // own pacing is only ever consulted through that websocket command
+      // (see websocket_api.py's own _handle_install); HA's real dialog
+      // calls update.install directly, completely invisible to it. Two
+      // identical Zigbee devices could otherwise both install at once by
+      // going through HA's own dialog one after the other, exactly the
+      // mesh-instability scenario this whole feature exists to prevent --
+      // isQueued alone (disabling the button while waiting your turn)
+      // wasn't enough, since a *not yet queued* member handing off to
+      // HA's dialog was just as capable of racing a sibling that starts
+      // installing microseconds later.
+      const rolloutStatus = canOpenUpdate ? this._rolloutStatusFor(entityId) : null;
+      if (canOpenUpdate && rolloutStatus && rolloutStatus.status !== "queued") {
+        _runProgressAction(openBtn, async () => {
+          const msg = { type: "update_manager/install", entity_id: entityId };
+          if (state && (state.attributes.supported_features || 0) & 8) msg.backup = true;
+          await this._hass.callWS(msg);
+        });
+        return;
+      }
+      this._openMoreInfo(entityId);
+    });
+    actions.appendChild(openBtn);
 
     dialog.appendChild(actions);
 
@@ -3303,7 +3399,7 @@ class UpdateManagerPanel extends HTMLElement {
         controlsContainer.appendChild(prompt);
         return;
       }
-      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, (verdict) => {
+      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, myVerdict, (verdict) => {
         applyMyVerdictRow(verdictRow, verdictText, tr, verdict);
         updateAggregateRow(verdict);
       });
@@ -3359,7 +3455,14 @@ class UpdateManagerPanel extends HTMLElement {
   // successful vote, a flat contradiction. Updates that row locally too,
   // same "don't wait on the real external count" principle as
   // showConfirmed itself already uses.
-  _buildVoteControls(container, tr, entityId, version, allowHealthy, onVoted) {
+  // myVerdict: your own already-cast verdict for this exact jump, if any
+  // (found by review, 2026-07-29, direct user feedback: "waarom zie ik
+  // dan nog steeds de 'mark as healthy' knop? Dat heb ik toch al gedaan" --
+  // this method used to always build both options fresh, with no idea
+  // whether you'd already voted at all). The button matching your current
+  // vote is omitted (re-submitting the exact same verdict has nothing to
+  // add); the other one stays, so changing your mind is still one click.
+  _buildVoteControls(container, tr, entityId, version, allowHealthy, myVerdict, onVoted) {
     const showConfirmed = (text) => {
       container.innerHTML = "";
       const confirmed = document.createElement("p");
@@ -3384,7 +3487,7 @@ class UpdateManagerPanel extends HTMLElement {
     const formContainer = document.createElement("div");
     formContainer.hidden = true;
 
-    if (allowHealthy) {
+    if (allowHealthy && myVerdict !== "healthy") {
       const healthyBtn = document.createElement("ha-progress-button");
       healthyBtn.appearance = "filled";
       healthyBtn.label = tr.community_vote_healthy;
@@ -3398,8 +3501,19 @@ class UpdateManagerPanel extends HTMLElement {
       container.appendChild(healthyBtn);
     }
 
+    // Always available, regardless of myVerdict -- unlike healthyBtn above
+    // (reverted 2026-07-29, direct user feedback: hiding this once already
+    // problematic blocked updating the reason/notes/link, or switching
+    // from healthy to problematic, with no way back in either case). A
+    // problematic vote always has real fields worth revisiting; a healthy
+    // one never does, hence the difference in treatment.
+    //
+    // Filled, not plain (changed 2026-07-29, direct user feedback: this
+    // is an action we genuinely want people to take, a soft-background
+    // button reads as more inviting/actionable than a bare text link,
+    // matching healthyBtn's own visual weight right next to it).
     const toggleBtn = document.createElement("ha-button");
-    toggleBtn.appearance = "plain";
+    toggleBtn.appearance = "filled";
     toggleBtn.textContent = allowHealthy ? tr.community_vote_problematic : tr.community_report_toggle;
     toggleBtn.addEventListener("click", () => {
       formContainer.hidden = !formContainer.hidden;
@@ -3414,8 +3528,8 @@ class UpdateManagerPanel extends HTMLElement {
       formContainer.appendChild(intro);
     }
 
-    // Reason options limited to the three release-notes-knowable ones for
-    // Journey A (see this method's own docstring above) -- "broken
+    // Reason options limited to the three release-notes-knowable ones
+    // for Journey A (see this method's own docstring above) -- "broken
     // functionality" and "other" both require having actually run the
     // version, which Journey A's caller never has.
     const reasonOptions = (allowHealthy ? _JOURNEY_B_REASON_ORDER : _JOURNEY_A_REASON_ORDER).map((value) => ({
@@ -3703,6 +3817,17 @@ class UpdateManagerPanel extends HTMLElement {
       }
       hass-tabs-subpage { display: block; height: 100%; }
 
+      /* Plain <a> tags this panel builds by hand (release-announcement/
+         reason/verification links) used to fall back to the browser's own
+         default link color (blue) instead of HA's own -- confirmed
+         against more-info-update.ts's own real source (its static styles,
+         not guessed): its own "a" rule is exactly this one line, color
+         only, underline untouched. ha-markdown's own internal links are
+         unaffected -- that's a separate custom element with its own
+         shadow root, this rule only ever reaches plain <a> elements
+         sitting directly in this panel's own shadow tree. */
+      a { color: var(--primary-color); }
+
       .icon-btn {
         border: none; background: none; color: inherit; cursor: pointer;
         display: flex; align-items: center; justify-content: center;
@@ -3965,12 +4090,6 @@ class UpdateManagerPanel extends HTMLElement {
         font-family: var(--ha-font-family-code, monospace); font-size: var(--ha-font-size-2xl, 28px);
         letter-spacing: 0.15em; margin: var(--ha-space-2, 8px) 0;
       }
-      /* Empty (and invisible) whenever nothing's installing -- only ever
-         holds a single ha-progress-bar, inserted/removed live by
-         _updateDialogProgress, same spot more-info-update.ts's own
-         in_progress bar occupies (top of its content). */
-      .dialog-progress:empty { display: none; }
-      .dialog-progress ha-progress-bar { margin-bottom: var(--ha-space-4, 16px); }
       /* state-info (icon+name) and .state, exactly the pair state-card-
          update.ts itself renders side by side for every update entity's
          more-info header -- verified against its real source, including
@@ -4004,10 +4123,6 @@ class UpdateManagerPanel extends HTMLElement {
          unification means there's no longer a plain-fallback row without
          one to account for separately. */
       .dialog-history-card { padding: 0; font-size: var(--ha-font-size-s, 13px); }
-      .dialog-history-notes {
-        color: var(--secondary-text-color); margin-top: var(--ha-space-2, 8px);
-        white-space: pre-wrap;
-      }
       /* font-size reset, not inherited: .dialog-history-card shrinks its
          whole content area to 13px (a deliberately compact timeline row),
          which would otherwise also shrink ha-list-item-button's own

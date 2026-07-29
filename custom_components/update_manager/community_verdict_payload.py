@@ -105,30 +105,67 @@ def other_jumps_from_payload(payload: dict[str, Any] | None, from_version: str) 
     return others[:MAX_OTHER_JUMPS]
 
 
-def problematic_reasons_from_payload(payload: dict[str, Any] | None, from_version: str) -> list[dict[str, Any]]:
-    """Every problematic voter's own reason for my exact jump, most recent
-    first, capped like other_jumps_from_payload above. reason_category/
-    notes/link are collected at submission time (vote_issue_body.py, the
-    panel's own vote dialog) and are persisted per-voter upstream
-    (community-votes' process-vote.yml writes them straight into each
-    jump.votes[username] entry), but no function in this module used to
-    read anything past the bare verdict string -- a vote's reason was
-    write-only from this integration's own perspective. Direct user
-    feedback, 2026-07-29: "ik zie in de interface nergens de reden staan.
-    Dat had ik wel verwacht." """
+def _reason_entry(username: str, entry: dict[str, Any]) -> dict[str, Any]:
+    """The shared shape both problematic_reasons_from_payload and
+    my_problematic_reason_from_payload return per voter."""
+    return {
+        "username": username,
+        "reason_category": entry.get("reason_category"),
+        "notes": entry.get("notes"),
+        "link": entry.get("link"),
+        "created_at": entry.get("created_at"),
+    }
+
+
+def problematic_reasons_from_payload(
+    payload: dict[str, Any] | None, from_version: str, *, exclude_username: str | None = None
+) -> list[dict[str, Any]]:
+    """Every *other* problematic voter's own reason for my exact jump, most
+    recent first, capped like other_jumps_from_payload above.
+    reason_category/notes/link are collected at submission time
+    (vote_issue_body.py, the panel's own vote dialog) and are persisted
+    per-voter upstream (community-votes' process-vote.yml writes them
+    straight into each jump.votes[username] entry), but no function in
+    this module used to read anything past the bare verdict string -- a
+    vote's reason was write-only from this integration's own perspective.
+    Direct user feedback, 2026-07-29: "ik zie in de interface nergens de
+    reden staan. Dat had ik wel verwacht."
+
+    exclude_username is filtered out *before* sorting/capping, not after
+    (found by review, 2026-07-29): filtering the caller's own username out
+    of an already-capped result could silently drop it entirely whenever
+    MAX_PROBLEMATIC_REASONS or more other people voted more recently --
+    my_reason would then come back empty even though a real reason exists,
+    the exact duplication bug this same field was built to fix in the
+    first place. Use my_problematic_reason_from_payload below for that
+    caller's own reason instead, a direct lookup with no cap to fall
+    afoul of."""
     if not payload:
         return []
     votes = payload.get("jumps", {}).get(from_version, {}).get("votes", {})
     reasons = [
-        {
-            "username": username,
-            "reason_category": entry.get("reason_category"),
-            "notes": entry.get("notes"),
-            "link": entry.get("link"),
-            "created_at": entry.get("created_at"),
-        }
+        _reason_entry(username, entry)
         for username, entry in votes.items()
-        if entry.get("verdict") == "problematic"
+        if entry.get("verdict") == "problematic" and username != exclude_username
     ]
     reasons.sort(key=lambda r: r["created_at"] or "", reverse=True)
     return reasons[:MAX_PROBLEMATIC_REASONS]
+
+
+def my_problematic_reason_from_payload(
+    payload: dict[str, Any] | None, from_version: str, username: str | None
+) -> dict[str, Any] | None:
+    """One specific username's own problematic-vote reason for my exact
+    jump, or None if they have no vote at all or it isn't problematic --
+    a direct lookup, deliberately independent of
+    problematic_reasons_from_payload's own top-N cap (see that function's
+    own docstring for why: capping first and filtering for "mine" after
+    could silently lose your own reason once enough other, more recent
+    votes exist)."""
+    if not payload or not username:
+        return None
+    votes = payload.get("jumps", {}).get(from_version, {}).get("votes", {})
+    entry = votes.get(username)
+    if not entry or entry.get("verdict") != "problematic":
+        return None
+    return _reason_entry(username, entry)

@@ -288,3 +288,72 @@ class TestProblematicReasonsFromPayload:
         assert len(reasons) == community_verdict_payload.MAX_PROBLEMATIC_REASONS
         # Most recent kept, not an arbitrary/first-N slice.
         assert [r["username"] for r in reasons] == ["voter9", "voter8", "voter7", "voter6", "voter5"]
+
+    def test_exclude_username_filters_before_capping_not_after(self):
+        # Found by review, 2026-07-29: excluding a username from an
+        # already-capped result could silently lose it if it wasn't
+        # already in the top MAX_PROBLEMATIC_REASONS -- exclude_username
+        # must remove it *before* the cap, so the cap always keeps
+        # MAX_PROBLEMATIC_REASONS genuinely-other reasons, not one fewer.
+        votes = {
+            f"voter{i}": {"verdict": "problematic", "created_at": f"2026-07-{i + 1:02d}T00:00:00+00:00"}
+            for i in range(10)
+        }
+        # "me" is the single most recent vote -- if exclusion happened
+        # after capping, this test would still pass by accident (it'd
+        # never have been in the top 5 anyway); the real assertion is that
+        # the cap still yields a full 5 *other* people, not 4.
+        votes["me"] = {"verdict": "problematic", "created_at": "2026-07-11T00:00:00+00:00"}
+        payload = _payload(**{"3.5.1": {"votes": votes, "verdict": {}}})
+        reasons = community_verdict_payload.problematic_reasons_from_payload(
+            payload, "3.5.1", exclude_username="me"
+        )
+        assert len(reasons) == community_verdict_payload.MAX_PROBLEMATIC_REASONS
+        assert "me" not in [r["username"] for r in reasons]
+
+    def test_exclude_username_none_keeps_everyone(self):
+        payload = _payload(**{"3.5.1": {"votes": {"alice": {"verdict": "problematic"}}, "verdict": {}}})
+        reasons = community_verdict_payload.problematic_reasons_from_payload(payload, "3.5.1", exclude_username=None)
+        assert [r["username"] for r in reasons] == ["alice"]
+
+
+class TestMyProblematicReasonFromPayload:
+    def test_none_when_payload_is_none(self):
+        assert community_verdict_payload.my_problematic_reason_from_payload(None, "3.5.1", "alice") is None
+
+    def test_none_when_username_is_none(self):
+        payload = _payload(**{"3.5.1": {"votes": {"alice": {"verdict": "problematic"}}, "verdict": {}}})
+        assert community_verdict_payload.my_problematic_reason_from_payload(payload, "3.5.1", None) is None
+
+    def test_none_when_username_never_voted(self):
+        payload = _payload(**{"3.5.1": {"votes": {"alice": {"verdict": "problematic"}}, "verdict": {}}})
+        assert community_verdict_payload.my_problematic_reason_from_payload(payload, "3.5.1", "bob") is None
+
+    def test_none_when_username_voted_healthy_not_problematic(self):
+        payload = _payload(**{"3.5.1": {"votes": {"alice": {"verdict": "healthy"}}, "verdict": {}}})
+        assert community_verdict_payload.my_problematic_reason_from_payload(payload, "3.5.1", "alice") is None
+
+    def test_returns_reason_regardless_of_how_many_others_voted_more_recently(self):
+        # The exact scenario the capped list would get wrong: 5 other
+        # people voted problematic more recently than "me" -- a search
+        # over problematic_reasons_from_payload's own capped top-5 would
+        # never find "me" here, but this direct lookup still does.
+        votes = {
+            f"voter{i}": {"verdict": "problematic", "created_at": f"2026-07-{i + 20:02d}T00:00:00+00:00"}
+            for i in range(5)
+        }
+        votes["me"] = {
+            "verdict": "problematic",
+            "reason_category": "breaking change",
+            "notes": "my own notes",
+            "link": None,
+            "created_at": "2026-07-01T00:00:00+00:00",
+        }
+        payload = _payload(**{"3.5.1": {"votes": votes, "verdict": {}}})
+        assert community_verdict_payload.my_problematic_reason_from_payload(payload, "3.5.1", "me") == {
+            "username": "me",
+            "reason_category": "breaking change",
+            "notes": "my own notes",
+            "link": None,
+            "created_at": "2026-07-01T00:00:00+00:00",
+        }

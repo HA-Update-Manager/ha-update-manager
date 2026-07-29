@@ -194,7 +194,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> bool:
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    # Reset on success, found by code review, 2026-07-29: unlike the old
+    # hass.data.pop(DOMAIN, None) this replaced, nothing was clearing
+    # runtime_data itself back to None after an unload. websocket_api.py's
+    # own _get_entry resolves the entry via hass.config_entries.async_entries,
+    # which returns it regardless of load state, so _get_data would still
+    # return the stale, already-stopped UpdateManagerData from before the
+    # unload instead of None -- any websocket call arriving during that
+    # window (e.g. from a panel tab left open) would silently operate on
+    # managers whose own async_stop already ran, instead of hitting the
+    # "not set up" guard every handler already has for the genuinely
+    # pre-setup case.
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unloaded:
+        entry.runtime_data = None
+    return unloaded
 
 
 async def update_listener(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> None:
