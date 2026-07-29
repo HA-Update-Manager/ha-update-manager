@@ -562,6 +562,19 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     else:
         verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons = (None, [], None, [], [])
         my_verdict = None
+    # Your own reason (if you voted problematic and gave one) split out from
+    # the rest, found by review, 2026-07-29: the dialog already shows "You
+    # reported this jump as problematic" as its own fact, so your own reason
+    # showing up a second time, anonymously, in the generic reasons list read
+    # as a confusing, unattributed duplicate of information already given.
+    # The same linked_username _async_resolve_my_verdict's own fallback path
+    # already needs is reused here, no extra lookup.
+    my_reason = None
+    username = data.github_auth_manager.linked_username if data else None
+    if username:
+        my_reason = next((r for r in problematic_reasons if r["username"] == username), None)
+        if my_reason:
+            problematic_reasons = [r for r in problematic_reasons if r["username"] != username]
     connection.send_result(
         msg["id"],
         {
@@ -580,11 +593,16 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
             # available for an arbitrary History entry's jump.
             "trusted_vote": trusted_vote,
             "trusted_voters_matched": trusted_voters_matched,
-            # Every problematic voter's own reason_category/notes/link for
-            # my own jump (direct user feedback, 2026-07-29): a vote's
-            # reason used to be write-only, collected on submission but
-            # never read back anywhere.
+            # Every *other* problematic voter's own reason_category/notes/
+            # link for my own jump (direct user feedback, 2026-07-29): a
+            # vote's reason used to be write-only, collected on submission
+            # but never read back anywhere. Excludes your own (see
+            # my_reason below).
             "problematic_reasons": problematic_reasons,
+            # Your own reason, split out above -- shown attached to your own
+            # "You reported this jump as problematic" row instead of buried,
+            # unattributed, in the general list.
+            "my_reason": my_reason,
         },
     )
 

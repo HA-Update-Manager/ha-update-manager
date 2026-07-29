@@ -2,6 +2,44 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.1] - 2026-07-29
+
+Small fixes to the Community section and auto-install messaging added in 0.4.0:
+- Fixed a rare case where the Community section could show contradictory information at once ("No one's
+  reported" next to "N people reported").
+- Your own reported reason no longer shows up a second time, unattributed, in the reasons list.
+- A trusted voter's own reason is now clearly labeled as such, instead of blending in anonymously.
+- The Settings tab's "Trusted voters" explanation now matches actual behavior: blocking a problematic
+  update doesn't require a trusted voter at all.
+
+### Fixed
+- The Community section could show a contradictory pileup: "No one's reported on this jump yet." right
+  above "N people reported this jump as healthy/problematic." and a trusted-vote line for the same jump.
+  Same root cause as an already-fixed sibling bug in `.dialog-community-section` (found 2026-07-22): a
+  bare `.dialog-community-verdict-line { display: flex; ... }` CSS rule ties the browser's own `[hidden]`
+  rule in specificity and wins by coming later in the cascade, so `verdictRow.hidden = true` (set when you
+  have no vote of your own but others do, since the aggregate row below already covers that case) silently
+  never actually hid the row. Its stale "not yet rated" placeholder text (set at build time, before the
+  real fetch resolves) stayed visible, contradicting the aggregate/trusted-vote rows correctly rendered
+  right below it. Fixed the same way as the sibling bug: `.dialog-community-verdict-line:not([hidden])`.
+- Dutch `community_verdict_mixed` ("N meldden dit gezond, M problematisch", shown when you haven't voted
+  yourself but others gave a mixed verdict) always used the plural verb form ("melden"), even for a count
+  of exactly 1 healthy vote, unlike its own `others`-perspective sibling which already conjugated
+  correctly. Found while auditing every Community-section scenario after the bug above.
+- Your own problematic vote's own reported reason showed up a second time, unattributed, in the generic
+  "Reported reasons" list right below "You reported this jump as problematic," reading as if someone else
+  independently reported the exact same thing. Split server-side (the linked GitHub username was already
+  resolved there anyway) into its own `my_reason`, shown attached to your own vote line instead; the
+  generic list now only ever lists *other* people's reasons.
+- A reason from a configured trusted voter was indistinguishable from anyone else's in that same list,
+  with no link back to the separate "Trusted vote: @name..." line already shown above it, even though
+  it's the exact same vote. Now labeled "Trusted voter: <reason>".
+- The Settings tab's own "Trusted voters" helper text still described its pre-0.4.0 behavior ("problematic
+  always blocks auto-install"), reading as if blocking required a trusted voter at all. Reworded to lead
+  with what naming someone actually still uniquely does (a healthy vote force-installs), and to state that
+  blocking already works for anyone's problematic vote regardless of this list; the "Auto-install" card's
+  own intro line gained the same clarification.
+
 ## [0.4.0] - 2026-07-29
 
 **Auto-install now stops itself when the community reports a problem**

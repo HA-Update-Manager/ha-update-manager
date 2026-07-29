@@ -187,10 +187,10 @@ const TRANSLATIONS = {
     field_hide_postponed_helper:
       "Marks a postponed update as skipped in Home Assistant itself until it's actually ready. Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
     auto_install_section_desc:
-      "The postponement/auto-install rules above apply per size. Everything below (announcement notice, always-manual entities, trusted voters) applies regardless.",
+      "The postponement/auto-install rules above apply per size. Everything below (announcement notice, always-manual entities, trusted voters) applies regardless of size. Also regardless of any setting here: any problematic community vote on a version jump already blocks auto-install for it, with or without a trusted voter configured.",
     field_trusted_voters: "Trusted voters",
     field_trusted_voters_helper:
-      "GitHub usernames whose community vote (see the Community section in a version's own dialog) overrides your own rules for that exact version jump: healthy always auto-installs it, problematic always blocks auto-install, even if a size's own rules above say otherwise. If more than one is listed and they disagree on the same jump, a problematic vote wins.",
+      "GitHub usernames whose healthy community vote (see the Community section in a version's own dialog) auto-installs that exact version jump immediately, skipping your own rules above entirely. Blocking doesn't need this list at all: any problematic vote, from anyone, already does that on its own (see above). If more than one trusted voter disagrees on the same jump, a problematic vote still wins.",
     announce_hours_label: "Announcement notice (hours)",
     announce_hours_helper:
       "How long you have to cancel a scheduled automatic install (Updates tab) before it actually happens, once the postponement period is over.",
@@ -214,6 +214,7 @@ const TRANSLATIONS = {
     // several, this avoids needing a separate singular/plural form.
     community_trusted_vote_healthy: (names) => `Trusted vote: ${names} reported this jump as healthy.`,
     community_trusted_vote_problematic: (names) => `Trusted vote: ${names} reported this jump as problematic.`,
+    community_trusted_voter_label: "Trusted voter",
     community_other_jumps_heading: "Other jumps to this version",
     community_other_jump_line: (fromVersion, badgeTitle) => `From ${fromVersion}: ${badgeTitle}`,
     community_problematic_reasons_heading: "Reported reasons",
@@ -429,10 +430,10 @@ const TRANSLATIONS = {
     field_auto_install: "Automatisch updaten",
     auto_install_section_title: "Auto-update",
     auto_install_section_desc:
-      "De uitstel-/auto-installatieregels hierboven gelden per grootte. Alles hieronder (aankondigingstermijn, altijd-handmatige entiteiten, vertrouwde stemmers) geldt sowieso.",
+      "De uitstel-/auto-installatieregels hierboven gelden per grootte. Alles hieronder (aankondigingstermijn, altijd-handmatige entiteiten, vertrouwde stemmers) geldt sowieso, ongeacht grootte. Ook ongeacht elke instelling hier: een problematische community-stem op een sprong blokkeert auto-installatie daarvoor al, met of zonder vertrouwde stemmer.",
     field_trusted_voters: "Vertrouwde stemmers",
     field_trusted_voters_helper:
-      "GitHub-gebruikersnamen wiens community-stem (zie de sectie Community in de dialoog van een versie) je eigen regels overstemt voor precies die sprong: gezond installeert 'm altijd automatisch, problematisch blokkeert auto-installatie altijd, ook als een grootte's eigen regels hierboven iets anders zeggen. Staan er meerdere in de lijst en zijn ze het niet eens over dezelfde sprong, dan wint een problematische stem.",
+      "GitHub-gebruikersnamen wiens gezonde community-stem (zie de sectie Community in de dialoog van een versie) die exacte sprong meteen automatisch installeert, ongeacht je eigen regels hierboven. Blokkeren hoeft niet via deze lijst: elke problematische stem, van wie dan ook, doet dat al op zichzelf (zie hierboven). Staan er meerdere vertrouwde stemmers in de lijst en zijn ze het niet eens over dezelfde sprong, dan wint een problematische stem alsnog.",
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper:
       "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
@@ -450,6 +451,7 @@ const TRANSLATIONS = {
       `Vertrouwde stem: deze sprong is door ${names} als probleemloos beoordeeld.`,
     community_trusted_vote_problematic: (names) =>
       `Vertrouwde stem: deze sprong is door ${names} als problematisch beoordeeld.`,
+    community_trusted_voter_label: "Vertrouwde stemmer",
     community_other_jumps_heading: "Andere sprongen naar deze versie",
     community_other_jump_line: (fromVersion, badgeTitle) => `Van ${fromVersion}: ${badgeTitle}`,
     community_problematic_reasons_heading: "Gerapporteerde redenen",
@@ -534,7 +536,7 @@ const TRANSLATIONS = {
     community_verdict_problematic: (count) =>
       `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als problematisch.`,
     community_verdict_mixed: (healthyCount, problematicCount) =>
-      `${healthyCount} melden deze sprong als probleemloos, ${problematicCount} als problematisch.`,
+      `${healthyCount} ${healthyCount === 1 ? "persoon meldt" : "mensen melden"} deze sprong als probleemloos, ${problematicCount} als problematisch.`,
     community_verdict_others_healthy: (count) =>
       `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos.`,
     community_verdict_others_problematic: (count) =>
@@ -917,6 +919,42 @@ function buildVerdictLineRow(iconPath, text, title) {
   row.appendChild(icon);
   row.appendChild(span);
   return row;
+}
+
+// One problematic vote's own reported reason (category/notes/link) as a
+// single grouped block -- shared by both the generic "Reported reasons"
+// list and your own reason attached right under your own vote line (see
+// _buildCommunitySection), found by review, 2026-07-29 while auditing the
+// whole Community section for overlap/redundancy: this used to be built
+// twice with near-identical code. `trusted` marks a reason from a
+// configured trusted voter (cross-checked against trusted_voters_matched,
+// already available client-side, no extra fetch) so it reads as clearly
+// the same vote the separate "Trusted vote: @name..." line above is
+// about, instead of an unattributed, seemingly unrelated entry in the list.
+function buildReasonItem(tr, reason, { trusted } = {}) {
+  const baseLabel = (reason.reason_category && tr[_VOTE_REASON_LABEL_KEYS[reason.reason_category]]) || tr.vote_reason_other;
+  const categoryLabel = trusted ? `${tr.community_trusted_voter_label}: ${baseLabel}` : baseLabel;
+  const item = document.createElement("div");
+  item.className = "community-reason-item";
+  item.appendChild(buildVerdictLineRow(ICON_ALERT, categoryLabel));
+  if (reason.notes) {
+    const notes = document.createElement("p");
+    notes.className = "hint";
+    notes.textContent = reason.notes;
+    item.appendChild(notes);
+  }
+  if (reason.link) {
+    const linkRow = document.createElement("p");
+    linkRow.className = "hint";
+    const link = document.createElement("a");
+    link.href = reason.link;
+    link.target = "_blank";
+    link.rel = "noreferrer";
+    link.textContent = reason.link;
+    linkRow.appendChild(link);
+    item.appendChild(linkRow);
+  }
+  return item;
 }
 
 // A second, independent pill (see _buildListRow's own verdictBadgeInfo
@@ -3170,6 +3208,22 @@ class UpdateManagerPanel extends HTMLElement {
       };
       updateAggregateRow(myVerdict);
 
+      // Your own reason (only when you voted problematic and gave one),
+      // right under your own vote line -- found by review, 2026-07-29,
+      // auditing the whole section for overlap/redundancy: it used to show
+      // up a second time, unattributed, in the generic reasons list below,
+      // reading as a confusing, seemingly-unrelated extra entry rather than
+      // detail on the vote already named right above it. Split server-side
+      // (websocket_api.py's own linked_username, already resolved for
+      // my_verdict anyway) since only the backend knows your own username.
+      // Inserted right after whatever's currently last of verdictRow/
+      // aggregateRow, not a fixed position, so it lands after "N others
+      // reported..." if that row exists, or directly after your own vote
+      // line if it doesn't.
+      if (result.my_reason) {
+        infoGroup.insertBefore(buildReasonItem(tr, result.my_reason), (aggregateRow || verdictRow).nextSibling);
+      }
+
       // Whether a configured trusted voter is among the people who voted
       // on this exact jump -- direct user feedback, 2026-07-27 ("toevallig
       // mijn trusted voter die heeft gestemd, maar dat zie ik niet terug"),
@@ -3215,53 +3269,28 @@ class UpdateManagerPanel extends HTMLElement {
         });
       }
 
-      // Every problematic voter's own reason for this exact jump -- direct
+      // Every *other* problematic voter's own reason for this exact jump
+      // (your own, if any, is already handled above as my_reason) -- direct
       // user feedback, 2026-07-29: "ik zie in de interface nergens de
       // reden staan. Dat had ik wel verwacht." A vote's reason was
       // collected on submission (see _buildVoteControls/_VOTE_REASON_LABEL_KEYS
       // below) but never read back anywhere until now; reusing that same
       // label map here so the vocabulary reads identically going in and
-      // coming back out. No "@username:" prefix (changed after a
-      // screenshot showed it live, 2026-07-29): your own vote is already
-      // named right above ("You reported this jump as problematic"), so
-      // this list echoing your own username back at you read as
-      // redundant clutter rather than new information -- the reason
-      // itself is the useful part, not who reported it. Each reason gets
-      // its own wrapper div (.community-reason-item, styled below) rather
-      // than appending category/notes/link as loose flat siblings, so
-      // multiple reasons don't visually run together and a reason's own
-      // notes/link read as clearly grouped under its own category line.
-      // Nothing rendered when there aren't any yet, same reasoning as
-      // other_jumps above.
+      // coming back out. A reason from a configured trusted voter is marked
+      // as such (found by review, same audit as my_reason above): otherwise
+      // it read as an unattributed, seemingly unrelated entry with no link
+      // back to the "Trusted vote: @name..." line already shown above it,
+      // even though it's the exact same vote. Nothing rendered when there
+      // aren't any yet, same reasoning as other_jumps above.
       if (result.problematic_reasons && result.problematic_reasons.length) {
         const reasonsHeading = document.createElement("p");
         reasonsHeading.className = "hint";
         reasonsHeading.textContent = tr.community_problematic_reasons_heading;
         infoGroup.appendChild(reasonsHeading);
+        const trustedUsernames = result.trusted_voters_matched || [];
         result.problematic_reasons.forEach((reason) => {
-          const categoryLabel =
-            (reason.reason_category && tr[_VOTE_REASON_LABEL_KEYS[reason.reason_category]]) || tr.vote_reason_other;
-          const item = document.createElement("div");
-          item.className = "community-reason-item";
-          item.appendChild(buildVerdictLineRow(ICON_ALERT, categoryLabel));
-          if (reason.notes) {
-            const notes = document.createElement("p");
-            notes.className = "hint";
-            notes.textContent = reason.notes;
-            item.appendChild(notes);
-          }
-          if (reason.link) {
-            const linkRow = document.createElement("p");
-            linkRow.className = "hint";
-            const link = document.createElement("a");
-            link.href = reason.link;
-            link.target = "_blank";
-            link.rel = "noreferrer";
-            link.textContent = reason.link;
-            linkRow.appendChild(link);
-            item.appendChild(linkRow);
-          }
-          infoGroup.appendChild(item);
+          const trusted = trustedUsernames.includes(reason.username);
+          infoGroup.appendChild(buildReasonItem(tr, reason, { trusted }));
         });
       }
 
@@ -3897,7 +3926,17 @@ class UpdateManagerPanel extends HTMLElement {
          other-jump row all ran together as one dense block with no visual
          cue that "other jumps" starts a new, separate list. */
       .dialog-community-info > .hint { margin-top: var(--ha-space-2, 8px); }
-      .dialog-community-verdict-line { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
+      /* :not([hidden]), same reasoning as .dialog-community-section above
+         (found live there 2026-07-22, same bug independently found here via
+         a screenshot 2026-07-29): a bare class selector ties the UA's own
+         [hidden] rule in specificity and wins by coming later in the
+         cascade, so verdictRow.hidden = true (_buildCommunitySection, for
+         "you have no vote of your own, but others do -- the aggregate row
+         below already covers it") silently failed to hide anything, leaving
+         its stale "No one's reported on this jump yet." placeholder text
+         (set at build time, before the real fetch resolves) visibly
+         contradicting the aggregate/trusted-vote rows right below it. */
+      .dialog-community-verdict-line:not([hidden]) { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       .dialog-community-verdict-line ha-svg-icon { --mdc-icon-size: 18px; flex-shrink: 0; }
       /* Each reported problematic reason (category line + its own optional
          notes/link) as one visually grouped block -- direct user feedback,
