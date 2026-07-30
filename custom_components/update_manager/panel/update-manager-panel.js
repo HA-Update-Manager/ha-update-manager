@@ -229,8 +229,17 @@ const TRANSLATIONS = {
     // rejected, 2026-07-23, direct user feedback ("kan ik wel mijn stem
     // wijzigen?") -- said plainly here instead of leaving the previous
     // vote's confirmation text up as if this were the first time.
-    community_vote_confirmed_healthy: (updated) =>
-      updated ? "Vote updated to healthy." : "Marked as healthy. Thanks for helping others decide.",
+    // ownRepoHealthyVote (see websocket_api.py's own is_own_repo_healthy_vote):
+    // mirrors community-votes' own "asymmetric weight for the repo owner"
+    // rule -- a maintainer's own healthy vote on their own release is
+    // recorded but never counts toward the tally, so said here instead of
+    // showing a generic confirmation the standing then silently contradicts.
+    community_vote_confirmed_healthy: (updated, ownRepoHealthyVote) => {
+      if (ownRepoHealthyVote) {
+        return "Marked as healthy. As the maintainer, this doesn't count toward the community tally, but thanks!";
+      }
+      return updated ? "Vote updated to healthy." : "Marked as healthy. Thanks for helping others decide.";
+    },
     community_vote_confirmed_problematic: (reason, updated) =>
       updated ? `Vote updated to problematic: ${reason}.` : `Reported: ${reason}. Thanks for the heads-up.`,
     community_vote_reason_required: "Pick a reason first.",
@@ -461,8 +470,12 @@ const TRANSLATIONS = {
     community_vote_healthy: "Markeer als probleemloos",
     community_vote_problematic: "Meld als problematisch",
     community_vote_submit: "Versturen",
-    community_vote_confirmed_healthy: (updated) =>
-      updated ? "Stem gewijzigd naar probleemloos." : "Gemarkeerd als probleemloos. Bedankt dat je anderen hiermee helpt.",
+    community_vote_confirmed_healthy: (updated, ownRepoHealthyVote) => {
+      if (ownRepoHealthyVote) {
+        return "Gemarkeerd als probleemloos. Als maker telt dit niet mee voor de community-telling, maar toch bedankt!";
+      }
+      return updated ? "Stem gewijzigd naar probleemloos." : "Gemarkeerd als probleemloos. Bedankt dat je anderen hiermee helpt.";
+    },
     community_vote_confirmed_problematic: (reason, updated) =>
       updated ? `Stem gewijzigd naar problematisch: ${reason}.` : `Gemeld: ${reason}. Bedankt voor de tip.`,
     community_vote_reason_required: "Kies eerst een reden.",
@@ -2548,6 +2561,11 @@ class UpdateManagerPanel extends HTMLElement {
     // historical entity that's otherwise short on content anyway.
     const entries = this._installLog.filter((entry) => entry.entity_id === entityId);
     if (entries.length) {
+      // Missing entirely before this fix -- direct user feedback,
+      // 2026-07-30: whatever renders above (Community section, or the
+      // changelog block right before this one) ran straight into the
+      // "History" heading with no visual boundary at all.
+      body.appendChild(document.createElement("hr"));
       const historyHeading = document.createElement("h3");
       historyHeading.textContent = tr.dialog_history_heading;
       body.appendChild(historyHeading);
@@ -2670,22 +2688,24 @@ class UpdateManagerPanel extends HTMLElement {
         const changelogAnchor = document.createComment("changelog");
         expandWrap.appendChild(changelogAnchor);
 
+        // No release_summary fallback here (unlike the pending-update
+        // section above, which reads it live off the entity's current
+        // state): direct user feedback, 2026-07-29, seeing a red "Restart
+        // of Home Assistant required" alert permanently frozen into an
+        // already-completed History entry. Confirmed against HACS's own
+        // update.py source -- for a HACS-managed entity this attribute
+        // isn't release content at all, it's `repository.pending_restart`
+        // rendered as a one-off HTML snippet, true only for the brief
+        // window right after that specific install before HA gets
+        // restarted. install_log.py's own _on_install freezes whatever
+        // that snippet said at the exact moment install finished (when
+        // it's almost always still true), so History would otherwise show
+        // this as if still outstanding long after the restart it was
+        // warning about already happened. release_notes (the real,
+        // durable changelog) has no such problem and stays.
         if (entry.release_notes) {
           const markdown = document.createElement("ha-markdown");
           markdown.content = entry.release_notes;
-          expandWrap.appendChild(markdown);
-        } else if (entry.release_summary) {
-          // ha-markdown, not a plain .textContent div -- found live,
-          // 2026-07-29 (screenshot): release_summary can itself contain
-          // real markup (e.g. HA Core's own "<ha-alert alert-type='error'>
-          // Restart of Home Assistant required</ha-alert>"), same as the
-          // pending-update's own release_summary fallback right above in
-          // this same dialog (see the showPendingUpdate section) already
-          // renders it. This History-tab path was the one place still
-          // showing that markup as literal, escaped text instead of a
-          // real rendered alert.
-          const markdown = document.createElement("ha-markdown");
-          markdown.content = entry.release_summary;
           expandWrap.appendChild(markdown);
         }
         // A release_url with no full notes used to navigate away on click
@@ -2735,10 +2755,16 @@ class UpdateManagerPanel extends HTMLElement {
           // leading divider (that's the facts/votes boundary). The second
           // <hr> here is the votes/changelog boundary; see the CSS rule
           // below for its spacing (this wrapper isn't a flex container, so
-          // it needs its own margin, not a parent gap).
+          // it needs its own margin, not a parent gap) -- only added when
+          // there's actually a changelog or release link below to bound
+          // (direct user feedback, 2026-07-30, screenshot: an entry with
+          // neither showed one trailing divider too many, with nothing
+          // left to separate).
           if (entryCommunitySection) {
             expandWrap.insertBefore(entryCommunitySection, changelogAnchor);
-            expandWrap.insertBefore(document.createElement("hr"), changelogAnchor);
+            if (entry.release_notes || entry.release_url) {
+              expandWrap.insertBefore(document.createElement("hr"), changelogAnchor);
+            }
           }
         };
         if (isDefaultExpanded) ensureCommunitySection();
@@ -3495,7 +3521,7 @@ class UpdateManagerPanel extends HTMLElement {
         _runProgressAction(healthyBtn, async () => {
           const result = await submitVote("healthy", {});
           onVoted?.("healthy");
-          showConfirmed(tr.community_vote_confirmed_healthy(result.updated));
+          showConfirmed(tr.community_vote_confirmed_healthy(result.updated, result.own_repo_healthy_vote));
         })
       );
       container.appendChild(healthyBtn);

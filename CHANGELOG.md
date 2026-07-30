@@ -2,6 +2,33 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+- **The History tab could permanently show a red "Restart of Home Assistant required" alert on an
+  already-completed install**, direct user feedback after seeing it on this integration's own update
+  entry. `release_summary` is meant as a short, durable blurb (that's how HA Core's own update entity uses
+  it), but HACS-managed entities repurpose the same attribute for something else entirely -- confirmed
+  against HACS's own `update.py` source: it's just `repository.pending_restart` rendered as an HTML
+  snippet, true only for the brief window right after an install, before HA gets restarted. Freezing that
+  into History at install time (when it's almost always still true) meant it kept showing as if still
+  outstanding long after the restart it warned about had already happened. History no longer has this
+  fallback at all; the real, durable `release_notes` changelog is unaffected. The live pending-update view
+  (where this attribute is actually accurate, read fresh off the entity each time) is unaffected too.
+- A History entry's own changelog/release-link block ran straight into the "History" heading below it
+  (in the pending-update dialog) with no divider between them -- direct user feedback.
+- A History entry with neither a changelog nor a release link showed one trailing divider too many below
+  its Community section, with nothing left for it to separate -- direct user feedback, screenshot. That
+  divider is now only added when there's actually a changelog or release link following it.
+
+### Changed
+- **Marking your own release as "healthy" now says so plainly, instead of a generic confirmation.**
+  community-votes' own process-vote.yml deliberately gives a maintainer's own "healthy" vote zero weight
+  (approving your own release isn't independent verification) -- found live, direct user feedback: the
+  GitHub-side confirmation showed "0 healthy" right after "Thanks for your vote!" with no explanation,
+  reading as if the vote had vanished. The panel now mirrors that same rule and says so in its own
+  confirmation toast too, instead of only the GitHub issue's reply comment knowing about it.
+
 ## [0.5.0] - 2026-07-29
 
 Opening an update's details now hands the actual "Install" action off to Home Assistant's own update dialog, complete with its real install button, live progress, and backup option, instead of Update Manager's own copy. Update Manager's own dialog now focuses purely on the decision: staging status, community verdict, and auto-install scheduling.

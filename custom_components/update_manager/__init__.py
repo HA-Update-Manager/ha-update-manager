@@ -133,7 +133,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
                 old_version,
                 new_version,
                 release_url=new_state.attributes.get("release_url"),
-                release_summary=new_state.attributes.get("release_summary"),
                 supported_features=new_state.attributes.get("supported_features", 0),
                 auto_installed=context is not None,
                 auto_install_reason=reason,

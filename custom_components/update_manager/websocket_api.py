@@ -663,7 +663,23 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
         connection.send_error(msg["id"], "vote_failed", "Couldn't submit the vote, try again")
         return
     await data.my_votes_manager.async_remember(identity.jump_key, msg["verdict"])
-    connection.send_result(msg["id"], {"updated": is_vote_update})
+    # Mirrors process-vote.yml's own "Asymmetric weight for the repo owner
+    # (hacs only)" rule (weight 0 for a maintainer's own "healthy" vote --
+    # not an independent verification, just the maker approving their own
+    # release) so the panel can say so instead of silently showing a
+    # standing that doesn't reflect the vote just cast. Found live,
+    # 2026-07-30: a repo owner voting healthy on their own release saw
+    # "0 healthy" right after "Thanks for your vote!" with no explanation.
+    linked_username = data.github_auth_manager.linked_username
+    is_own_repo_healthy_vote = bool(
+        msg["verdict"] == "healthy"
+        and identity.owner_repo
+        and linked_username
+        and identity.owner_repo.split("/", 1)[0].lower() == linked_username.lower()
+    )
+    connection.send_result(
+        msg["id"], {"updated": is_vote_update, "own_repo_healthy_vote": is_own_repo_healthy_vote}
+    )
 
 
 def async_setup_websocket_api(hass: HomeAssistant) -> None:

@@ -72,7 +72,6 @@ class InstallLog:
         to_version: str,
         *,
         release_url: str | None,
-        release_summary: str | None,
         supported_features: int,
         auto_installed: bool,
         auto_install_reason: str | None = None,
@@ -88,7 +87,6 @@ class InstallLog:
                 "to_version": to_version,
                 "installed_at": dt_util.utcnow().isoformat(),
                 "release_url": release_url,
-                "release_summary": release_summary,
                 "release_notes": release_notes,
                 "auto_installed": auto_installed,
                 # None on a manual install, or on any entry logged before
