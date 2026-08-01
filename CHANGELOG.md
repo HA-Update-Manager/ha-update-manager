@@ -2,7 +2,22 @@
 
 All notable changes to this project are documented here. Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [0.5.1] - 2026-08-01
+
+**Vote issues now link to the exact release being voted on**
+Every vote submitted to community-votes includes a real, working link to the exact release it's about (a new "Release" field), for hacs integrations, Home Assistant OS/Supervisor, and Home Assistant Core alike. No more guessing which release a vote was actually referring to.
+
+**A "you voted" state that got stuck now fixes itself**
+Deleting your own vote directly on community-votes used to leave the panel permanently showing "you voted", with no way to vote again. It now notices within a few minutes and lets you vote again.
+
+**Also in this release:**
+- A stale "Restart of Home Assistant required" alert no longer lingers in History long after the restart it warned about already happened.
+- A couple of small spacing fixes around History's changelog/release-link section.
+- Marking your own release as healthy now says so plainly in the confirmation toast, instead of a generic message that read as if the vote had vanished.
+- The panel's own JavaScript file is no longer read with a blocking call on every setup/reload, found during this integration's own [HACS default-repo submission review](https://github.com/hacs/default/pull/9584#pullrequestreview-4834751826).
+
+### Added
+- A vote issue now always includes a working link to the exact release being voted on (a new "Release" field), not just when you happen to fill in the optional "Issue or changelog link" field yourself: hacs entries and Home Assistant OS/Supervisor reuse their own real `release_url` (install_log's own snapshot for a History vote, the entity's live state for a still-pending one, never a stale/wrong version). Home Assistant Core doesn't have a usable one of its own (its `release_url` attribute is a fixed "latest release notes" page, not tied to any specific version), so its link is built instead from home-assistant/core's own GitHub releases, verified live against 4 real releases (stable and beta) spanning 2024.1.0 through the current beta: every one uses the version string verbatim as its tag. A dev build isn't tagged there at all, so those get no link rather than a broken one. "Release" has no counterpart in community-votes' own vote.yml, safe anyway since that repo's process-vote.yml only ever reads specific known fields back out by name and leaves anything else untouched; unlike "Owner/repo" or "To version", which get split/used verbatim to build the per-version storage path and can't safely carry anything extra.
 
 ### Fixed
 - **The History tab could permanently show a red "Restart of Home Assistant required" alert on an
@@ -20,6 +35,8 @@ All notable changes to this project are documented here. Format loosely follows 
 - A History entry with neither a changelog nor a release link showed one trailing divider too many below
   its Community section, with nothing left for it to separate -- direct user feedback, screenshot. That
   divider is now only added when there's actually a changelog or release link following it.
+- Deleting your own vote directly on community-votes left the panel permanently showing "you voted" with no way to vote again, since your local, on-device record of it was never re-checked against live data once it existed at all. It's now cross-checked against the same live fetch the dialog already makes for the "N others" count (no extra request), and forgotten if community-votes genuinely no longer confirms it. A vote cast in roughly the last 5 minutes is still trusted unconditionally either way, since community-votes' own processing of a freshly submitted vote can itself lag by a few seconds, and treating that normal delay as "deleted" would have undone the very thing this local record exists for. Any vote remembered from before this change is migrated to the new shape automatically the first time it's loaded.
+- The panel's ~227KB JavaScript file was read with a blocking call directly on Home Assistant's event loop on every single setup/reload, briefly stalling it (worse on slower storage) -- found in code review ahead of this integration's HACS default-repo submission ([hacs/default#9584](https://github.com/hacs/default/pull/9584#pullrequestreview-4834751826)). That read now happens off the loop.
 
 ### Changed
 - **Marking your own release as "healthy" now says so plainly, instead of a generic confirmation.**

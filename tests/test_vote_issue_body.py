@@ -43,6 +43,7 @@ class TestBuildIssueBody:
             "### App slug\n\n_No response_\n\n"
             "### From version\n\n1.0.0\n\n"
             "### To version\n\n1.2.3\n\n"
+            "### Release\n\n_No response_\n\n"
             "### Verdict\n\nhealthy\n\n"
             "### Reason category\n\n(not applicable, verdict is healthy)\n\n"
             "### Notes\n\n_No response_\n\n"
@@ -84,6 +85,23 @@ class TestBuildIssueBody:
         body = vote_issue_body.build_issue_body(identity, "healthy", None, None, None)
         assert "### App slug\n\ncore_mosquitto\n" in body
         assert "### Manufacturer/model\n\n_No response_\n" in body
+
+    def test_hacs_vote_with_release_url_fills_release_field(self):
+        identity = hacs_identity.ResolvedIdentity(
+            "hacs", "1.2.3", "1.0.0", owner_repo="owner/repo",
+            release_url="https://github.com/owner/repo/releases/tag/v1.2.3",
+        )
+        body = vote_issue_body.build_issue_body(identity, "healthy", None, None, None)
+        assert "### Release\n\nhttps://github.com/owner/repo/releases/tag/v1.2.3\n" in body
+        # Owner/repo's own field value is untouched plain text, not a
+        # markdown link -- community-votes' own process-vote.yml splits it
+        # on "/" and rejects the vote unless that's exactly 2 parts.
+        assert "### Owner/repo\n\nowner/repo\n\n" in body
+
+    def test_hacs_vote_without_release_url_shows_no_response(self):
+        identity = hacs_identity.ResolvedIdentity("hacs", "1.2.3", "1.0.0", owner_repo="owner/repo")
+        body = vote_issue_body.build_issue_body(identity, "healthy", None, None, None)
+        assert "### Release\n\n_No response_\n" in body
 
     def test_healthy_reason_category_argument_ignored(self):
         # Even if a caller accidentally passes one, a "healthy" vote's own

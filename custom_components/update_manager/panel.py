@@ -21,7 +21,7 @@ _PANEL_JS_PATH = _PANEL_DIR / "update-manager-panel.js"
 _STATIC_PATH_REGISTERED = f"{DOMAIN}_static_path_registered"
 
 
-def _panel_js_cache_key() -> str:
+def _panel_js_cache_key(content: bytes) -> str:
     """A short hash of the panel JS file's own current content, not the
     integration's version string -- found live (2026-07-17): the file gets
     edited far more often, during ordinary development, than the version in
@@ -30,8 +30,17 @@ def _panel_js_cache_key() -> str:
     aggressively/indefinitely. Without something that changes whenever the
     file's contents do, every single edit this session kept being served
     from the browser's cache until a hard refresh -- several "this doesn't
-    seem to do anything" reports were really just stale JS still running."""
-    return hashlib.sha256(_PANEL_JS_PATH.read_bytes()).hexdigest()[:12]
+    seem to do anything" reports were really just stale JS still running.
+
+    Takes the already-read bytes rather than reading _PANEL_JS_PATH itself
+    (found by hacs/default review, 2026-08-01, hacs/default#9584: the ~227KB
+    panel JS was being read with a blocking Path.read_bytes() straight on
+    the event loop, on every single setup/reload). The actual read now
+    happens in async_register_update_manager_panel below, off the loop via
+    hass.async_add_executor_job, leaving this function pure and independent
+    of *how* the content was obtained -- also makes it trivially testable
+    without a live hass or a real file on disk."""
+    return hashlib.sha256(content).hexdigest()[:12]
 
 
 async def async_register_update_manager_panel(hass: HomeAssistant) -> None:
@@ -64,6 +73,12 @@ async def async_register_update_manager_panel(hass: HomeAssistant) -> None:
             [StaticPathConfig(_STATIC_URL_PATH, str(_PANEL_DIR), True)]
         )
 
+    # Off the event loop: this file is ~227KB, and Path.read_bytes() is a
+    # blocking call -- found by hacs/default review, 2026-08-01
+    # (hacs/default#9584), briefly stalling the whole HA loop on every
+    # single setup/reload, worse on slower storage.
+    panel_js_content = await hass.async_add_executor_job(_PANEL_JS_PATH.read_bytes)
+
     async_register_built_in_panel(
         hass,
         component_name="custom",
@@ -75,7 +90,7 @@ async def async_register_update_manager_panel(hass: HomeAssistant) -> None:
                 "name": "update-manager-panel",
                 "embed_iframe": False,
                 "trust_external": False,
-                "module_url": f"{_STATIC_URL_PATH}/update-manager-panel.js?v={_panel_js_cache_key()}",
+                "module_url": f"{_STATIC_URL_PATH}/update-manager-panel.js?v={_panel_js_cache_key(panel_js_content)}",
             }
         },
         require_admin=True,

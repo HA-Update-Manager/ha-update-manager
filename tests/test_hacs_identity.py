@@ -81,6 +81,11 @@ class TestResolveIdentity:
         assert identity.to_version == "1.2.3"
         assert identity.from_version == "1.0.0"
         assert identity.to_version_path == "hacs/owner/repo/1.2.3"
+        # release_url is kept as-is (not reconstructed/normalized) so
+        # vote_issue_body.py can link straight to it -- callers are already
+        # responsible for passing one that matches this exact version (see
+        # websocket_api.py's own _release_url_for_version).
+        assert identity.release_url == url
 
     def test_github_shaped_release_url_ignored_when_not_a_hacs_entity(self):
         # Found live, 2026-07-22 (real bug hit on an ESPHome device's update
@@ -96,7 +101,11 @@ class TestResolveIdentity:
         # Found by review, 2026-07-22: Core's own release_url matches the
         # generic HACS regex just as readily as a real HACS integration
         # would, so this must be checked by entity_id first, not by shape.
-        url = "https://github.com/home-assistant/core/releases/tag/2026.7.3"
+        # Passed-in url is a decoy here (Core's own real release_url attribute
+        # is "https://www.home-assistant.io/latest-release-notes/", never a
+        # github.com one) -- see test_home_assistant_core_release_url_built
+        # below for the actual link Core gets.
+        url = "https://www.home-assistant.io/latest-release-notes/"
         identity = hacs_identity.resolve_identity(
             "update.home_assistant_core_update", url, "2026.7.3", "2026.7.2"
         )
@@ -105,6 +114,51 @@ class TestResolveIdentity:
         assert identity.owner_repo is None
         assert identity.from_version == "2026.7.2"
         assert identity.to_version_path == "home-assistant/core/2026.7.3"
+
+    def test_home_assistant_core_release_url_built(self):
+        # Core's own release_url attribute is never used (it's always
+        # "latest-release-notes", not version-specific -- see the class
+        # comment on ResolvedIdentity.release_url and hacs_identity.py's own
+        # comment above this branch). Built instead from home-assistant/
+        # core's own GitHub releases, verified live (2026-07-31) that every
+        # tagged release there -- stable and beta alike -- uses the version
+        # string verbatim as its tag, across 4 real releases spanning
+        # 2024.1.0 through the 2026.8.0b3 beta.
+        identity = hacs_identity.resolve_identity(
+            "update.home_assistant_core_update", None, "2026.7.4", "2026.7.3"
+        )
+        assert identity.release_url == "https://github.com/home-assistant/core/releases/tag/2026.7.4"
+
+    def test_home_assistant_core_beta_release_url_built(self):
+        identity = hacs_identity.resolve_identity(
+            "update.home_assistant_core_update", None, "2026.8.0b3", "2026.7.4"
+        )
+        assert identity.release_url == "https://github.com/home-assistant/core/releases/tag/2026.8.0b3"
+
+    def test_home_assistant_core_dev_build_has_no_release_url(self):
+        # Dev builds are never tagged on home-assistant/core at all
+        # (confirmed live: a 404) -- linking to releases/tag/<dev-version>
+        # here would be a broken link, so this is left None instead, same
+        # graceful-degradation treatment as an older install_log entry with
+        # no captured release_url at all.
+        identity = hacs_identity.resolve_identity(
+            "update.home_assistant_core_update", None, "2026.8.0.dev20260728", "2026.7.4"
+        )
+        assert identity.release_url is None
+
+    def test_home_assistant_os_release_url_kept(self):
+        url = "https://github.com/home-assistant/operating-system/releases/tag/14.2"
+        identity = hacs_identity.resolve_identity(
+            "update.home_assistant_operating_system_update", url, "14.2", "13.0"
+        )
+        assert identity.release_url == url
+
+    def test_home_assistant_supervisor_release_url_kept(self):
+        url = "https://github.com/home-assistant/supervisor/releases/tag/2026.07.1"
+        identity = hacs_identity.resolve_identity(
+            "update.home_assistant_supervisor_update", url, "2026.07.1", "2026.06.1"
+        )
+        assert identity.release_url == url
 
     def test_home_assistant_supervisor(self):
         identity = hacs_identity.resolve_identity(

@@ -10,12 +10,15 @@ actually succeeds.
 """
 from __future__ import annotations
 
-from typing import Literal
+from datetime import timedelta
+from typing import Any, Literal
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .vote_freshness import is_vote_stale
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_my_votes"
@@ -26,23 +29,74 @@ Verdict = Literal["healthy", "problematic"]
 class MyVotesManager:
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
-        self._store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
-        # jump_key -> verdict. Keyed by ResolvedIdentity.jump_key (a vote is
-        # tied to one specific identity+jump pair, not entity_id/version
-        # separately -- jump_key already encodes exactly that). Changed
-        # 2026-07-24 from the old, single-version votes_path: an old stored
-        # key simply won't match a freshly resolved jump_key, a one-time
-        # cache miss that falls back to a remote fetch and backfills, same
-        # graceful degradation this module already relies on for a vote
-        # cast before it existed at all.
-        self._votes: dict[str, str] = {}
+        self._store: Store[dict[str, dict[str, Any]]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        # jump_key -> {"verdict": ..., "voted_at": <ISO timestamp>}. Keyed by
+        # ResolvedIdentity.jump_key (a vote is tied to one specific
+        # identity+jump pair, not entity_id/version separately -- jump_key
+        # already encodes exactly that). Changed 2026-07-24 from the old,
+        # single-version votes_path: an old stored key simply won't match a
+        # freshly resolved jump_key, a one-time cache miss that falls back to
+        # a remote fetch and backfills, same graceful degradation this module
+        # already relies on for a vote cast before it existed at all.
+        #
+        # voted_at added 2026-08-01 (direct user feedback: deleting a vote
+        # file directly on community-votes still showed "you voted" in the
+        # panel, with no way to vote again) so websocket_api.py's own
+        # verdict_for_version handler can tell a vote it just cast seconds
+        # ago (community-votes' own Action hasn't processed it into the live
+        # payload yet, see this module's own docstring above) apart from one
+        # that's been sitting here for a while and has since genuinely
+        # vanished from community-votes (deleted externally) -- only the
+        # latter should ever be reconciled away, the former must keep being
+        # trusted immediately or that exact "not yet rated" bug comes back.
+        self._votes: dict[str, dict[str, Any]] = {}
 
     async def async_load(self) -> None:
-        self._votes = await self._store.async_load() or {}
+        # Migrates any pre-2026-08-01 entry (jump_key -> plain verdict
+        # string) to the current shape (jump_key -> {"verdict", "voted_at"})
+        # right away, once, rather than treating every single read site as
+        # having to handle both shapes forever after -- found live
+        # (2026-08-01, direct user feedback: the community section
+        # disappeared entirely on a History item): my_verdict/is_stale doing
+        # entry["verdict"]/entry.get("voted_at") straight on a leftover
+        # plain-string entry raised (TypeError/AttributeError), and that
+        # exception propagating out of a websocket_api.py handler is exactly
+        # what made the whole section vanish instead of just that one row
+        # degrading gracefully. voted_at is unknown for a migrated entry, so
+        # is_stale treats it the same as "no voted_at at all" -- always
+        # stale, safe to reconcile against live data on the very next check.
+        raw = await self._store.async_load() or {}
+        self._votes = {
+            jump_key: entry if isinstance(entry, dict) else {"verdict": entry, "voted_at": None}
+            for jump_key, entry in raw.items()
+        }
 
     def my_verdict(self, jump_key: str) -> Verdict | None:
-        return self._votes.get(jump_key)  # type: ignore[return-value]
+        entry = self._votes.get(jump_key)
+        return entry["verdict"] if entry else None
+
+    def is_stale(self, jump_key: str, grace_period: timedelta) -> bool:
+        """True if this jump_key has a remembered vote old enough that it's
+        safe to cross-check against live community-votes data and forget it
+        if it's genuinely gone (see vote_freshness.is_vote_stale's own
+        docstring for the full reasoning, including the no-voted_at-at-all
+        case, which a migrated pre-2026-08-01 entry -- see async_load's own
+        comment -- also falls under). False for a jump_key with no
+        remembered vote at all -- nothing to reconcile."""
+        entry = self._votes.get(jump_key)
+        if entry is None:
+            return False
+        return is_vote_stale(entry.get("voted_at"), dt_util.utcnow(), grace_period)
 
     async def async_remember(self, jump_key: str, verdict: Verdict) -> None:
-        self._votes[jump_key] = verdict
+        self._votes[jump_key] = {"verdict": verdict, "voted_at": dt_util.utcnow().isoformat()}
         await self._store.async_save(self._votes)
+
+    async def async_forget(self, jump_key: str) -> None:
+        """Removes a remembered vote that live community-votes data no
+        longer confirms (see is_stale's own comment) -- the panel then falls
+        back to treating this jump as never-voted-on, offering the vote
+        controls again instead of a permanently stuck "you voted" state."""
+        if jump_key in self._votes:
+            del self._votes[jump_key]
+            await self._store.async_save(self._votes)

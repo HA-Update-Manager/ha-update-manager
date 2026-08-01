@@ -90,6 +90,16 @@ class ResolvedIdentity(NamedTuple):
     owner_repo: str | None = None
     manufacturer_model: str | None = None
     app_slug: str | None = None
+    # The exact release_url this owner_repo/to_version pair was resolved
+    # from (hacs category only, see resolve_identity below) -- kept so
+    # vote_issue_body.py can link "Owner/repo" straight to the release being
+    # voted on. Safe to reuse as-is: callers already resolve the release_url
+    # that matches this exact version before calling resolve_identity (see
+    # websocket_api.py's own _release_url_for_version, which checks the
+    # matching install_log entry first, not just the entity's current live
+    # state), so this is never a stale/wrong-version URL, just sometimes
+    # absent (older install_log entries predating that tracking).
+    release_url: str | None = None
 
     @property
     def jump_key(self) -> str:
@@ -175,8 +185,37 @@ def resolve_identity(
     from_version = strip_version_prefix(installed_version)
     component = _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID.get(entity_id)
     if component is not None:
+        to_version = strip_version_prefix(latest_version)
+        # OS/Supervisor's own release_url (hassio/update.py, SupervisorOS/
+        # SupervisorSupervisorUpdateEntity) is a real, version-specific
+        # github.com/home-assistant/{operating-system,supervisor}/releases/
+        # tag/{version} URL -- safe to reuse exactly like the hacs case
+        # below. Core's own (SupervisorCoreUpdateEntity) is neither: it's a
+        # fixed "https://www.home-assistant.io/latest-release-notes/" (or
+        # "rc." for a beta build), always the *current* latest notes
+        # regardless of which version this call is actually about, verified
+        # directly against home-assistant/core's own source, 2026-07-31--
+        # so this never reuses Core's own release_url at all.
+        #
+        # Built ourselves instead, from home-assistant/core's own GitHub
+        # releases: every tagged release (stable and beta alike) uses the
+        # version string verbatim as its tag, no "v" prefix, no
+        # reformatting -- confirmed live against 4 real releases spanning
+        # 2024.1.0 through the current 2026.8.0b3 beta, 2026-07-31, not
+        # assumed from a single lucky example. Dev builds ("2026.8.0.dev...")
+        # are never tagged there at all (confirmed: a 404), so those are
+        # excluded here rather than linking to a release that doesn't exist.
+        core_release_url = (
+            f"https://github.com/home-assistant/core/releases/tag/{to_version}"
+            if component == "core" and ".dev" not in to_version
+            else None
+        )
         return ResolvedIdentity(
-            "home-assistant", strip_version_prefix(latest_version), from_version, component=component
+            "home-assistant",
+            to_version,
+            from_version,
+            component=component,
+            release_url=release_url if component in ("os", "supervisor") else core_release_url,
         )
 
     identity = extract_hacs_identity(release_url) if is_hacs_entity else None
@@ -190,9 +229,16 @@ def resolve_identity(
         # while resolving an older, already-installed History entry), so
         # trusting it for the version silently misattributed a vote to the
         # wrong version. release_url is only ever used here to find the
-        # owner/repo, never the version.
+        # owner/repo, never the version -- still stored below (see
+        # ResolvedIdentity.release_url's own comment) since callers are
+        # already responsible for only ever passing a release_url that does
+        # match this exact version.
         return ResolvedIdentity(
-            "hacs", strip_version_prefix(latest_version), from_version, owner_repo=f"{owner}/{repo}"
+            "hacs",
+            strip_version_prefix(latest_version),
+            from_version,
+            owner_repo=f"{owner}/{repo}",
+            release_url=release_url,
         )
 
     if device_manufacturer is not None and device_model is not None:

@@ -17,6 +17,7 @@ time.
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import voluptuous as vol
@@ -53,6 +54,15 @@ from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
 from .vote_issue_body import REASON_CATEGORIES
 
 _WS_REGISTERED = f"{DOMAIN}_ws_registered"
+
+# How long a remembered vote (my_votes.py) is trusted unconditionally before
+# _handle_verdict_for_version starts cross-checking it against live
+# community-votes data at all -- comfortably longer than community-votes'
+# own process-vote.yml Action typically takes to process a freshly opened
+# vote issue (seconds), short enough that a genuinely externally-deleted
+# vote still self-heals within one reasonable dialog-reopen. See
+# MyVotesManager.is_stale's own docstring for the full reasoning.
+_STALE_VOTE_GRACE_PERIOD = timedelta(minutes=5)
 
 
 def _get_entry(hass: HomeAssistant) -> UpdateManagerConfigEntry | None:
@@ -564,14 +574,34 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     # reasoning).
     username = data.github_auth_manager.linked_username if data else None
     if identity is not None:
-        (verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons, my_reason), my_verdict = (
-            await asyncio.gather(
-                async_fetch_verdict_uncached(hass, identity, data.community_verdict_manager.trusted_voters, username),
-                _async_resolve_my_verdict(hass, data, identity),
-            )
+        (
+            (verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons, my_reason, my_live_verdict, fetch_ok),
+            my_verdict,
+        ) = await asyncio.gather(
+            async_fetch_verdict_uncached(hass, identity, data.community_verdict_manager.trusted_voters, username),
+            _async_resolve_my_verdict(hass, data, identity),
         )
+        # Self-heals my_votes.py's own local record against a vote that's
+        # been deleted directly on community-votes (direct user feedback,
+        # 2026-08-01: the panel kept showing "you voted" with no way to
+        # vote again, since the local record alone was ever consulted once
+        # it had *any* entry -- see _async_resolve_my_verdict's own
+        # docstring). Both this fetch and _async_resolve_my_verdict's own
+        # cache-first lookup already ran above; reusing my_live_verdict here
+        # costs nothing extra. Gated on all three: fetch_ok (never trust an
+        # absence caused by a transient failure, not a real one -- see
+        # EMPTY_VERDICT_RESULT's own comment), my_verdict is not None (only
+        # a remembered vote can ever need forgetting), and is_stale (a vote
+        # just cast is expected to be briefly missing from the live payload
+        # while community-votes' own Action is still processing it -- must
+        # keep being trusted regardless of what this same fetch just said,
+        # or that exact "not yet rated" bug comes right back).
+        if fetch_ok and my_verdict is not None and my_live_verdict is None:
+            if data.my_votes_manager.is_stale(identity.jump_key, _STALE_VOTE_GRACE_PERIOD):
+                await data.my_votes_manager.async_forget(identity.jump_key)
+                my_verdict = None
     else:
-        verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons, my_reason = EMPTY_VERDICT_RESULT
+        verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons, my_reason, _, _ = EMPTY_VERDICT_RESULT
         my_verdict = None
     connection.send_result(
         msg["id"],

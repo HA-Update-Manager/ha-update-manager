@@ -40,11 +40,22 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 # async_fetch_verdict_uncached's own empty return: (verdict, other_jumps,
-# trusted_vote, trusted_voters_matched, problematic_reasons, my_reason), all
-# "nothing to report" -- shared with websocket_api.py's own identity-is-None
-# fallback so the two tuples can't drift apart as this shape grows further
-# (it already grew once, 5 elements to 6, when my_reason was added).
-EMPTY_VERDICT_RESULT: tuple[Any, ...] = (None, [], None, [], [], None)
+# trusted_vote, trusted_voters_matched, problematic_reasons, my_reason,
+# my_live_verdict, fetch_ok), all "nothing to report" -- shared with
+# websocket_api.py's own identity-is-None fallback so the two tuples can't
+# drift apart as this shape grows further (it already grew once, 5 elements
+# to 6, when my_reason was added; 6 to 8, when my_live_verdict/fetch_ok were
+# added for the my_votes.py reconciliation check below).
+#
+# fetch_ok is deliberately False here, not True: this exact tuple is also
+# returned on a genuine fetch failure (see async_fetch_verdict_uncached's own
+# except branch below), where my_live_verdict being None must NOT be read as
+# "confirmed no vote on community-votes" -- that would wrongly let
+# websocket_api.py forget a real remembered vote just because of a transient
+# network hiccup. A real, successful-but-empty fetch (e.g. a genuine 404,
+# nothing rated yet) builds its own tuple below with fetch_ok=True instead,
+# never reuses this constant.
+EMPTY_VERDICT_RESULT: tuple[Any, ...] = (None, [], None, [], [], None, None, False)
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -287,7 +298,16 @@ async def async_fetch_verdict_uncached(
     identity: ResolvedIdentity,
     trusted_voters: list[str] | None = None,
     username: str | None = None,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]], str | None, list[str], list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[
+    dict[str, Any] | None,
+    list[dict[str, Any]],
+    str | None,
+    list[str],
+    list[dict[str, Any]],
+    dict[str, Any] | None,
+    str | None,
+    bool,
+]:
     """A direct, uncached lookup for an arbitrary already-resolved identity,
     not necessarily the entity's own current pending jump, e.g. reading/
     voting from a specific History entry. Deliberately NOT
@@ -304,24 +324,30 @@ async def async_fetch_verdict_uncached(
 
     Returns (my own jump's verdict, other jumps to this same destination,
     trusted vote, trusted voters matched, *other* problematic voters' own
-    reasons, my own problematic reason) -- all derived from the one fetch,
-    direct user feedback 2026-07-24 (other_jumps), 2026-07-27 (trusted_vote/
+    reasons, my own problematic reason, my own live verdict, whether this
+    fetch actually succeeded) -- all derived from the one fetch, direct user
+    feedback 2026-07-24 (other_jumps), 2026-07-27 (trusted_vote/
     trusted_voters_matched, "toevallig mijn trusted voter die heeft
     gestemd, maar dat zie ik niet terug" -- the dialog's own verdict line
     for a specific jump had no idea whether a trusted voter was among the
     people who voted on it, even though that's exactly what changes
-    auto-install behavior for this jump), and 2026-07-29 (problematic_
-    reasons/my_reason, "ik zie in de interface nergens de reden staan").
+    auto-install behavior for this jump), 2026-07-29 (problematic_
+    reasons/my_reason, "ik zie in de interface nergens de reden staan"), and
+    2026-08-01 (my_live_verdict/fetch_ok, direct user feedback: deleting a
+    vote file on community-votes still left the panel showing "you voted" --
+    websocket_api.py's own verdict_for_version handler cross-checks
+    my_votes.py's local record against this, since it's already fetching
+    this exact payload anyway, no extra request needed).
     `username` (the caller's own linked GitHub username, if any) is
-    resolved once here and used for both excluding your own entry from the
-    generic list and finding it directly for my_reason -- found by review,
-    2026-07-29: the previous version left the caller (websocket_api.py) to
-    search the already-capped problematic_reasons list for its own
-    username, which could silently miss it whenever enough other, more
-    recent votes existed (see problematic_reasons_from_payload's own
-    docstring). trusted_voters/username both default to none (not every
-    caller cares, e.g. a caller that already knows this entity has no
-    pending update at all)."""
+    resolved once here and used for excluding your own entry from the
+    generic list, finding it directly for my_reason, and this same
+    my_live_verdict check -- found by review, 2026-07-29: the previous
+    version left the caller (websocket_api.py) to search the already-capped
+    problematic_reasons list for its own username, which could silently
+    miss it whenever enough other, more recent votes existed (see
+    problematic_reasons_from_payload's own docstring). trusted_voters/
+    username both default to none (not every caller cares, e.g. a caller
+    that already knows this entity has no pending update at all)."""
     try:
         payload = await _fetch_to_version_json(hass, identity.to_version_path)
     except Exception:
@@ -337,4 +363,6 @@ async def async_fetch_verdict_uncached(
         trusted_voters_matched,
         problematic_reasons_from_payload(payload, identity.from_version, exclude_username=username),
         my_problematic_reason_from_payload(payload, identity.from_version, username),
+        my_vote_from_payload(payload, identity.from_version, username) if username else None,
+        True,
     )

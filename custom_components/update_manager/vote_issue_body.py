@@ -7,10 +7,16 @@ hard to catch by reading alone, this session already found two real,
 shipped format mismatches on the reading side (release_url's shape, a
 missing v-prefix normalization) that a test would have caught immediately.
 
-Field order/labels must match community-votes' own
-`.github/ISSUE_TEMPLATE/vote.yml` exactly: that repo's `process-vote.yml`
-Action parses the rendered "### Label" shape a real Issue Form submission
-produces, not a custom API of its own.
+Field labels must match community-votes' own `.github/ISSUE_TEMPLATE/vote.yml`
+exactly for every field that Action's own process-vote.yml actually reads
+back out by name (Category, Component, Owner/repo, Manufacturer/model, App
+slug, From/To version, Verdict, Reason category, Notes, Issue or changelog
+link): that script parses the rendered "### Label" shape a real Issue Form
+submission produces, not a custom API of its own. "Release" is the one
+exception, added 2026-08-01 with no vote.yml counterpart at all -- see
+build_issue_body's own comment for why that's safe. Order itself doesn't
+matter to parsing (process-vote.yml builds a label -> value dict, not a
+positional read), only human readability of the rendered issue.
 """
 from __future__ import annotations
 
@@ -55,6 +61,21 @@ def build_issue_body(
     # shown/touched. "Manufacturer/model" is a single field, already in
     # "manufacturer/model" format on ResolvedIdentity itself (verified
     # against community-votes' own vote.yml).
+    #
+    # "Release" (added 2026-08-01) is the one field here with no counterpart
+    # in community-votes' own vote.yml, safe to add anyway -- verified
+    # directly against that repo's own process-vote.yml: parseFields()
+    # captures every "### Label" block it finds into a plain object with no
+    # fixed schema, and the rest of the script only ever reads specific
+    # known keys (Category, Owner/repo, etc.) back out of it, so an unknown
+    # extra key just sits there unread, never rejected or misparsed.
+    # Deliberately not folded into "Owner/repo" itself, though: that field's
+    # own value *is* structurally used (that Action's hacs branch does
+    # `ownerRepo.split("/")` and rejects the whole vote unless that's
+    # exactly 2 parts), same for "To version" (used verbatim to build the
+    # per-version storage path/issue title) -- a markdown link or an
+    # appended URL in either would break real, load-bearing parsing, not
+    # just sit there unused like this new field does.
     return "\n".join(
         [
             _field("Category", identity.category),
@@ -64,6 +85,7 @@ def build_issue_body(
             _field("App slug", identity.app_slug),
             _field("From version", identity.from_version),
             _field("To version", identity.to_version),
+            _field("Release", identity.release_url),
             _field("Verdict", verdict),
             _field(
                 "Reason category",
