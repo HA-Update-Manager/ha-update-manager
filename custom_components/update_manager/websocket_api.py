@@ -23,6 +23,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     CONF_ANNOUNCE_HOURS,
@@ -39,7 +40,12 @@ from .const import (
     DEFAULT_WAIT_DAYS,
     DOMAIN,
 )
-from .community_verdict import EMPTY_VERDICT_RESULT, async_fetch_my_vote, async_fetch_verdict_uncached
+from .community_verdict import (
+    EMPTY_VERDICT_RESULT,
+    async_fetch_my_vote,
+    async_fetch_verdict_uncached,
+    async_fetch_vote_for_jump_key,
+)
 from .community_vote import async_submit_vote
 from .coordinator import (
     excluded_entities_from_options,
@@ -48,6 +54,7 @@ from .coordinator import (
     trusted_voters_from_options,
 )
 from .device_identity import resolve_full_identity
+from .github_release_notes import compile_release_range, find_release_by_version, parse_release_url
 from .hacs_identity import ResolvedIdentity
 from .install_manager import auto_install_rules_from_options
 from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
@@ -147,7 +154,16 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
             {
                 **entry,
                 "pending_install": (
-                    {"to_version": pending.to_version, "execute_at": pending.execute_at.isoformat()}
+                    {
+                        "to_version": pending.to_version,
+                        "execute_at": pending.execute_at.isoformat(),
+                        # Added 2026-08-01, direct user feedback: History
+                        # shows "Announced" as its own fact once installed,
+                        # but a still-pending "ready" update (this exact
+                        # PendingAnnouncement, already real, not projected)
+                        # had no equivalent anywhere in the live dialog.
+                        "announced_at": pending.announced_at.isoformat(),
+                    }
                     if pending is not None
                     else None
                 ),
@@ -185,7 +201,184 @@ async def _handle_refresh_community_verdicts(
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
     await data.coordinator.async_force_refresh_community_verdicts()
+    await _async_reconcile_my_votes(hass, data)
     connection.send_result(msg["id"])
+
+
+async def _async_reconcile_my_votes(hass: HomeAssistant, data: UpdateManagerData) -> None:
+    """Force-checks every locally remembered vote against live community-votes
+    data right now, regardless of _STALE_VOTE_GRACE_PERIOD -- the panel's own
+    manual refresh button is an explicit, deliberate "tell me the truth now"
+    action (direct user feedback, 2026-08-01: "ik zou dit alsnog in de
+    refresh knop willen"), unlike the passive per-dialog check in
+    _handle_verdict_for_version, which respects that grace period so a vote
+    just cast isn't second-guessed while community-votes' own Action might
+    still be processing it. A per-jump_key fetch failure is skipped, not
+    treated as "confirmed gone" -- same reasoning as fetch_ok elsewhere in
+    this file (a transient network hiccup must never forget a real vote).
+
+    All jump_keys are fetched concurrently (found by review, 2026-08-01:
+    the previous one-at-a-time loop turned N remembered votes into N
+    sequential round-trips, each waiting for the last) -- independent
+    fetches with no shared state until the forgetting step below, so
+    there's nothing to serialize for."""
+    username = data.github_auth_manager.linked_username
+    if not username:
+        return
+
+    async def _fetch(jump_key: str) -> tuple[str, str | None] | None:
+        to_version_path, _, from_version = jump_key.partition("::")
+        try:
+            return jump_key, await async_fetch_vote_for_jump_key(hass, to_version_path, from_version, username)
+        except Exception:
+            return None
+
+    results = await asyncio.gather(*(_fetch(jump_key) for jump_key in data.my_votes_manager.jump_keys()))
+    # async_forget_many, not async_forget in a loop -- found by review,
+    # 2026-08-01: a per-key await here meant N genuinely-gone votes did N
+    # sequential full Store.async_save() writes for no reason (nothing
+    # reads self._votes in between them), even after the fetches above were
+    # already made concurrent.
+    stale_jump_keys = [jump_key for jump_key, live_vote in (r for r in results if r is not None) if live_vote is None]
+    await data.my_votes_manager.async_forget_many(stale_jump_keys)
+
+
+async def _async_fetch_github_release_notes(
+    hass: HomeAssistant,
+    release_url: str | None,
+    access_token: str | None,
+    from_version: str | None = None,
+    to_version: str | None = None,
+) -> tuple[str, str, str | None, str | None] | None:
+    """(owner, repo, notes, corrected_url) straight from GitHub's own
+    release(s) at this exact release_url -- a last-resort fallback for the
+    panel's changelog/release-notes section when neither the entity's own
+    UpdateEntityFeature.RELEASE_NOTES fetch nor its release_summary
+    attribute had anything to show. Not a rare edge case: HACS's own
+    async_release_notes() (custom_components/hacs/update.py) returns None
+    whenever pending_restart is still true, or the installed version isn't
+    in its own published_tags; Home Assistant Supervisor's own update entity
+    doesn't support UpdateEntityFeature.RELEASE_NOTES at all (verified
+    against hassio's own update.py, 2026-08-01) -- confirmed live, direct
+    user feedback: "dus het is absoluut niet alleen hacs". owner/repo are
+    returned alongside the notes so the frontend can turn #1234/@username
+    references in the notes into real GitHub links without having to
+    re-parse release_url itself.
+
+    to_version, when given, corrects release_url's own tag before doing
+    anything else, by matching it against the fetched releases list (see
+    github_release_notes.find_release_by_version's own docstring) -- direct
+    user feedback, 2026-08-01, found on a real downgrade (2.0 -> 1.0):
+    release_url reflects "latest available", not "what was actually
+    installed" (true for HACS specifically, confirmed against its own
+    source), so trusting its own embedded tag blindly showed 2.0's notes for
+    an entry that actually downgraded to 1.0. Left uncorrected (silently, no
+    error) whenever the match isn't found in the fetched page -- same
+    graceful "best effort, never loud about it" treatment as everything else
+    in this fallback. A successful to_version match's own body is returned
+    directly (once no from_version compile also succeeded) rather than
+    re-requesting the exact same release a second time from the single-tag
+    endpoint below -- that fetch already has it.
+
+    corrected_url is that same match's own `html_url` (GitHub's own field
+    for the release's real web page), None whenever no correction happened
+    (to_version missing, or no match found in the fetched page) -- found by
+    review, 2026-08-03: the notes body was corrected for a downgrade, but
+    the "Read release announcement" link the frontend builds from the
+    original, uncorrected release_url was never updated to match, so it
+    kept pointing at the newest release even once the notes right above it
+    correctly described an older one. The frontend substitutes this in
+    place of its own release_url whenever it's non-None, see
+    insertReleaseNotesSection's own comment.
+
+    When from_version is given, tries to compile notes across every release
+    skipped between from_version and the (possibly to_version-corrected)
+    target tag first (same gap HACS's own async_release_notes() already
+    closes when it can, see github_release_notes.compile_release_range's own
+    docstring) -- falls back to the single release's own body (the
+    from_version-less behavior) whenever that listing fetch fails or turns
+    up nothing usable, so a transient rate-limit/network hiccup on the
+    (heavier) list endpoint never loses the notes the single-release
+    endpoint would have found on its own.
+
+    Uses the linked GitHub account's own token when available (5000
+    requests/hour) rather than requiring it -- an unauthenticated request
+    still works for a public repo (60/hour), this is a nice-to-have
+    enrichment, not something worth gating behind linking an account (unlike
+    voting, which genuinely needs an identity). None whenever release_url
+    doesn't parse as a real GitHub release URL, or the lookup fails/404s for
+    any reason -- same graceful "nothing to add" treatment used throughout
+    this module."""
+    parsed = parse_release_url(release_url)
+    if parsed is None:
+        return None
+    owner, repo, tag = parsed
+    headers = {"Accept": "application/vnd.github+json"}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    session = async_get_clientsession(hass)
+
+    if from_version or to_version:
+        try:
+            async with session.get(
+                f"https://api.github.com/repos/{owner}/{repo}/releases", headers=headers, timeout=10
+            ) as response:
+                if response.status == 200:
+                    releases = await response.json()
+                    matched = find_release_by_version(releases, to_version) if to_version else None
+                    corrected_url = matched.get("html_url") if matched is not None else None
+                    if matched is not None:
+                        tag = matched.get("tag_name", tag)
+                    if from_version:
+                        compiled = compile_release_range(releases, from_version, tag)
+                        if compiled:
+                            return (owner, repo, compiled, corrected_url)
+                    # matched already carries this exact release's own body --
+                    # found by review, 2026-08-01: falling through to the
+                    # single-tag fetch below used to re-request the very same
+                    # release a second time whenever from_version was absent,
+                    # or its own compile attempt above found nothing usable.
+                    if matched is not None:
+                        return (owner, repo, matched.get("body") or None, corrected_url)
+        except Exception:
+            pass
+
+    try:
+        async with session.get(
+            f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", headers=headers, timeout=10
+        ) as response:
+            if response.status != 200:
+                return (owner, repo, None, None)
+            data = await response.json()
+    except Exception:
+        return (owner, repo, None, None)
+    return (owner, repo, data.get("body") or None, None)
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/github_release_notes",
+        vol.Required("release_url"): str,
+        vol.Optional("from_version"): str,
+        vol.Optional("to_version"): str,
+    }
+)
+async def _handle_github_release_notes(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    data = _get_data(hass)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    access_token = await data.github_auth_manager.async_get_valid_access_token()
+    result = await _async_fetch_github_release_notes(
+        hass, msg["release_url"], access_token, msg.get("from_version"), msg.get("to_version")
+    )
+    if result is None:
+        connection.send_result(msg["id"], {"notes": None, "owner": None, "repo": None, "corrected_url": None})
+        return
+    owner, repo, notes, corrected_url = result
+    connection.send_result(msg["id"], {"notes": notes, "owner": owner, "repo": repo, "corrected_url": corrected_url})
 
 
 @callback
@@ -721,6 +914,7 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     hass.data[_WS_REGISTERED] = True
     websocket_api.async_register_command(hass, _handle_updates)
     websocket_api.async_register_command(hass, _handle_refresh_community_verdicts)
+    websocket_api.async_register_command(hass, _handle_github_release_notes)
     websocket_api.async_register_command(hass, _handle_install_log)
     websocket_api.async_register_command(hass, _handle_cancel_pending_install)
     websocket_api.async_register_command(hass, _handle_install)

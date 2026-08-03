@@ -89,6 +89,24 @@ class InstallLog:
                 "release_url": release_url,
                 "release_notes": release_notes,
                 "auto_installed": auto_installed,
+                # Only ever set for an auto-install: install_manager.py's own
+                # _async_execute unconditionally sets `backup: True` on the
+                # dispatched update.install call whenever the entity's
+                # supported_features includes UpdateEntityFeature.BACKUP, no
+                # other condition -- so for an auto-installed entry this is a
+                # sure fact, not a guess. A manual install has no such
+                # guarantee: it might go through HA's own native dialog
+                # (its own separate backup checkbox, entirely invisible to
+                # us) as easily as our own panel's Install button, so this
+                # stays None there -- same "hide the fact entirely rather
+                # than show an unreliable guess" treatment as
+                # auto_install_reason below. Direct user feedback, 2026-08-01:
+                # "we tonen nergens of die backup ook echt gelukt is"
+                # (following up on an earlier request to verify this
+                # actually happens at all) -- this is what makes that
+                # already-verified behaviour visible per install, not just
+                # true in the code.
+                "backup_used": bool(supported_features & UpdateEntityFeature.BACKUP) if auto_installed else None,
                 # None on a manual install, or on any entry logged before
                 # this field existed at all -- the panel hides these facts
                 # entirely rather than showing "unknown" when they're None

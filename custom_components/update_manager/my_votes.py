@@ -75,6 +75,13 @@ class MyVotesManager:
         entry = self._votes.get(jump_key)
         return entry["verdict"] if entry else None
 
+    def jump_keys(self) -> list[str]:
+        """A snapshot copy, not a live view -- websocket_api.py's own
+        refresh-triggered reconciliation iterates this while calling
+        async_forget on some of them, which mutates self._votes; iterating a
+        live dict_keys view while it's being mutated would raise."""
+        return list(self._votes.keys())
+
     def is_stale(self, jump_key: str, grace_period: timedelta) -> bool:
         """True if this jump_key has a remembered vote old enough that it's
         safe to cross-check against live community-votes data and forget it
@@ -99,4 +106,22 @@ class MyVotesManager:
         controls again instead of a permanently stuck "you voted" state."""
         if jump_key in self._votes:
             del self._votes[jump_key]
+            await self._store.async_save(self._votes)
+
+    async def async_forget_many(self, jump_keys: list[str]) -> None:
+        """Same as calling async_forget once per jump_key, but a single
+        Store.async_save() (one JSON file write) for the whole batch instead
+        of one per key -- found by review, 2026-08-01: websocket_api.py's own
+        _async_reconcile_my_votes (the manual refresh button's "tell me the
+        truth now" reconciliation) used to await async_forget in a plain
+        for-loop, turning N genuinely-gone votes into N sequential file
+        writes for no reason, since nothing reads self._votes in between
+        them. A no-op (no save at all) when none of the given keys are
+        actually still present."""
+        removed_any = False
+        for jump_key in jump_keys:
+            if jump_key in self._votes:
+                del self._votes[jump_key]
+                removed_any = True
+        if removed_any:
             await self._store.async_save(self._votes)

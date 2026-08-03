@@ -106,6 +106,7 @@ const TRANSLATIONS = {
     tab_history: "History",
     tab_settings: "Settings",
     refresh: "Refresh",
+    checking_updates_toast: "Checking for updates…",
     refreshed_toast: "Update Manager refreshed",
     dash: "–",
     // Deliberately generic, not semver's own vocabulary (renamed
@@ -195,6 +196,12 @@ const TRANSLATIONS = {
     announce_hours_helper:
       "How long you have to cancel a scheduled automatic install (Updates tab) before it actually happens, once the postponement period is over.",
     col_impact: "Impact",
+    // Noun, not "Announced" -- deliberately different label for the
+    // projected-but-not-yet-real case (see projectedAnnouncementTime's own
+    // comment), direct user feedback, 2026-08-01: "dan is het niet
+    // Announced maar Announcement, toch?" -- "Announced" asserts it already
+    // happened, which isn't true yet for a still-"waiting" update.
+    dialog_announcement_label: "Announcement",
     dialog_current_version: "Installed version",
     dialog_new_version: "Latest version",
     dialog_community_verdict_disclaimer:
@@ -251,17 +258,20 @@ const TRANSLATIONS = {
     vote_reason_dev_build: "Dev/pre-release build",
     vote_reason_breaking_change: "Breaking change",
     vote_reason_other: "Other",
-    // Matches real HA's own more-info-update.ts wording exactly (confirmed
-    // against its real source/translation string, not approximated) --
-    // found live, 2026-07-27, direct user feedback: this used to say
-    // "Release announcement" here and "Release page" for the History
-    // entry's own equivalent link below, neither matching HA's actual text.
-    dialog_release_announcement: "Read release announcement",
+    // Used to match real HA's own more-info-update.ts wording exactly
+    // ("Read release announcement", confirmed live 2026-07-27). Changed to
+    // "Open", 2026-08-01, direct user feedback: unlike HA's own dialog,
+    // this link can now sit right below release notes we've *already*
+    // shown (see appendReleaseNotesSection) -- "Read" implies you haven't
+    // seen it yet, which reads oddly right under content you're looking
+    // at; "Open" is just about visiting the source, correct either way,
+    // whether the notes above are shown or this link is the section's only
+    // content.
+    dialog_release_announcement: "Open release announcement",
     dialog_history_heading: "History",
     // No reason recorded at all: an entry logged before this field existed
     // (2026-07-23) -- the generic fallback, not "unknown".
     dialog_history_auto: "Automatically updated",
-    dialog_history_release_link: "Read release announcement",
     dialog_history_changelog: "View changelog",
     dialog_history_available_since: "Available since",
     dialog_history_announced: "Announced",
@@ -270,6 +280,12 @@ const TRANSLATIONS = {
     dialog_history_method_manual: "Manual",
     dialog_history_method_rules: "Automatic, your own rules",
     dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
+    dialog_history_backup_label: "Backup",
+    dialog_history_backup_yes: "Taken before installing",
+    dialog_history_backup_no: "Not supported by this entity",
+    dialog_release_notes_heading: "Release notes",
+    dialog_upstream_release_notes: (repo) => `${repo}'s own release notes:`,
+    dialog_community_heading: "Community",
     list_and: "and",
     dialog_auto_install_held_back: (names) => `Auto-install held back: ${names} reported this jump as problematic.`,
     dialog_auto_install_held_back_community: (count) =>
@@ -405,6 +421,7 @@ const TRANSLATIONS = {
     tab_history: "Historie",
     tab_settings: "Instellingen",
     refresh: "Vernieuwen",
+    checking_updates_toast: "Bezig met controleren op updates…",
     refreshed_toast: "Update Manager ververst",
     dash: "–",
     size_small_short: "Klein",
@@ -450,6 +467,7 @@ const TRANSLATIONS = {
     announce_hours_helper:
       "Hoelang je hebt om een geplande automatische installatie (Updates-tab) te annuleren voordat die echt gebeurt, zodra de uitsteltermijn voorbij is.",
     col_impact: "Impact",
+    dialog_announcement_label: "Aankondiging",
     dialog_current_version: "Geïnstalleerde versie",
     dialog_new_version: "Nieuwste versie",
     dialog_community_verdict_disclaimer:
@@ -487,10 +505,9 @@ const TRANSLATIONS = {
     vote_reason_dev_build: "Dev/pre-release-build",
     vote_reason_breaking_change: "Breaking change",
     vote_reason_other: "Anders",
-    dialog_release_announcement: "Lees de release-aankondiging",
+    dialog_release_announcement: "Release-aankondiging openen",
     dialog_history_heading: "Geschiedenis",
     dialog_history_auto: "Automatisch geüpdatet",
-    dialog_history_release_link: "Lees de release-aankondiging",
     dialog_history_changelog: "Changelog bekijken",
     dialog_history_available_since: "Beschikbaar sinds",
     dialog_history_announced: "Aangekondigd",
@@ -499,6 +516,12 @@ const TRANSLATIONS = {
     dialog_history_method_manual: "Handmatig",
     dialog_history_method_rules: "Automatisch, je eigen regels",
     dialog_history_method_trusted: (names) => `Automatisch, vertrouwde stem van ${names}`,
+    dialog_history_backup_label: "Back-up",
+    dialog_history_backup_yes: "Gemaakt voor het installeren",
+    dialog_history_backup_no: "Niet ondersteund door deze entity",
+    dialog_release_notes_heading: "Release notes",
+    dialog_upstream_release_notes: (repo) => `Eigen release notes van ${repo}:`,
+    dialog_community_heading: "Community",
     list_and: "en",
     // Passive voice ("door X beoordeeld als"), not "X beoordeelde" -- avoids
     // needing separate singular/plural verb forms for a variable-length,
@@ -801,6 +824,25 @@ function projectedAutoInstallTime(u, settings) {
   return new Date(Date.now() + totalSeconds * 1000).toISOString();
 }
 
+// The real moment this "waiting" update's own announcement would actually
+// start (not the full auto-install time projectedAutoInstallTime above
+// already covers -- this is that same countdown's own *first* leg, exactly
+// remaining_seconds from now, the moment status flips to "ready" and
+// announcer.py's decide_action actually creates the real announcement, see
+// its own docstring). Direct user feedback, 2026-08-01: History shows
+// "when it was announced" as its own fact; a "waiting" pending update
+// should show "when it will be announced" the same way, not only the
+// eventual final auto-install time the status text already gives. Same
+// auto-install-enabled guard as projectedAutoInstallTime -- "announcement"
+// isn't a real concept at all for a size that only ever installs
+// manually, same reason History never shows this fact for a manual
+// install either.
+function projectedAnnouncementTime(u, settings) {
+  if (u.status !== "waiting" || u.remaining_seconds == null) return null;
+  if (!autoInstallEnabledFor(u, settings)) return null;
+  return new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
+}
+
 // "Ready" (green) covers two different situations: nothing planned yet
 // (you'd install it yourself), or an auto-install already counting down --
 // status_pending_install makes the difference visible right here, not only
@@ -871,15 +913,15 @@ function timerBadge(tr, u, settings, hass) {
   if (updateIsInstalling(entityState(hass, u.entity_id))) return { installing: true };
   if (u.status === "waiting") {
     const projected = projectedAutoInstallTime(u, settings);
-    if (projected) return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, projected, hass)) };
+    if (projected) return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, projected, hass, true)) };
     if (u.remaining_seconds != null) {
       const readyAt = new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
-      return { icon: ICON_CLOCK_OUTLINE, text: capitalize(absoluteWhen(tr, readyAt, hass)) };
+      return { icon: ICON_CLOCK_OUTLINE, text: capitalize(absoluteWhen(tr, readyAt, hass, true)) };
     }
     return { icon: ICON_CLOCK_OUTLINE, text: tr.relative_soon };
   }
   if (u.pending_install) {
-    return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, u.pending_install.execute_at, hass)) };
+    return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, u.pending_install.execute_at, hass, true)) };
   }
   return null;
 }
@@ -1023,6 +1065,95 @@ function buildKeyValueRows(pairs) {
     rows.appendChild(row);
   });
   return rows;
+}
+
+// A link-only row, exactly like more-info-update.ts's own release_url row
+// (a .row with just a .key containing an <a>, no .value) -- shared by both
+// the pending-update dialog's own Release notes section and History's own
+// per-entry one (appendReleaseNotesSection/ensureCommunitySection's own
+// sibling code), both of which now render this link as *part of* that
+// section instead of off on its own in the facts block, 2026-08-01, direct
+// user feedback: "als die notes ontbreken, dan staat die link bij de
+// details ipv onder het kopje 'Release notes'". null when there's no
+// releaseUrl at all -- callers skip inserting it entirely in that case.
+function buildReleaseUrlLinkRow(tr, releaseUrl) {
+  if (!releaseUrl) return null;
+  const row = document.createElement("div");
+  row.className = "row";
+  const k = document.createElement("div");
+  k.className = "key";
+  const link = document.createElement("a");
+  link.href = releaseUrl;
+  link.target = "_blank";
+  link.rel = "noreferrer";
+  link.textContent = tr.dialog_release_announcement;
+  k.appendChild(link);
+  row.appendChild(k);
+  return row;
+}
+
+// The "hr + Release notes heading + optional markdown + release-
+// announcement link" block -- shared by the pending-update dialog's own
+// Release notes section and History's per-entry equivalent (both the
+// synchronous entry.release_notes path and the async GitHub-fallback
+// path), 2026-08-01, replacing three separately hand-rolled copies of the
+// same sequence. `before` is the reference node to insert ahead of
+// (Node.insertBefore(x, null) already behaves exactly like appendChild, so
+// passing null here lets a caller "append" without a separate code path).
+// notes may be null/empty -- releaseUrl alone is still reason enough to
+// show the section, just with only the link in it; callers must never call
+// this at all when both are empty (no empty section).
+//
+// fromVersion/toVersion, when given, trim `notes` down to just the section
+// covering toVersion before anything else happens to it -- direct user
+// feedback, 2026-08-02, two real add-ons whose own changelog-based release
+// notes dumped their *entire*, years-long history instead of just the
+// relevant version(s): see _trimChangelogToVersion's own comment for the
+// real root cause (a fragile regex in HA core itself). Safe to always pass
+// these through regardless of source -- see that function's own comment
+// on why this can't make an already-correct result worse.
+//
+// linkUrl, when given, is used for the link row instead of releaseUrl --
+// found by review, 2026-08-03: a caller whose GitHub-fallback fetch
+// corrected the *notes* for a downgrade (see
+// _fetchGithubReleaseNotesFallback's own comment) still had no way to also
+// correct the link, since this function always built it from the same
+// releaseUrl also used for decoration. releaseUrl itself is still used for
+// decoration (parsing owner/repo for #issue/@mention links) even when
+// linkUrl is given -- both describe the same repo, only the tag differs,
+// so there's nothing to correct there.
+function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl) {
+  container.insertBefore(document.createElement("hr"), before);
+  const heading = document.createElement("h3");
+  heading.textContent = tr.dialog_release_notes_heading;
+  container.insertBefore(heading, before);
+  if (notes) {
+    const markdown = document.createElement("ha-markdown");
+    markdown.content = _decorateReleaseNotes(_trimChangelogToVersion(notes, fromVersion, toVersion), releaseUrl);
+    container.insertBefore(markdown, before);
+  }
+  const linkRow = buildReleaseUrlLinkRow(tr, linkUrl || releaseUrl);
+  if (linkRow) container.insertBefore(linkRow, before);
+}
+
+// A small, centered loading spinner shown right where release notes will
+// land once their (possibly slow) fetch resolves -- direct user feedback,
+// 2026-08-02, a follow-up to the earlier fixed-delay fix for dialogs
+// visibly shifting right after opening. Confirmed against HA core's own
+// native more-info dialog (more-info-update.ts's own _renderLoader/
+// _markdownLoading, real source): it solves the exact same problem this
+// way, not with a fixed delay -- reserving this small, stable amount of
+// space the whole time content is still loading, instead of a growing gap
+// suddenly appearing once it lands. Callers remove this themselves (see
+// each call site's own .remove()) the moment their fetch actually
+// resolves, whether or not it found anything worth showing.
+function buildReleaseNotesLoader() {
+  const wrap = document.createElement("div");
+  wrap.className = "release-notes-loader";
+  const spinner = document.createElement("ha-spinner");
+  spinner.size = "small";
+  wrap.appendChild(spinner);
+  return wrap;
 }
 
 // The Updates tab's own empty state (matches ha-config-section-updates.ts's
@@ -1188,7 +1319,15 @@ function useAmPm(hass) {
 // update {when}", "Will update automatically {when}"), where a capital
 // "Tomorrow" would be wrong. The one caller that shows it standalone (the
 // Updates list's own trailing pill) capitalizes it itself.
-function absoluteWhen(tr, iso, hass) {
+// `compact`, when true, drops the "today"/"tomorrow" word whenever the bare
+// clock time already makes it unambiguous -- direct user feedback,
+// 2026-08-01: the Updates list's own trailing timer pill (timerBadge,
+// the only caller that passes this) sits right next to the entity title on
+// the same row, and "Today 21:30" was often wide enough to crowd that
+// title out. Left off (the default) for the dialog's own status sentence
+// and the History detail rows, both of which have the room and genuinely
+// benefit from the explicit word.
+function absoluteWhen(tr, iso, hass, compact) {
   if (!iso) return tr.dash;
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -1200,9 +1339,27 @@ function absoluteWhen(tr, iso, hass) {
   const locale = tr.locale;
   const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", hour12: useAmPm(hass) });
   const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const dayDiff = Math.round((startOfDay(date) - startOfDay(new Date())) / 86400000);
-  if (dayDiff === 0) return tr.when_today(time);
-  if (dayDiff === 1) return tr.when_tomorrow(time);
+  const now = new Date();
+  const dayDiff = Math.round((startOfDay(date) - startOfDay(now)) / 86400000);
+  if (dayDiff === 0) {
+    // A dayDiff of 0 combined with a real future timestamp guarantees this
+    // moment is still later today -- the bare time can never be misread as
+    // "already happened" or as some other day, so "today" never actually
+    // disambiguates anything here.
+    if (compact) return time;
+    return tr.when_today(time);
+  }
+  if (dayDiff === 1) {
+    // Only droppable once the target's own clock time has already passed
+    // for today (e.g. it's 20:00 now and this is tomorrow's 09:00) -- only
+    // then is a bare time unambiguous, since that same clock time already
+    // happened today and naturally reads as its next occurrence, tomorrow.
+    // If the target time hasn't passed yet today (tomorrow's 20:00 while
+    // it's 08:00 now), a bare "20:00" would look identical to a same-day
+    // 20:00 -- the word has to stay in that case.
+    if (compact && date.getHours() * 60 + date.getMinutes() <= now.getHours() * 60 + now.getMinutes()) return time;
+    return tr.when_tomorrow(time);
+  }
   if (dayDiff > 1 && dayDiff < 7) return tr.when_weekday(date.toLocaleDateString(locale, { weekday: "long" }), time);
   return tr.when_date(date.toLocaleDateString(locale, { day: "numeric", month: "short" }), time);
 }
@@ -1340,6 +1497,313 @@ async function _runProgressAction(btn, fn) {
   }
 }
 
+// GitHub's own markdown renderer converts `:shortcode:` text into a real
+// emoji glyph (the "gemoji"/gitmoji convention); ha-markdown doesn't know
+// this syntax at all and shows the literal `:boom:` text instead -- found
+// live, 2026-08-01, fetching home-assistant/supervisor's own real release
+// notes (_fetchGithubReleaseNotesFallback below): its own
+// .github/release-drafter.yml headers every section with exactly this
+// syntax (":boom: Breaking Changes", ":sparkles: New Features", etc.),
+// confirmed directly against that file, not guessed. Not exhaustive (real
+// gemoji has ~1800 entries, not worth bundling here, this is a vanilla,
+// no-build-step file) -- covers home-assistant/supervisor's own full list
+// verified live, plus the standard gitmoji.dev set commit-convention
+// release notes commonly use across many other repos too. An unmapped
+// shortcode is left exactly as written, same graceful "can't improve on
+// it, don't break it" treatment as everything else in this fallback.
+const _GITHUB_EMOJI_SHORTCODES = {
+  boom: "💥", sparkles: "✨", bug: "🐛", gem: "💎", package: "📦", rocket: "🚀",
+  rotating_light: "🚨", hammer_and_wrench: "🛠️", gear: "⚙️", recycle: "♻️",
+  wastebasket: "🗑️", arrow_up: "⬆️", arrow_down: "⬇️", tada: "🎉", fire: "🔥",
+  white_check_mark: "✅", warning: "⚠️", memo: "📝", bulb: "💡", zap: "⚡",
+  lock: "🔒", unlock: "🔓", construction: "🚧", wrench: "🔧", hammer: "🔨",
+  art: "🎨", lipstick: "💄", ambulance: "🚑", heavy_plus_sign: "➕",
+  heavy_minus_sign: "➖", pushpin: "📌", construction_worker: "👷",
+  chart_with_upwards_trend: "📈", green_heart: "💚", closed_lock_with_key: "🔐",
+  alien: "👽", truck: "🚚", page_facing_up: "📄", bento: "🍱", wheelchair: "♿",
+  speech_balloon: "💬", card_file_box: "🗃️", loud_sound: "🔊", mute: "🔇",
+  busts_in_silhouette: "👥", children_crossing: "🚸", building_construction: "🏗️",
+  iphone: "📱", egg: "🥚", see_no_evil: "🙈", camera_flash: "📸", alembic: "⚗️",
+  mag: "🔍", label: "🏷️", seedling: "🌱", triangular_flag_on_post: "🚩",
+  goal_net: "🥅", test_tube: "🧪", stethoscope: "🩺", x: "❌",
+  heavy_check_mark: "✔️", "100": "💯", star: "⭐", star2: "🌟",
+  thumbsup: "👍", thumbsdown: "👎", eyes: "👀", heart: "❤️",
+};
+
+function _replaceGithubEmojiShortcodes(text) {
+  return text.replace(/:([a-z0-9_+-]+):/g, (match, name) => _GITHUB_EMOJI_SHORTCODES[name] || match);
+}
+
+// GitHub's own renderer turns bare #1234 (issue/PR references) and
+// @username mentions into real links automatically; ha-markdown has no idea
+// these repo-relative conventions exist and just shows the literal text --
+// same class of gap as the emoji shortcodes above, direct user feedback
+// 2026-08-01 ("1 en 2 klinkt goed"). Needs owner/repo (now returned
+// alongside notes by update_manager/github_release_notes, see
+// websocket_api.py) since #1234 is only ever meaningful relative to the
+// repo the notes came from -- GitHub's own /issues/{n} URL resolves for PRs
+// too, no need to know which of the two it actually is.
+//
+// #1234 -- negative lookbehind on \w and # themselves, so this doesn't
+// match in the middle of a longer token (a version like "2026.7.4" has no
+// "#" in it so that's not a real risk, but a heading like "### 1234" or an
+// already-composed "##1234" would be, without the lookbehind).
+const _GITHUB_ISSUE_REF_RE = /(?<![\w#])#(\d+)\b/g;
+// @username -- GitHub handles are alphanumeric/hyphen, 1-39 chars, can't
+// start or end with a hyphen (not enforced here, a trailing-hyphen handle
+// simply doesn't exist to link to, low stakes). Negative lookbehind on
+// \w/@/. so this doesn't fire mid-email-address (e.g. "user@example.com").
+// Optional trailing "[bot]" captured separately -- found by review,
+// 2026-08-02, checking real popular repos for more edge cases: GitHub's
+// own auto-generated release notes ("bumped by @dependabot[bot] in #1234")
+// are an extremely common shape, confirmed live in several popular HACS
+// repos (dependabot, renovate, and this project's own mealie-actions all
+// use it). A bot's own real profile lives at github.com/apps/{name}, not
+// github.com/{name} (that 404s for most bots) -- without this, the "[bot]"
+// suffix was also left dangling as plain text right after the link
+// instead of being part of it.
+const _GITHUB_MENTION_RE = /(?<![\w@.])@([a-zA-Z0-9][a-zA-Z0-9-]{0,38})(\[bot\])?/g;
+
+function _linkifyGithubReferences(text, owner, repo) {
+  if (!owner || !repo) return text;
+  return text
+    .replace(_GITHUB_ISSUE_REF_RE, (match, number) => `[#${number}](https://github.com/${owner}/${repo}/issues/${number})`)
+    .replace(_GITHUB_MENTION_RE, (match, username, botSuffix) => {
+      const url = botSuffix ? `https://github.com/apps/${username}` : `https://github.com/${username}`;
+      return `[@${username}${botSuffix || ""}](${url})`;
+    });
+}
+
+// Same shape github_release_notes.py's own _RELEASE_URL_RE matches
+// (mirrored here, not shared -- Python and JS can't literally share a
+// regex literal across the backend/frontend split). Used only to recover
+// owner/repo for _linkifyGithubReferences above, for release notes that
+// *aren't* fetched through _fetchGithubReleaseNotesFallback (which already
+// gets owner/repo straight from the backend that resolved them) -- found
+// by review, 2026-08-01: HA's own native update/release_notes call and
+// History's own frozen entry.release_notes snapshot are both real GitHub
+// markdown just as often (HACS's own compiled notes, for one), but neither
+// went through any decoration at all, so the exact same `:boom:`/`#1234`
+// text the fallback path was built to clean up still showed up literally
+// whenever the *other* two sources happened to have something.
+function _parseGithubReleaseUrl(url) {
+  const match = url && /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\//.exec(url);
+  return match ? { owner: match[1], repo: match[2] } : null;
+}
+
+// Applies both decorations in one place -- shared by every release-notes
+// rendering path via insertReleaseNotesSection below, so notes are
+// decorated exactly once regardless of which of the three sources (HA's
+// own native call, the GitHub fallback, or History's frozen snapshot)
+// produced them. Deliberately NOT done inside _fetchGithubReleaseNotesFallback
+// itself anymore (moved here, 2026-08-01) -- doing it in two different
+// places risked double-decorating whenever one path's already-decorated
+// output flowed into another (e.g. re-running the linkify regex on its own
+// already-linkified `[#1234](url)` output matches the bare #1234 inside
+// the brackets again, since `[` isn't a word character either, producing a
+// broken nested link).
+function _decorateReleaseNotes(notes, releaseUrl) {
+  if (!notes) return notes;
+  const parsed = _parseGithubReleaseUrl(releaseUrl);
+  const linkified = parsed ? _linkifyGithubReferences(notes, parsed.owner, parsed.repo) : notes;
+  return _replaceGithubEmojiShortcodes(linkified);
+}
+
+// Finds the one external (not this entity's own repo) GitHub release
+// reference embedded in `notes`, if there's exactly one distinct one --
+// direct user feedback, 2026-08-02, two real examples: a Zigbee2MQTT
+// add-on's own release notes link straight to Koenkk/zigbee2mqtt's exact
+// release ("Updated Zigbee2MQTT to version
+// [2.13.0](.../Koenkk/zigbee2mqtt/releases/tag/2.13.0)"), a Mealie add-on's
+// own release notes link to mealie-recipes/mealie's general releases page
+// with no specific tag at all ("changelog :
+// https://github.com/mealie-recipes/mealie/releases"). Matches a bare URL,
+// not just proper `[text](url)` markdown link syntax -- the Mealie example
+// above isn't wrapped in brackets at all, just plain text containing a raw
+// URL. `ownOwner`/`ownRepo` (this entity's own repo, parsed from its own
+// releaseUrl) are excluded so a repo's own release notes linking back to
+// its own earlier release is never mistaken for "an upstream project".
+// null whenever no such link is found, or more than one *distinct* repo is
+// referenced -- direct user feedback: "misschien alleen doen als er 1 link
+// in zit en niet meer?", several dependency bumps mentioned at once is a
+// real, common shape too, and guessing which one is "the" upstream project
+// among several would be exactly the kind of unreliable guess this whole
+// feature otherwise avoids.
+//
+// Also recognizes `github.com/OWNER/REPO/blob/BRANCH/CHANGELOG.md`, not
+// just `/releases/...` -- direct user feedback, 2026-08-03, a real
+// matterbridge-home-assistant-addon example: its own changelog links a
+// sub-dependency's changelog this way ("Updated matterbridge-hass to
+// [1.4.0](.../matterbridge-hass/blob/main/CHANGELOG.md#140-...)"), a
+// different but equally common GitHub link shape. Carries no tag of its
+// own (a blob link has no release tag in it at all), so the caller's own
+// knownVersion fallback always applies here.
+//
+// A link that mentions neither GitHub shape (matterbridge's own real
+// changelog links its main upstream project to a custom-domain mirror,
+// `matterbridge.io/CHANGELOG.html#...`, confirmed to be the exact same
+// content as github.com/Luligu/matterbridge's own CHANGELOG.md, just
+// HTML-rendered) still can't be resolved to a repo -- there's no reliable,
+// general way to turn an arbitrary docs domain into "this is really this
+// GitHub repo" without guessing, and a one-off hardcoded domain mapping for
+// this single add-on is exactly the kind of per-vendor registry this
+// project avoids elsewhere (see package-tracker-card's own carrier
+// detection). But it still counts as *a* distinct external reference here
+// (keyed by its own URL, unresolved) so an entry mentioning both this kind
+// of link and a real, resolvable GitHub one isn't mistaken for "exactly
+// one" -- matterbridge's own changelog does exactly this in some entries
+// (matterbridge.io alongside matterbridge-hass's real GitHub link), and
+// picking the resolvable one anyway would show the *wrong* (less relevant)
+// project's notes with no indication anything was left out, worse than
+// showing nothing.
+function _findEmbeddedUpstreamRelease(notes, ownOwner, ownRepo) {
+  if (!notes) return null;
+  const linkRe = /https?:\/\/[^\s)]+/g;
+  const releaseRe = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases(?:\/(?:tag\/)?([^/]+))?/;
+  const changelogBlobRe = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/[^/]+\/CHANGELOG\.md/i;
+  const seen = new Map();
+  let match;
+  while ((match = linkRe.exec(notes)) !== null) {
+    const url = match[0];
+    const releaseMatch = releaseRe.exec(url);
+    const blobMatch = !releaseMatch && changelogBlobRe.exec(url);
+    if (!releaseMatch && !blobMatch) {
+      if (!seen.has(url)) seen.set(url, null);
+      continue;
+    }
+    const [, owner, repo, tag] = releaseMatch || blobMatch;
+    if (ownOwner && ownRepo && owner.toLowerCase() === ownOwner.toLowerCase() && repo.toLowerCase() === ownRepo.toLowerCase()) {
+      continue;
+    }
+    const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
+    // "latest" (github.com/owner/repo/releases/latest, a real, common
+    // GitHub URL shape that always redirects to whatever's newest) isn't a
+    // real tag at all -- found by review, 2026-08-02, while checking for
+    // more edge cases: without this, it would have been tried verbatim as
+    // a release tag to fetch (a repo would need to be tagging its own
+    // releases with the literal string "latest" for that to ever work).
+    // Treated the same as no tag at all, so the caller's own knownVersion
+    // fallback kicks in instead.
+    const normalizedTag = tag && tag.toLowerCase() !== "latest" ? tag : null;
+    if (!seen.has(key)) seen.set(key, { owner, repo, tag: normalizedTag });
+  }
+  if (seen.size !== 1) return null;
+  return seen.values().next().value;
+}
+
+// The index of a markdown heading line that *contains* `version` somewhere
+// in it (not necessarily as the entire rest of the line) -- direct user
+// feedback, 2026-08-02, two real examples: matterbridge-home-assistant-addon's
+// own changelog headings read "## 2026.7.5 - 2026-07-31" (a trailing date)
+// and alexbelgium's mealie add-on's own read "## v3.22.0 (2026-08-01)" (a
+// trailing date in parens, plus a "v" prefix). Confirmed against HA core's
+// own SupervisorAddonUpdateEntity.async_release_notes() source: its own
+// regex requires the version to be the *entire* remainder of the heading
+// line, so it silently fails to match either of these real, common shapes
+// and falls back to returning the whole, unfiltered, often years-long
+// changelog file instead -- that's the "belachelijk lange lijst" this
+// exists to salvage. null when no heading anywhere mentions this version at
+// all (nothing confident to find, not an error -- a raw GitHub release
+// body, for one, has no reason to ever contain one).
+//
+// (?![.\-\d]) after the version, not a trailing \b -- found by review,
+// 2026-08-02, confirmed against alexbelgium's real mealie add-on changelog:
+// it has both "## v3.17.0-1 (2026-05-10)" and, right below it, "## v3.17.0
+// (2026-05-09)" (same shape repeats for v3.9.2-2 through v3.9.2-5 vs plain
+// v3.9.2). A trailing \b alone treats the "-" in "v3.17.0-1" as a valid
+// boundary (a hyphen is a non-word character, same as a real line end), so
+// searching for "v3.17.0" incorrectly matched inside "v3.17.0-1"'s own
+// heading first, since that one happens to appear earlier (newer) in the
+// text. This negative lookahead only accepts a match when the version
+// isn't immediately continued by ".", "-", or another digit -- exactly
+// what distinguishes "v3.17.0" on its own from the start of "v3.17.0-1" or
+// "v3.17.00". Matterbridge's own "2026.7.5 - 2026-07-31" shape (a space
+// before the dash) is unaffected either way, since the character right
+// after "5" there is a space, not "-".
+function _findChangelogHeadingIndex(text, version) {
+  if (!version) return null;
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(`^#{1,6}[ \\t].*\\b${escaped}(?![.\\-\\d])`, "m").exec(text);
+  return match ? match.index : null;
+}
+
+// Splits a block of raw changelog text into one chunk per top-level heading
+// it contains, each running from that heading's own line through just
+// before the next one (or the end of the block for the last chunk) -- used
+// by _trimChangelogToVersion's own downgrade branch below to reorder a
+// contiguous newest-first block into the oldest-first reading order a
+// downgrade wants, without losing or reflowing any of the original text.
+function _splitIntoHeadingSections(text) {
+  const headingRe = /^#{1,6}[ \t].*$/gm;
+  const indices = [];
+  let match;
+  while ((match = headingRe.exec(text))) {
+    indices.push(match.index);
+  }
+  if (indices.length === 0) return [text];
+  return indices.map((start, i) => text.slice(start, i + 1 < indices.length ? indices[i + 1] : text.length));
+}
+
+// Trims release-notes text down to just the section covering toVersion,
+// stopping right before fromVersion's own heading if that's found too --
+// same "compile from target down to (not including) from_version" idea as
+// github_release_notes.py's own compile_release_range, just for a raw
+// changelog file's own loose markdown headings instead of GitHub's
+// structured releases list, see _findChangelogHeadingIndex's own comment
+// for why HA's own attempt at this regularly fails. Returns `notes`
+// completely unchanged whenever toVersion's own heading can't be found at
+// all -- never guess, same principle as compile_release_range: this is
+// only ever a refinement of already-real content, never a source of new
+// content, and applying it uniformly to every release-notes source
+// (including ones that were already correctly scoped, like the GitHub
+// fallback's own single-release fetch, which has no version heading in it
+// at all to begin with) is safe by construction for exactly that reason.
+function _trimChangelogToVersion(notes, fromVersion, toVersion) {
+  if (!notes || !toVersion) return notes;
+  const startIndex = _findChangelogHeadingIndex(notes, toVersion);
+  if (startIndex == null) return notes;
+  const afterStartLine = notes.indexOf("\n", startIndex);
+  const searchFrom = afterStartLine === -1 ? notes.length : afterStartLine + 1;
+  // A downgrade (fromVersion newer than toVersion) has fromVersion's own
+  // heading appearing *before* toVersion's in this newest-first text, not
+  // after -- found by review, 2026-08-02, while checking for more edge
+  // cases: the exact same directional assumption already fixed in
+  // github_release_notes.py's own compile_release_range (a real 7.1.10 ->
+  // 7.1.9 downgrade), missed here at the time. Searching for fromVersion
+  // only *after* toVersion's own heading (the plain case further below)
+  // never finds it in that case, so this used to fall through to
+  // "everything from toVersion's heading to the end of the file" --
+  // confirmed live against alexbelgium's real mealie add-on changelog
+  // (from=v3.10.1, to=v3.9.2 walked all the way back to its very first,
+  // 2021 release). First fixed by only ever showing the one version
+  // actually landed on; reconsidered the same day (direct user feedback --
+  // a downgrade is really "what am I giving up by stepping back", which is
+  // exactly what the versions between toVersion and fromVersion describe)
+  // to show all of them instead, same idea as compile_release_range's own
+  // downgrade branch: every heading from fromVersion down through
+  // toVersion's own section, reordered oldest-first (you land on toVersion
+  // first, then read forward through what you're losing, ending on
+  // fromVersion, the version you were just on) -- the opposite of this
+  // text's own newest-first order, so the matched block is split back into
+  // its individual heading sections and reversed, not just sliced.
+  // Deliberately NOT the same as the "fromVersion genuinely never given at
+  // all" case right below, whose own to-the-end-of-file behavior is correct
+  // for that different situation and must stay that way.
+  const fromHeadingIndex = fromVersion ? _findChangelogHeadingIndex(notes.slice(0, startIndex), fromVersion) : null;
+  if (fromHeadingIndex != null) {
+    const nextHeading = /^#{1,6}[ \t]/m.exec(notes.slice(searchFrom));
+    const blockEnd = nextHeading ? searchFrom + nextHeading.index : notes.length;
+    return _splitIntoHeadingSections(notes.slice(fromHeadingIndex, blockEnd)).reverse().join("");
+  }
+  if (!fromVersion) return notes.slice(startIndex);
+  // Searched only from just after toVersion's own heading line, not from
+  // the very start of `notes` -- fromVersion's own heading must be a later
+  // one, never toVersion's own line (a coincidental substring match there
+  // would otherwise cut the result down to nothing).
+  const relativeEndIndex = _findChangelogHeadingIndex(notes.slice(searchFrom), fromVersion);
+  return relativeEndIndex == null ? notes.slice(startIndex) : notes.slice(startIndex, searchFrom + relativeEndIndex);
+}
+
 class UpdateManagerPanel extends HTMLElement {
   constructor() {
     super();
@@ -1359,6 +1823,18 @@ class UpdateManagerPanel extends HTMLElement {
     this._installSnapshots = null;
     this._formData = null;
     this._loadError = null;
+    // Release notes for an already-published version/entry don't change --
+    // direct user feedback, 2026-08-01: "als ik een dialog vaker achter
+    // elkaar open moet hij die content telkens opnieuw ophalen. overbodig
+    // toch?" Cleared only by a full page reload (no explicit eviction),
+    // shared by _fetchGithubReleaseNotesFallback and
+    // _fetchNativeReleaseNotes below (different key prefixes, one Map).
+    // Deliberately NOT extended to the community verdict fetch
+    // (verdict_for_version) -- that one stays uncached on purpose, votes
+    // genuinely can change between two dialog opens, see its own
+    // websocket_api.py docstring ("the right price for always tell the
+    // truth right now").
+    this._releaseNotesCache = new Map();
   }
 
   set hass(hass) {
@@ -1498,13 +1974,161 @@ class UpdateManagerPanel extends HTMLElement {
     );
   }
 
+  // Last-resort release-notes source, shared by both the pending-update
+  // dialog and the History section below: GitHub's own release body for
+  // this exact release_url, fetched server-side (update_manager/
+  // github_release_notes, see websocket_api.py's own docstring on that
+  // handler for the full reasoning). null on anything -- no release_url,
+  // an unparseable one, a 404, a network error -- same graceful "nothing to
+  // add" treatment the other two release-notes sources already get, never
+  // surfaced as an error to the user (this is a nice-to-have enrichment,
+  // not something a failure here should be loud about).
+  //
+  // fromVersion, when given, asks the backend to compile notes across every
+  // release skipped since that version instead of just the newest one (see
+  // compile_release_range's own docstring) -- direct user feedback,
+  // 2026-08-01: skipping straight from an old installed version otherwise
+  // only ever shows the single newest release's own notes.
+  //
+  // toVersion, when given, asks the backend to correct releaseUrl's own tag
+  // to whatever release actually matches this version before fetching
+  // anything -- direct user feedback, 2026-08-01, found on a real downgrade
+  // (2.0 -> 1.0): releaseUrl reflects "latest available", not "what was
+  // actually installed" (true for HACS specifically), so a downgrade used
+  // to show the newer version's own notes instead of the version actually
+  // ended up on. Always pass the version this fetch is actually *for*
+  // (u.latest_version for the pending dialog, entry.to_version for
+  // History) -- never assume releaseUrl's own embedded version already
+  // matches it.
+  // Cached in this._releaseNotesCache (see the constructor's own comment)
+  // -- keyed on every input that can change the result, so a later call
+  // with a different fromVersion/toVersion (a newly-available version, a
+  // different History entry reusing the same repo) never serves another
+  // jump's cached notes. Decoration (emoji/linkify) happens downstream, in
+  // insertReleaseNotesSection -- not here, not anymore (found by review,
+  // 2026-08-01): doing it in this function only ever decorated *this*
+  // source's notes, leaving update/release_notes and History's own
+  // entry.release_notes undecorated even though both are just as often
+  // real GitHub markdown.
+  //
+  // A transient failure (network hiccup, rate limit, a 404 on an
+  // unexpectedly-renamed repo) is deliberately NOT cached -- found by
+  // review, 2026-08-01: caching the promise unconditionally meant a single
+  // bad request poisoned this exact cache key for the rest of the panel's
+  // lifetime, indistinguishable from a confirmed "this release genuinely
+  // has no notes" result. Only a result that actually resolved (even to
+  // null, meaning the fetch succeeded but truly found nothing) is worth
+  // remembering; only a call that itself threw deserves a real retry next
+  // time.
+  // Returns { notes, correctedUrl }, not just notes -- found by review,
+  // 2026-08-03: a to_version match corrects the *notes* to the version
+  // actually being described (see the backend's own docstring), but the
+  // "Read release announcement" link callers build from their own,
+  // uncorrected releaseUrl was never updated to match, so it kept pointing
+  // at the newest release even once the notes right above it correctly
+  // described an older one, for a downgrade. correctedUrl is that match's
+  // own html_url, null whenever no correction happened (no to_version, or
+  // no match found) -- callers substitute it in place of their own
+  // releaseUrl for the link specifically, see insertReleaseNotesSection's
+  // own linkUrl parameter.
+  async _fetchGithubReleaseNotesFallback(releaseUrl, fromVersion, toVersion) {
+    if (!releaseUrl) return { notes: null, correctedUrl: null };
+    const cacheKey = `github:${releaseUrl}:${fromVersion || ""}:${toVersion || ""}`;
+    if (this._releaseNotesCache.has(cacheKey)) return this._releaseNotesCache.get(cacheKey);
+    let result;
+    try {
+      result = await this._hass.callWS({
+        type: "update_manager/github_release_notes",
+        release_url: releaseUrl,
+        ...(fromVersion ? { from_version: fromVersion } : {}),
+        ...(toVersion ? { to_version: toVersion } : {}),
+      });
+    } catch {
+      return { notes: null, correctedUrl: null };
+    }
+    const resolved = { notes: (result && result.notes) || null, correctedUrl: (result && result.corrected_url) || null };
+    this._releaseNotesCache.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  // Same cache, a "native" key prefix so it can never collide with
+  // _fetchGithubReleaseNotesFallback's own "github" one -- HA's own
+  // update/release_notes websocket command has no from/to params of its
+  // own (it always reflects the entity's current state), so version is
+  // included here explicitly instead, same reasoning as toVersion above:
+  // a newly-available version must never serve a stale, older version's
+  // own cached notes. Same "don't cache a transient failure" reasoning as
+  // _fetchGithubReleaseNotesFallback above too.
+  async _fetchNativeReleaseNotes(entityId, version) {
+    const cacheKey = `native:${entityId}:${version}`;
+    if (this._releaseNotesCache.has(cacheKey)) return this._releaseNotesCache.get(cacheKey);
+    let notes;
+    try {
+      notes = await this._hass.callWS({ type: "update/release_notes", entity_id: entityId });
+    } catch {
+      return null;
+    }
+    this._releaseNotesCache.set(cacheKey, notes);
+    return notes;
+  }
+
+  // "Also see: OWNER/REPO's own release notes" -- direct user feedback,
+  // 2026-08-02: many add-ons are thin wrappers around an external upstream
+  // project, and their own release notes are often just a one-line "bumped
+  // to X" note pointing at the real, more detailed upstream notes (see
+  // _findEmbeddedUpstreamRelease's own comment for the two real examples
+  // this was built from). If that embedded link already names a specific
+  // tag, that's used directly, no guessing needed; if it's just a bare
+  // releases-listing link with no tag, `knownVersion` (whatever version
+  // this section already describes) is tried as a candidate tag instead,
+  // since an add-on's own version number frequently *is* the upstream tag
+  // verbatim (confirmed live for mealie-recipes/mealie). Reuses
+  // _fetchGithubReleaseNotesFallback's own cache, so re-opening the same
+  // dialog doesn't re-fetch this either. Never chases a second link inside
+  // whatever this fetch itself returns (one level deep only), and does
+  // nothing visible at all -- no error, no empty section -- whenever no
+  // link is found, more than one distinct repo is referenced, or the
+  // guessed tag 404s, same graceful "nothing to add" treatment as every
+  // other release-notes enrichment in this file.
+  //
+  // Scanned on the same fromVersion/toVersion-trimmed text the Release
+  // notes section itself displays, not the raw, untrimmed `notes` -- found
+  // by review, 2026-08-03: an add-on entity's own native release_notes can
+  // itself be the *entire*, years-long changelog file (the very fallback
+  // _trimChangelogToVersion exists to salvage, see its own comment), which
+  // would otherwise let this function's "exactly one distinct reference"
+  // check see links from every version ever logged, not just the one jump
+  // actually being shown -- both diluting real matches with old, irrelevant
+  // ones and risking a false "exactly one" once matterbridge.io-style
+  // unresolved links are counted too (see _findEmbeddedUpstreamRelease's
+  // own comment).
+  async _appendUpstreamReleaseNotes(container, before, tr, notes, releaseUrl, fromVersion, toVersion) {
+    const scoped = _trimChangelogToVersion(notes, fromVersion, toVersion);
+    const ownRepo = _parseGithubReleaseUrl(releaseUrl);
+    const found = _findEmbeddedUpstreamRelease(scoped, ownRepo && ownRepo.owner, ownRepo && ownRepo.repo);
+    if (!found) return;
+    const tag = found.tag || toVersion;
+    if (!tag) return;
+    const upstreamUrl = `https://github.com/${found.owner}/${found.repo}/releases/tag/${tag}`;
+    const { notes: upstreamNotes } = await this._fetchGithubReleaseNotesFallback(upstreamUrl, null, null);
+    if (!upstreamNotes) return;
+    const label = document.createElement("p");
+    const strong = document.createElement("strong");
+    strong.textContent = tr.dialog_upstream_release_notes(`${found.owner}/${found.repo}`);
+    label.appendChild(strong);
+    container.insertBefore(label, before);
+    const markdown = document.createElement("ha-markdown");
+    markdown.content = _decorateReleaseNotes(upstreamNotes, upstreamUrl);
+    container.insertBefore(markdown, before);
+  }
+
   async _refresh() {
     // Re-fetches our own already-computed state (updates/history/settings)
-    // and redraws -- it does not itself poll HA Core/HACS for brand new
-    // versions (that's each underlying integration's own update coordinator,
-    // typically hourly), just makes sure the page reflects whatever this
-    // integration's own coordinator already knows right now, including
-    // anything the 15-minute periodic recheck picked up since the page was
+    // and redraws, plus (see the homeassistant.update_entity call below)
+    // actually makes every underlying integration poll for a brand new
+    // version right now, instead of only ever reflecting whatever this
+    // integration's own coordinator already knew, including anything the
+    // 15-minute periodic recheck happened to pick up since the page was
     // last loaded. Found live: clicking it gave no visible feedback at all,
     // indistinguishable from doing nothing -- the spin+disable below can
     // still be too brief to notice on a fast connection, so this also
@@ -1515,6 +2139,32 @@ class UpdateManagerPanel extends HTMLElement {
     const icon = btn && btn.querySelector("ha-icon");
     if (icon) icon.classList.add("spinning");
     try {
+      // Same service HA's own Settings > Updates page calls for its "Check
+      // for updates" action (verified against home-assistant/frontend's own
+      // src/data/update.ts, checkForEntityUpdates) -- forces every update.*
+      // entity on the system to actually re-poll its own integration for a
+      // new version, not just refresh whatever this integration's own
+      // coordinator already had cached. Every entity, not just the ones
+      // this integration currently tracks as pending: a brand-new update
+      // that just became available wouldn't be "pending" anywhere yet, the
+      // whole point of checking. Direct user feedback, 2026-08-01 ("kan die
+      // knop ook 'check for updates' doen? zoals ha zelf doet").
+      //
+      // Excludes anything already installing, unlike HA's own
+      // checkForEntityUpdates (confirmed against its real source, it
+      // doesn't make this exception either) -- direct user feedback,
+      // 2026-08-02: "als een update in progress is, ik op refresh druk en
+      // refreshen eerder klaar is dan de update, dan verdwijnt de spinner".
+      // Forcing a fresh poll on an entity that's busy installing risks the
+      // underlying integration reporting a momentarily inconsistent state
+      // while it's occupied (integration-specific, outside anything we
+      // control), which our own coordinator can misread as "no longer
+      // pending" and drop from its cache entirely -- taking this row, and
+      // its spinner, down with it. There's no real reason to check for an
+      // even newer version on something already mid-install anyway.
+      const updateEntityIds = Object.keys(this._hass.states).filter(
+        (entityId) => entityId.startsWith("update.") && !updateIsInstalling(this._hass.states[entityId])
+      );
       // Awaited before _loadAll(), not alongside it: direct user feedback,
       // 2026-07-25 ("als ik op de refresh knop druk wil ik dat hij ook de
       // meest recente info van de votes naar binnen haalt") -- community
@@ -1524,8 +2174,42 @@ class UpdateManagerPanel extends HTMLElement {
       // currently-pending entity and patches the coordinator's own cache
       // *before* _loadAll()'s own update_manager/updates call reads it, so
       // this one manual click is guaranteed to show genuinely current
-      // counts, not whatever was last cached.
-      await this._hass.callWS({ type: "update_manager/refresh_community_verdicts" });
+      // counts, not whatever was last cached. Also reconciles my_votes.py's
+      // entire local record against live community-votes data server-side
+      // (websocket_api.py's own refresh_community_verdicts handler), an
+      // explicit "tell me the truth now" action that bypasses the usual
+      // grace period a passive dialog-open respects.
+      //
+      // Run alongside (not after) the update_entity dispatch + its 15s wait
+      // below, not sequentially before _loadAll() the way it first was --
+      // found by review, 2026-08-01: the two are otherwise unrelated (one's
+      // about newly-available versions, the other about vote data), so
+      // there's nothing forcing the verdict refresh to wait for the full
+      // 15s update_entity settle time to even start. Both still finish
+      // before _loadAll() reads either's result.
+      const verdictRefresh = this._hass.callWS({ type: "update_manager/refresh_community_verdicts" });
+      // A no-op .catch() here, not the only error handling for this call --
+      // found by review, 2026-08-01: without it, a quick rejection (a fast
+      // "not_found" from the backend, say) fires the browser's own
+      // unhandled-rejection console warning well before the real `await
+      // verdictRefresh` below ever runs (that only happens after the
+      // update_entity call and its full 15s wait), since no handler was
+      // attached yet at the point the engine checks. The real handling
+      // (propagating into this method's own try/finally) still happens at
+      // that later await -- this only silences the premature warning.
+      verdictRefresh.catch(() => {});
+      if (updateEntityIds.length) {
+        this._showToast(this._tr.checking_updates_toast);
+        await this._hass.callService("homeassistant", "update_entity", { entity_id: updateEntityIds });
+        // There's no reliable way to know when every one of those polls has
+        // actually finished (same reasoning HA's own checkForEntityUpdates
+        // uses for its own identical wait) -- 15s is a practical, empirical
+        // balance between giving slower integrations (a HACS repo's own
+        // GitHub API round-trip, for one) time to land, and not leaving the
+        // button spinning indefinitely.
+        await new Promise((resolve) => setTimeout(resolve, 15000));
+      }
+      await verdictRefresh;
       await this._loadAll();
       this._renderContent();
       this._showToast(this._tr.refreshed_toast);
@@ -1625,19 +2309,41 @@ class UpdateManagerPanel extends HTMLElement {
   // has to work when the dialog isn't even open.
   // No progress bar of our own to redraw here anymore (see "Open update",
   // 2026-07-29: the actual install/its live progress happens in HA's own
-  // dialog now) -- what's left is still needed regardless of how an
-  // install got started (this dialog's own former Install button, "Update
-  // all", auto-install, or the rollout queue): Skip/Cancel/Unskip must
-  // still disable themselves while one is genuinely running, and the
-  // status alert's own text needs to keep reflecting reality live (its
-  // own "Installing…" override, independent of any progress bar).
+  // dialog now). Direct user feedback, 2026-08-01: "als hij installing is
+  // wil ik niet onze dialog tonen maar direct die van ha waarin de
+  // progress zichtbaar is" -- so as of this method's own redirect below,
+  // this dialog is never actually left open and visible once an install
+  // starts, however it got started (this dialog's own former Install
+  // button, "Update all", auto-install, or the rollout queue). What
+  // follows the redirect (disabling Skip/Cancel/Unskip, the status alert's
+  // own live "Installing…" text) is effectively unreachable for that
+  // reason, kept only for the brief window before HA's own dialog-close
+  // animation actually finishes and this._dialogEntityId is cleared -- see
+  // that redirect's own comment.
   _updateDialogProgress() {
     if (!this._dialogEntityId) return;
     const state = entityState(this._hass, this._dialogEntityId);
     if (state === this._dialogLastState) return;
+    const wasInstalling = updateIsInstalling(this._dialogLastState);
     this._dialogLastState = state;
 
     const installing = updateIsInstalling(state);
+
+    // Same redirect _openDetailDialog itself already does at open time
+    // (see its own comment) -- here for the case an install starts (or
+    // resumes, e.g. "Update all", auto-install, the rollout queue) while
+    // this exact entity's own dialog happens to already be open. Only on
+    // the actual not-installing-to-installing transition (wasInstalling
+    // guards this), not on every later push while it's still installing --
+    // and only for the live pending view, never a History view
+    // (_dialogHistoryEntry set): a past, already-completed entry has
+    // nothing to do with whatever this same entity might be doing now.
+    if (installing && !wasInstalling && !this._dialogHistoryEntry) {
+      this._dialogEl.open = false;
+      this._openMoreInfo(this._dialogEntityId);
+      return;
+    }
+
     for (const btn of this._dialogActionButtons) btn.disabled = installing;
 
     if (this._dialogStatusTextNode) {
@@ -1671,11 +2377,20 @@ class UpdateManagerPanel extends HTMLElement {
       const state = entityState(this._hass, u.entity_id);
       const installing = updateIsInstalling(state);
       const installedVersion = state && state.attributes && state.attributes.installed_version;
-      next.set(u.entity_id, { installing, installedVersion });
+      // Direct user feedback, 2026-08-02: "als er op de achtergrond ontdekt
+      // wordt dat er een nieuwe update beschikbaar voor is, dan ververst de
+      // dialog niet" -- this loop already caught installed_version changing
+      // (an install actually finishing), but never latest_version changing
+      // on its own (a newer version being discovered while nothing gets
+      // installed), so a dialog already open for that exact entity just
+      // kept showing the stale "New version" fact indefinitely, with
+      // nothing short of closing and reopening it ever re-reading the truth.
+      const latestVersion = state && state.attributes && state.attributes.latest_version;
+      next.set(u.entity_id, { installing, installedVersion, latestVersion });
       const prev = previous.get(u.entity_id);
       if (!prev) continue;
       if (prev.installing !== installing) installingChanged = true;
-      if (prev.installedVersion !== installedVersion) {
+      if (prev.installedVersion !== installedVersion || prev.latestVersion !== latestVersion) {
         anyVersionChanged = true;
         if (u.entity_id === this._dialogEntityId) dialogEntityVersionChanged = true;
       }
@@ -2185,6 +2900,19 @@ class UpdateManagerPanel extends HTMLElement {
   // color/left-border treatment, not a plain paragraph), and version facts
   // use the same key/value ".row" pattern more-info-update.ts itself uses.
   _openDetailDialog(entityId, historyEntry = null) {
+    // While an update is actually installing, HA's own more-info dialog
+    // already has the real thing (a live progress bar, a real percentage)
+    // -- direct user feedback, 2026-08-01: "als hij installing is wil ik
+    // niet onze dialog tonen maar direct die van ha waarin de progress
+    // zichtbaar is". Only for the entity's own live pending view
+    // (!historyEntry) -- a History row is always a *past*, already-
+    // completed install, irrelevant to whatever this same entity might be
+    // doing right now. See _updateDialogProgress's own matching guard for
+    // the case an install starts while this dialog is already open.
+    if (!historyEntry && updateIsInstalling(entityState(this._hass, entityId))) {
+      this._openMoreInfo(entityId);
+      return;
+    }
     const tr = this._tr;
     const dialog = this._dialogEl;
     // Tracks which entity the dialog is currently showing -- lets an
@@ -2477,33 +3205,44 @@ class UpdateManagerPanel extends HTMLElement {
         body.appendChild(heldBackAlert);
       }
 
+      // Mutually exclusive: an entity is either "ready" with a real,
+      // already-created announcement (pending_install.announced_at, exact
+      // same fact History shows once installed), or "waiting" with at most
+      // a *projected* one (projectedAnnouncementTime, only meaningful once
+      // auto-install is actually enabled for its size) -- never both.
+      // Direct user feedback, 2026-08-01: "bij postponed zie je niet
+      // wanneer hij announced gaat worden en bij ready net zo goed" --
+      // History already shows this fact for a completed install, the live
+      // dialog showed it nowhere at all.
+      let announcementLabel = null;
+      let announcementValue = null;
+      if (u.pending_install) {
+        announcementLabel = tr.dialog_history_announced;
+        announcementValue = absoluteWhen(tr, u.pending_install.announced_at, this._hass);
+      } else {
+        const projectedAnnouncement = projectedAnnouncementTime(u, this._settings);
+        if (projectedAnnouncement) {
+          announcementLabel = tr.dialog_announcement_label;
+          announcementValue = absoluteWhen(tr, projectedAnnouncement, this._hass);
+        }
+      }
       body.appendChild(
         buildKeyValueRows([
           [tr.dialog_current_version, u.installed_version],
           [tr.dialog_new_version, u.latest_version],
           [tr.col_impact, sizeShort],
+          [announcementLabel, announcementValue],
         ])
       );
 
-      // A link-only row, exactly like more-info-update.ts's own
-      // release_url row (a .row with just a .key containing an <a>, no
-      // .value) -- not something we compute ourselves, straight from the
-      // entity's own attribute.
+      // Not rendered here -- moved into the Release notes section below
+      // (appendReleaseNotesSection), 2026-08-01, direct user feedback:
+      // "Read release announcement is soms een wat vreemde tekst als die
+      // notes er gewoon boven staan. En als die notes ontbreken, dan staat
+      // die link bij de details ipv onder het kopje 'Release notes'." Kept
+      // here only as the plain attribute read -- straight from the
+      // entity's own state, not something we compute ourselves.
       const releaseUrl = state && state.attributes && state.attributes.release_url;
-      if (releaseUrl) {
-        const row = document.createElement("div");
-        row.className = "row";
-        const k = document.createElement("div");
-        k.className = "key";
-        const link = document.createElement("a");
-        link.href = releaseUrl;
-        link.target = "_blank";
-        link.rel = "noreferrer";
-        link.textContent = tr.dialog_release_announcement;
-        k.appendChild(link);
-        row.appendChild(k);
-        body.appendChild(row);
-      }
 
       // Journey A (report-only, no healthy button) unconditionally -- this
       // is inherently about a not-yet-installed version, regardless of
@@ -2525,31 +3264,79 @@ class UpdateManagerPanel extends HTMLElement {
       // something we compute ourselves. Entities without that feature just
       // expose a plain release_summary attribute instead -- more-info-
       // update.ts falls back to exactly that same attribute when the
-      // feature isn't supported, so we do too.
+      // feature isn't supported, so we do too. Neither of those is
+      // guaranteed to actually have anything, though (direct user feedback,
+      // 2026-08-01, confirmed live -- "dus het is absoluut niet alleen
+      // hacs": HACS's own async_release_notes() returns None whenever
+      // pending_restart is still true or the installed version isn't in its
+      // own published_tags, and Home Assistant Supervisor's own update
+      // entity doesn't support RELEASE_NOTES at all), so both paths below
+      // fall back to fetching GitHub's own release body directly
+      // (_fetchGithubReleaseNotesFallback) whenever they'd otherwise show
+      // nothing but the release_url link above. The `<hr>` + markdown block
+      // is only ever appended once real content is in hand, from whichever
+      // of the three sources actually had it -- not upfront, unlike the old
+      // version, which could leave a bare `<hr>` with nothing under it
+      // whenever update/release_notes resolved empty.
+      // An anchor, placed right here synchronously, so appendReleaseNotes
+      // below can always insert *before* the History section further down
+      // (also appended synchronously, right after this whole block) no
+      // matter how long the actual fetch takes -- direct user feedback,
+      // 2026-08-01, seen on a real browser_mod pending update: a plain
+      // trailing body.appendChild landed release notes after History
+      // instead, since History's own synchronous append always finished
+      // first whenever the notes took a moment longer to resolve (e.g. the
+      // GitHub fallback fetch above).
+      const releaseNotesAnchor = document.createComment("release-notes");
+      body.appendChild(releaseNotesAnchor);
       const supportsReleaseNotes = state && (state.attributes.supported_features || 0) & 16;
+      // notes may be null/empty here -- releaseUrl alone is still reason
+      // enough to show the section, just with only the link in it (see
+      // insertReleaseNotesSection's own comment). Never called at all when
+      // both are empty, same "no empty section" treatment as before.
+      const appendReleaseNotesSection = (notes, linkUrl) => {
+        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl);
+        if (notes) this._appendUpstreamReleaseNotes(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version);
+      };
       if (supportsReleaseNotes) {
-        body.appendChild(document.createElement("hr"));
-        const notesContainer = document.createElement("div");
-        body.appendChild(notesContainer);
-        this._hass
-          .callWS({ type: "update/release_notes", entity_id: entityId })
-          .then((notes) => {
-            // Stale by the time it resolves (dialog closed, or reopened
-            // for a different entity) -- drop it rather than inserting
-            // into a container nobody's looking at anymore.
-            if (isDialogStale() || !notes) return;
-            const markdown = document.createElement("ha-markdown");
-            markdown.content = notes;
-            notesContainer.appendChild(markdown);
-          })
-          .catch(() => {});
+        const loader = buildReleaseNotesLoader();
+        body.insertBefore(loader, releaseNotesAnchor);
+        // _fetchNativeReleaseNotes already folds a rejection into a null
+        // resolution (see its own comment) -- a rejected update/release_notes
+        // call and a resolved-but-empty one both need exactly the same
+        // fallback treatment, so one .then() here covers both.
+        this._fetchNativeReleaseNotes(entityId, u.latest_version).then(async (notes) => {
+          // Stale by the time it resolves (dialog closed, or reopened for
+          // a different entity) -- checked *before* the fallback fetch
+          // below too, not just after it, so a stale dialog doesn't still
+          // pay for that (heavier) extra request for nobody. loader.remove()
+          // either way: harmless even if dialog.innerHTML already wiped it
+          // out from under us.
+          if (isDialogStale()) {
+            loader.remove();
+            return;
+          }
+          let finalNotes = notes;
+          let correctedUrl = null;
+          if (!finalNotes) {
+            ({ notes: finalNotes, correctedUrl } = await this._fetchGithubReleaseNotesFallback(
+              releaseUrl, u.installed_version, u.latest_version
+            ));
+          }
+          loader.remove();
+          if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, correctedUrl);
+        });
       } else {
         const releaseSummary = state && state.attributes && state.attributes.release_summary;
         if (releaseSummary) {
-          body.appendChild(document.createElement("hr"));
-          const markdown = document.createElement("ha-markdown");
-          markdown.content = releaseSummary;
-          body.appendChild(markdown);
+          appendReleaseNotesSection(releaseSummary);
+        } else {
+          const loader = buildReleaseNotesLoader();
+          body.insertBefore(loader, releaseNotesAnchor);
+          this._fetchGithubReleaseNotesFallback(releaseUrl, u.installed_version, u.latest_version).then(({ notes, correctedUrl }) => {
+            loader.remove();
+            if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, correctedUrl);
+          });
         }
       }
 
@@ -2674,6 +3461,14 @@ class UpdateManagerPanel extends HTMLElement {
             [tr.dialog_history_announced, entry.announced_at ? absoluteWhen(tr, entry.announced_at, this._hass) : null],
             [tr.dialog_history_installed_at, absoluteWhen(tr, entry.installed_at, this._hass)],
             [tr.dialog_history_method_label, installMethodText(tr, entry)],
+            // null (not just false) on a manual install -- install_log.py's
+            // own backup_used field is only ever a sure fact for an
+            // auto-install (its own dispatch unconditionally requests a
+            // backup whenever the entity supports it); a manual install
+            // could equally have gone through HA's own native dialog and
+            // its own separate checkbox, entirely invisible to us, so this
+            // row is left out rather than guessing.
+            [tr.dialog_history_backup_label, entry.backup_used == null ? null : (entry.backup_used ? tr.dialog_history_backup_yes : tr.dialog_history_backup_no)],
           ])
         );
 
@@ -2703,30 +3498,107 @@ class UpdateManagerPanel extends HTMLElement {
         // this as if still outstanding long after the restart it was
         // warning about already happened. release_notes (the real,
         // durable changelog) has no such problem and stays.
-        if (entry.release_notes) {
-          const markdown = document.createElement("ha-markdown");
-          markdown.content = entry.release_notes;
-          expandWrap.appendChild(markdown);
+        // The release_url link now renders as *part of* this section (see
+        // buildReleaseUrlLinkRow's own comment), not off on its own further
+        // down -- 2026-08-01, direct user feedback: "als die notes
+        // ontbreken, dan staat die link bij de details ipv onder het
+        // kopje 'Release notes'".
+        // entry.release_notes, when present, is normally trusted as-is --
+        // except when it looks like HACS's own compile is anchored to
+        // completely the wrong end, not just imprecisely scoped (which
+        // insertReleaseNotesSection's own trim step already handles safely
+        // on its own). Direct user feedback, 2026-08-02, a real downgrade
+        // (7.1.10 -> 7.1.9): HACS's own async_release_notes() (see its own
+        // docstring, "Compile release notes from installed version up to
+        // the latest") has no concept of a downgrade at all -- it always
+        // walks from whatever it still considers "latest" down to
+        // installed_version, so for a downgrade this produces a real,
+        // non-empty compiled result that describes entirely different
+        // (newer) versions than what actually got installed, with
+        // from_version's own heading right at the top and to_version's own
+        // heading never included at all (the compile loop breaks the
+        // moment it reaches that tag, before ever appending anything for
+        // it). Detected the same way the trim step finds headings at all:
+        // from_version's own heading present but to_version's own absent
+        // is specific enough to this exact failure mode that it doesn't
+        // false-positive on a normal upgrade either (whose own compiled
+        // range never reaches back far enough to include from_version's
+        // heading at all, upgrade or downgrade -- see
+        // _findChangelogHeadingIndex's own comment).
+        const releaseNotesLooksWrongForThisJump =
+          !!entry.release_notes &&
+          _findChangelogHeadingIndex(entry.release_notes, entry.from_version) != null &&
+          _findChangelogHeadingIndex(entry.release_notes, entry.to_version) == null;
+        if (entry.release_notes && !releaseNotesLooksWrongForThisJump) {
+          // Same heading the pending-update dialog's own Release notes
+          // section now has (2026-08-01, direct user feedback: "dit
+          // consistent doorvoeren binnen een history item" -- History's
+          // per-entry changelog was the one place left without it). Appended
+          // eagerly, unlike the release_url-only branch below -- this is
+          // already-available data (install_log.py's own frozen snapshot),
+          // no fetch involved, same as every other synchronously-built part
+          // of this card.
+          insertReleaseNotesSection(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version);
+          this._appendUpstreamReleaseNotes(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version);
         }
-        // A release_url with no full notes used to navigate away on click
-        // instead (external-link icon, no expand) -- now just one more link
-        // row inside the same expand, same .row/.key link-only pattern the
-        // entity's own *currently* pending update uses for this (confirmed
-        // against more-info-update.ts's own source, not a one-off style).
-        if (entry.release_url) {
-          const linkRow = document.createElement("div");
-          linkRow.className = "row";
-          const linkKey = document.createElement("div");
-          linkKey.className = "key";
-          const link = document.createElement("a");
-          link.href = entry.release_url;
-          link.target = "_blank";
-          link.rel = "noreferrer";
-          link.textContent = tr.dialog_history_release_link;
-          linkKey.appendChild(link);
-          linkRow.appendChild(linkKey);
-          expandWrap.appendChild(linkRow);
-        }
+        // Same last-resort GitHub fallback as the pending-update section
+        // above (_fetchGithubReleaseNotesFallback) -- entry.release_notes is
+        // only ever install_log.py's own snapshot of whatever the entity's
+        // release_notes/release_summary happened to say *at install time*,
+        // which HACS entities regularly have nothing for (see that method's
+        // own docstring), or (releaseNotesLooksWrongForThisJump) have the
+        // wrong thing for.
+        //
+        // Lazy, same reasoning as ensureCommunitySection right below --
+        // found by review, 2026-08-01: this used to fire its own live
+        // GitHub fetch unconditionally in this forEach, for every entry
+        // lacking entry.release_notes, directly contradicting the reasoning
+        // ensureCommunitySection's own comment already gives for why that's
+        // wasteful (N live outbound requests per dialog-open, most for
+        // entries nobody ever expands). Shows the section (with at least
+        // the link) even when the fetch itself finds no notes -- the link
+        // must never end up orphaned outside "Release notes", whether or
+        // not there turned out to be real notes to put above it. Never
+        // re-fetched on a later re-expand, same "built once" rule as
+        // ensureCommunitySection.
+        let releaseNotesFetchStarted = false;
+        const ensureReleaseNotesSection = () => {
+          if (
+            (entry.release_notes && !releaseNotesLooksWrongForThisJump) ||
+            releaseNotesFetchStarted ||
+            !entry.release_url
+          ) {
+            return;
+          }
+          releaseNotesFetchStarted = true;
+          // Same "reserve the space instead of leaving a sudden gap"
+          // treatment as the pending-update section's own release notes
+          // (see buildReleaseNotesLoader's own comment) -- relevant here
+          // too, even though this card is only ever fetched once actually
+          // expanded (lazy, see this closure's own comment above): the
+          // fetch itself can still take a moment after that click.
+          const loader = buildReleaseNotesLoader();
+          expandWrap.insertBefore(loader, changelogAnchor.nextSibling);
+          this._fetchGithubReleaseNotesFallback(entry.release_url, entry.from_version, entry.to_version).then(({ notes, correctedUrl }) => {
+            loader.remove();
+            if (isDialogStale()) return;
+            // changelogAnchor.nextSibling evaluated fresh right here (not
+            // captured any earlier) -- whatever else has landed right after
+            // changelogAnchor by the time this actually resolves (e.g. the
+            // Community section below, if that happened to finish first)
+            // stays exactly where it is, now that the loader right above
+            // this comment has already removed itself from that same spot.
+            // Captured once into a local, not re-evaluated for the
+            // _appendUpstreamReleaseNotes call below -- insertReleaseNotesSection's
+            // own insertions already moved what used to be right after
+            // changelogAnchor, so a second, fresh read at that point would
+            // find the wrong node (its own just-inserted <hr>, not the
+            // original insertion point).
+            const insertionPoint = changelogAnchor.nextSibling;
+            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, correctedUrl);
+            if (notes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version);
+          });
+        };
 
         // Built lazily, once, the first time this entry's card is expanded
         // -- not eagerly for every entry when the dialog opens. Direct user
@@ -2752,28 +3624,38 @@ class UpdateManagerPanel extends HTMLElement {
           // release notes below, regardless of how long the notes are (see
           // changelogAnchor's own comment). No extra <hr> before the
           // section itself -- _buildCommunitySection already adds its own
-          // leading divider (that's the facts/votes boundary). The second
-          // <hr> here is the votes/changelog boundary; see the CSS rule
-          // below for its spacing (this wrapper isn't a flex container, so
-          // it needs its own margin, not a parent gap) -- only added when
-          // there's actually a changelog or release link below to bound
-          // (direct user feedback, 2026-07-30, screenshot: an entry with
-          // neither showed one trailing divider too many, with nothing
-          // left to separate).
+          // leading divider (that's the facts/votes boundary). No trailing
+          // <hr> added here either (removed 2026-08-01, direct user
+          // feedback -- "tussen community en release notes 2 dividers?"):
+          // the release-notes section (insertReleaseNotesSection, wired up
+          // above) now always adds its own leading <hr> right before its
+          // own "Release notes" heading whenever it actually has content
+          // (both the synchronous entry.release_notes path and the async
+          // GitHub-fallback path), so a second,
+          // separately-added one here just duplicated it. That also fixes
+          // the same edge case the old comment here used to guard for a
+          // different way (an entry.release_url whose async fallback fetch
+          // never actually resolves any notes) -- the old check only ever
+          // looked at entry.release_url being *present*, not whether notes
+          // were actually found, so it could still add a boundary divider
+          // with nothing below it to divide.
           if (entryCommunitySection) {
             expandWrap.insertBefore(entryCommunitySection, changelogAnchor);
-            if (entry.release_notes || entry.release_url) {
-              expandWrap.insertBefore(document.createElement("hr"), changelogAnchor);
-            }
           }
         };
-        if (isDefaultExpanded) ensureCommunitySection();
+        if (isDefaultExpanded) {
+          ensureCommunitySection();
+          ensureReleaseNotesSection();
+        }
 
         content.appendChild(expandWrap);
         row.addEventListener("click", () => {
           expandWrap.hidden = !expandWrap.hidden;
           chevron.classList.toggle("open", !expandWrap.hidden);
-          if (!expandWrap.hidden) ensureCommunitySection();
+          if (!expandWrap.hidden) {
+            ensureCommunitySection();
+            ensureReleaseNotesSection();
+          }
         });
 
         card.appendChild(content);
@@ -2959,7 +3841,32 @@ class UpdateManagerPanel extends HTMLElement {
 
     dialog.appendChild(actions);
 
-    dialog.open = true;
+    // A short, fixed delay before actually showing the dialog -- direct
+    // user feedback, 2026-08-01: "de dialogs lijken allemaal vlak na het
+    // openen te verspringen omdat er dan nieuwe data is geladen" (the
+    // Community section and Release notes above are both still-pending
+    // fetches at this exact point, each popping in and shifting layout
+    // once they land). Deliberately NOT tied to those actual fetches
+    // finishing (awaiting them would be the more correct fix, but a
+    // slower one to land) -- explicit user tradeoff: "een vaste vertraging
+    // die de meeste gevallen dekt is voldoende", and just as important,
+    // "het moet niet opvallen, je moet nog steeds het idee hebben dat de
+    // dialog direct opent". 150ms (bumped up from the original 100ms,
+    // 2026-08-02, alongside the release-notes loader below) is still short
+    // enough to stay under the generally-cited "feels instant" perception
+    // threshold, long enough to let most of these fetches (a single small
+    // JSON file/websocket round-trip each) land before anything is
+    // actually shown -- won't catch every slow one, that's the accepted
+    // trade-off, and Release notes specifically no longer needs to rely on
+    // this delay alone anymore either way (see buildReleaseNotesLoader's
+    // own comment: that section now reserves its own stable space instead
+    // of popping in, the same technique HA core's own native dialog uses
+    // for this exact problem). isDialogStale guards the rare case this
+    // entity's dialog was closed or reopened for someone else before the
+    // delay elapsed.
+    setTimeout(() => {
+      if (!isDialogStale()) dialog.open = true;
+    }, 150);
   }
 
   // Debounced, not fired on every single value-changed event -- ha-form's
@@ -3227,6 +4134,16 @@ class UpdateManagerPanel extends HTMLElement {
     section.className = "dialog-community-section";
     section.hidden = true;
     section.appendChild(document.createElement("hr"));
+    // Added 2026-08-01, direct user feedback: History already had its own
+    // "History" heading, this section and release notes didn't, reading as
+    // inconsistent once pointed out. Reverses this section's own earlier,
+    // deliberate "icon + sentence, no heading" choice from 2026-07-22 (see
+    // the comment right below) -- that choice still holds for *within* the
+    // section (no separate disclaimer paragraph on top of the verdict
+    // sentence), just not for labeling the section itself anymore.
+    const heading = document.createElement("h3");
+    heading.textContent = tr.dialog_community_heading;
+    section.appendChild(heading);
 
     // The verdict fact rows share their own tight-gapped group, separate
     // from the section's own wider gap to the action controls below --
@@ -3978,9 +4895,17 @@ class UpdateManagerPanel extends HTMLElement {
          with no width cap or centering at all, rendering full-width
          instead of the same capped/centered 600px column every other card
          gets. A future sibling-level card type only needs adding to this
-         one selector list, not a fourth copy of the declaration. */
+         one selector list, not a fourth copy of the declaration -- missed
+         once anyway (found live, 2026-08-03, direct user feedback "card
+         valt buiten het grid"): History's own empty state
+         (buildEmptyStateCard(tr.history_empty), _buildHistoryList's own
+         early return) is appended directly to .content--list, a sibling
+         level this list didn't cover either, so it rendered at the full
+         page width instead of matching every other card on that same tab
+         (.history-section-items > ha-card, further below). */
       .update-groups-outer > ha-alert,
       .update-groups-outer > ha-card,
+      .content--list > ha-card,
       .update-groups ha-card {
         display: block; max-width: 600px; margin: 0 auto var(--ha-space-6, 24px);
       }
@@ -4089,6 +5014,10 @@ class UpdateManagerPanel extends HTMLElement {
          contradicting the aggregate/trusted-vote rows right below it. */
       .dialog-community-verdict-line:not([hidden]) { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       .dialog-community-verdict-line ha-svg-icon { --mdc-icon-size: 18px; flex-shrink: 0; }
+      /* buildReleaseNotesLoader's own placeholder -- centered, same small
+         fixed footprint regardless of how long the notes it's standing in
+         for turn out to be, so removing it never itself causes a jump. */
+      .release-notes-loader { display: flex; justify-content: center; padding: var(--ha-space-4, 16px) 0; }
       /* Each reported problematic reason (category line + its own optional
          notes/link) as one visually grouped block -- direct user feedback,
          2026-07-29, from an actual screenshot: notes/link floating as
@@ -4156,25 +5085,20 @@ class UpdateManagerPanel extends HTMLElement {
          component uses elsewhere in this file (Updates list), looking and
          feeling noticeably weaker by comparison. Direct user feedback. */
       .dialog-history-card ha-list-item-button { font-size: var(--ha-font-size-m, 14px); }
-      /* Same reset, same reasoning, for the community/vote section now
-         embedded per entry (2026-07-25): it's an action, not passive
-         changelog text, and should read the same size it does in the
-         pending-update dialog, not shrunk to this card's own compact
-         13px scope. margin-top: this wrapper isn't a flex container (no
-         parent gap to rely on), and the section sits right after the plain
-         facts block above it (changed 2026-07-27, direct user feedback:
-         votes used to render after the changelog, at the very bottom, easy
-         to miss on an entry with long release notes) -- this is the
-         section's own top spacing, on top of its own internal leading
-         divider. */
-      .dialog-history-notes-wrap .dialog-community-section { font-size: var(--ha-font-size-m, 14px); margin-top: var(--ha-space-3, 12px); }
-      /* The votes/changelog boundary divider (see ensureCommunitySection's
-         own comment) -- a plain top-level <hr>, not nested inside the
-         Community section like the facts/votes one above it, so this
-         selector only matches that one, not the section's own internal
-         divider. Same reasoning as the rule above: no parent flex-gap here,
-         needs its own margin. */
-      .dialog-history-notes-wrap > hr { margin-top: var(--ha-space-3, 12px); }
+      /* font-size reset, same reasoning as ha-list-item-button above: the
+         community/vote section embedded per entry (2026-07-25) is an
+         action, not passive changelog text, and should read the same size
+         it does in the pending-update dialog, not shrunk to this card's
+         own compact 13px scope. No margin-top here anymore -- see the
+         .dialog-history-notes-wrap flex-gap rule further down, which now
+         governs spacing between this, the facts block, the divider, the
+         heading, and the notes uniformly (2026-08-01, direct user
+         feedback: hand-placed margin-top on each of these one at a time,
+         every time a gap was found missing somewhere, kept producing a new
+         inconsistency each time -- "de witruimte rondom dividers en
+         kopjes is nog steeds inconsistent. fix dat. grondig." -- a single
+         gap on their shared, already-non-flex parent replaces all of that
+         with one rule that can't drift out of sync with itself). */
       /* The chevron every history entry now has, expanding its own facts
          block (and changelog, if any) in place (see ICON_CHEVRON_DOWN/
          _openDetailDialog). Rotates on toggle the same way
@@ -4187,12 +5111,49 @@ class UpdateManagerPanel extends HTMLElement {
       .dialog-history-chevron.open { transform: rotate(180deg); }
       /* Matches ha-list-item-button's own horizontal inset above it, so the
          expanded changelog's left/right edges line up with the row's own
-         text instead of sitting flush against the card's true edges. */
-      .dialog-history-notes-wrap {
+         text instead of sitting flush against the card's true edges.
+         display: flex + gap (2026-08-01, direct user feedback, grondige
+         fix): every one of the facts block, the Community section, the
+         release-notes divider, its heading, and its markdown content is a
+         direct child of this element. It used to have no display/gap of
+         its own at all, so each of those needed its own hand-placed
+         margin-top to get any spacing from whatever came before it --
+         found repeatedly missing, one element at a time, each fix
+         producing a new inconsistency somewhere else (a 12px gap here, an
+         8px gap there, zero gap somewhere no one had checked yet). One
+         gap, on the actual shared parent, is the fix that can't drift back
+         out of sync with itself the way five separate margin-top rules
+         could. Same reasoning applied to font-size here too (found by
+         review): .dialog-community-section, .row, and ha-markdown each had
+         their own separate "font-size: var(--ha-font-size-m, 14px)" reset
+         scattered across this stylesheet -- one on the shared parent,
+         inherited by all three (nothing under it sets its own font-size),
+         replaces all of them. :not([hidden]), not a bare selector -- same
+         reasoning as .dialog-community-section's own guard earlier in this
+         file: a bare class selector has the same specificity as the UA's
+         own [hidden] rule, and since this one comes later in the
+         stylesheet it would otherwise win and keep a collapsed entry's own
+         hidden expand area visible. */
+      .dialog-history-notes-wrap:not([hidden]) {
+        display: flex; flex-direction: column; gap: var(--ha-space-3, 12px);
         padding: 0 var(--ha-space-4, 16px) var(--ha-space-4, 16px);
+        font-size: var(--ha-font-size-m, 14px);
       }
-      .dialog-history-notes-wrap .row { margin-top: var(--ha-space-2, 8px); }
-      .dialog-history ha-markdown { display: block; padding-top: var(--ha-space-2, 8px); }
+      /* The individual fact rows (Available since/Announced/Installed/
+         etc.) within that facts block need their own, smaller gap between
+         each other -- scoped to History specifically, not a bare
+         .dialog-rows rule: the pending-update dialog's own top-level facts
+         block (same buildKeyValueRows, shared) deliberately has none at
+         all (see .row's own comment above -- "more-info-update.ts's own
+         .row is exactly this and nothing else"), and this must not change
+         that. */
+      .dialog-history-notes-wrap .dialog-rows { gap: var(--ha-space-2, 8px); }
+      /* font-size now inherited from .dialog-history-notes-wrap's own rule
+         above, not set here directly -- no padding-top either, that used
+         to be this element's only source of spacing from whatever came
+         before it, now redundant with (and inconsistent next to) the
+         uniform flex-gap above. */
+      .dialog-history ha-markdown { display: block; }
     `;
   }
 }

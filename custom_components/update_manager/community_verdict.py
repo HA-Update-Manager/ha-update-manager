@@ -110,6 +110,28 @@ async def _fetch_to_version_json(hass: HomeAssistant, to_version_path: str) -> d
     return await _fetch_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{to_version_path}.json")
 
 
+async def async_fetch_vote_for_jump_key(
+    hass: HomeAssistant, to_version_path: str, from_version: str, username: str
+) -> str | None:
+    """my_vote_from_payload, but keyed directly by a jump's own
+    to_version_path/from_version rather than a full ResolvedIdentity -- used
+    by websocket_api.py's own refresh_community_verdicts handler when
+    reconciling my_votes.py's *entire* local record (direct user feedback,
+    2026-08-01: "ik zou dit alsnog in de refresh knop willen"), where only
+    the jump_key string is available for a possibly-old/no-longer-pending
+    jump (see ResolvedIdentity.jump_key: it already encodes
+    to_version_path::from_version, so splitting that back apart is enough,
+    no need to re-resolve a full identity for an entity that might not even
+    still exist). Raises on a genuine fetch failure, same as
+    _fetch_to_version_json itself -- unlike async_fetch_my_vote below, which
+    is a best-effort single-jump enrichment where swallowing a failure is
+    fine, a caller reconciling many remembered votes at once must be able to
+    tell "couldn't check" apart from "confirmed no vote", or a transient
+    network hiccup would wrongly forget a still-real vote."""
+    payload = await _fetch_to_version_json(hass, to_version_path)
+    return my_vote_from_payload(payload, from_version, username)
+
+
 async def async_fetch_my_vote(hass: HomeAssistant, identity: ResolvedIdentity, username: str) -> str | None:
     """The verdict from *your own* vote for this exact identity+jump,
     straight from community-votes itself, not just the aggregate counts.
@@ -121,11 +143,10 @@ async def async_fetch_my_vote(hass: HomeAssistant, identity: ResolvedIdentity, u
     failure alike -- this is a nice-to-have enrichment of the verdict line,
     not something worth surfacing an error for."""
     try:
-        payload = await _fetch_to_version_json(hass, identity.to_version_path)
+        return await async_fetch_vote_for_jump_key(hass, identity.to_version_path, identity.from_version, username)
     except Exception:
         _LOGGER.debug("Couldn't fetch %s's own vote for %s", username, identity.to_version_path, exc_info=True)
         return None
-    return my_vote_from_payload(payload, identity.from_version, username)
 
 
 class CommunityVerdictManager:
