@@ -31,6 +31,10 @@ wait). See "How auto-install decides" below for exactly how the two combine.
   auto-install decides" below).
 * **Sidebar panel:** Updates tab with live progress, History tab with a full per-entry audit trail, and
   an autosaving Settings tab.
+* **Real release notes:** falls back to fetching GitHub's own release notes directly whenever an entity
+  has nothing useful to show, correctly compiles every version covered by a multi-version or downgrade
+  jump, and surfaces a wrapped add-on's real upstream project notes (e.g. Zigbee2MQTT, Mealie,
+  Matterbridge) alongside its own short note.
 
 ---
 
