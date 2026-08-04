@@ -3,7 +3,7 @@
 
 # Update Manager: Home Assistant helper integration
 
-Update Manager helps you decide when to install a Home Assistant update, and can optionally install it
+Update Manager helps you decide when to install an update, and can optionally install it
 for you automatically. Two independent safety nets back that decision: a waiting period per update size
 (giving a broken release time to be noticed and fixed before you commit to it), and a community verdict
 on the exact version jump you're taking (any reported problem holds auto-install back, regardless of the
