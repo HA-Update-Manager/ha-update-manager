@@ -11,9 +11,9 @@ wait). See "How auto-install decides" below for exactly how the two combine.
 
 ---
 
-| Home | Dialog Problematic Skipped | Dialog History |
+| Home | Dialog Auto-update scheduled | Dialog History |
 | :---:         |     :---:      |          :---: |
-| [![Update Manager](images/home.png)](images/home.png)  | [![Update Manager](images/dialog_skipped.png)](images/dialog_skipped.png)     | [![Update Manager](images/dialog_history.png)](images/dialog_history.png)    |
+| [![Update Manager](images/home.png)](images/home.png)  | [![Update Manager](images/dialog_autoupdate.png)](images/dialog_autoupdate.png)     | [![Update Manager](images/dialog_history.png)](images/dialog_history.png)    |
 
 ---
 
