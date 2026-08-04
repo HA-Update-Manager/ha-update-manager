@@ -11,9 +11,9 @@ wait). See "How auto-install decides" below for exactly how the two combine.
 
 ---
 
-| Home | Dialog Auto-update scheduled | Dialog History |
+| Home | Dialog | History |
 | :---:         |     :---:      |          :---: |
-| [![Update Manager](images/home.png)](images/home.png)  | [![Update Manager](images/dialog_autoupdate.png)](images/dialog_autoupdate.png)     | [![Update Manager](images/dialog_history.png)](images/dialog_history.png)    |
+| [![Update Manager](images/home.png)](images/home.png)  | [![Update Manager](images/dialog_autoupdate.png)](images/dialog_autoupdate.png)     | [![Update Manager](images/history.png)](images/history.png)    |
 
 ---
 
