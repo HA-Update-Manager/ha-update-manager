@@ -1,5 +1,22 @@
 DOMAIN = "update_manager"
 
+# Fired on hass.bus, domain-prefixed event_types (same convention as
+# ha-parcel-integrations' own event contract, checked directly against
+# https://ha-parcel-integrations.github.io/contract/#events while designing
+# this): one event per genuine, discrete lifecycle moment an automation
+# could reasonably want to react to, not a general "something changed"
+# firehose. Deliberately no overlapping/duplicate events for the same fact
+# -- an install either failed or succeeded, never both, so there's no
+# EVENT_INSTALL_FAILED *and* a generic EVENT_STATUS_CHANGED also firing for
+# the same transition. Per-status counts/membership (which updates are
+# Ready/Postponed/etc. right now) are already covered by sensor.py's own 5
+# status sensors and their attributes -- these events are only for the
+# moments in between: a countdown starting, an install actually landing, or
+# failing.
+EVENT_ANNOUNCED = f"{DOMAIN}_announced"
+EVENT_INSTALLED = f"{DOMAIN}_installed"
+EVENT_INSTALL_FAILED = f"{DOMAIN}_install_failed"
+
 # The master switch (default on): pauses every autonomous action Update
 # Manager itself takes -- auto-install (announcing/executing) and the
 # hide-postponed auto-skip -- without touching any of the other settings
@@ -12,10 +29,10 @@ CONF_SMALL_WAIT_DAYS = "small_wait_days"
 CONF_SMALL_AUTO_INSTALL = "small_auto_install"
 CONF_MEDIUM_WAIT_DAYS = "medium_wait_days"
 CONF_MEDIUM_AUTO_INSTALL = "medium_auto_install"
-CONF_BIG_WAIT_DAYS = "big_wait_days"
-CONF_BIG_AUTO_INSTALL = "big_auto_install"
+CONF_LARGE_WAIT_DAYS = "large_wait_days"
+CONF_LARGE_AUTO_INSTALL = "large_auto_install"
 
-# Two independent settings per size (small/medium/big, see semver.py), not
+# Two independent settings per size (small/medium/large, see semver.py), not
 # three mutually exclusive choices: how long to wait (a traffic light, not
 # a judgment call, see FUTURE.md's 2026-07-16 note), and whether Update
 # Manager presses install itself once that wait elapses, or you do. An
@@ -23,7 +40,7 @@ CONF_BIG_AUTO_INSTALL = "big_auto_install"
 # "unknown version type" category, were both removed the same day: neither
 # was really about judging anything, and semver.py's own size
 # classification already folds "we can't confidently place this" into
-# "big" -- a conservative default wait covers it, no separate settings
+# "large" -- a conservative default wait covers it, no separate settings
 # category needed.
 CONF_ANNOUNCE_HOURS = "announce_hours"
 DEFAULT_ANNOUNCE_HOURS = 24
@@ -72,7 +89,7 @@ DEFAULT_WAIT_DAYS: dict[str, int | bool] = {
     CONF_SMALL_AUTO_INSTALL: False,
     CONF_MEDIUM_WAIT_DAYS: 3,
     CONF_MEDIUM_AUTO_INSTALL: False,
-    CONF_BIG_WAIT_DAYS: 7,
-    CONF_BIG_AUTO_INSTALL: False,
+    CONF_LARGE_WAIT_DAYS: 7,
+    CONF_LARGE_AUTO_INSTALL: False,
     CONF_ANNOUNCE_HOURS: DEFAULT_ANNOUNCE_HOURS,
 }

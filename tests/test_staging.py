@@ -17,16 +17,16 @@ NOW = datetime(2026, 7, 15, 12, 0, 0, tzinfo=timezone.utc)
 
 
 class TestEvaluateStagingDefaults:
-    def test_big_is_blocked_by_default(self):
-        result = staging.evaluate_staging("big", available_since=NOW, now=NOW)
+    def test_large_is_blocked_by_default(self):
+        result = staging.evaluate_staging("large", available_since=NOW, now=NOW)
         assert result.status == "blocked"
         assert result.remaining is None
 
-    def test_big_blocked_by_default_even_after_a_long_time(self):
+    def test_large_blocked_by_default_even_after_a_long_time(self):
         # Blocked means "needs a manual decision", not "waiting" -- time
         # passing never resolves it on its own under the default rules.
         long_ago = NOW - timedelta(days=365)
-        result = staging.evaluate_staging("big", available_since=long_ago, now=NOW)
+        result = staging.evaluate_staging("large", available_since=long_ago, now=NOW)
         assert result.status == "blocked"
 
     def test_small_ready_immediately_with_default_rules(self):
@@ -62,7 +62,7 @@ class TestEvaluateStagingCustomRules:
         rules = staging.StagingRules(
             small_wait=timedelta(days=1),
             medium_wait=timedelta(days=14),
-            big_wait=None,
+            large_wait=None,
         )
         result = staging.evaluate_staging("small", available_since=NOW, now=NOW, rules=rules)
         assert result.status == "waiting"
@@ -72,37 +72,37 @@ class TestEvaluateStagingCustomRules:
         rules = staging.StagingRules(
             small_wait=timedelta(0),
             medium_wait=timedelta(0),
-            big_wait=None,
+            large_wait=None,
         )
         result = staging.evaluate_staging("medium", available_since=NOW, now=NOW, rules=rules)
         assert result.status == "ready"
 
-    def test_big_can_be_given_a_real_wait_instead_of_always_blocked(self):
-        # Nothing in this module hardcodes "big is always blocked" -- that's
-        # just what DEFAULT_RULES chooses. A user who explicitly wants big
+    def test_large_can_be_given_a_real_wait_instead_of_always_blocked(self):
+        # Nothing in this module hardcodes "large is always blocked" -- that's
+        # just what DEFAULT_RULES chooses. A user who explicitly wants large
         # updates to become "ready" after a (probably long) wait can
         # configure that.
         rules = staging.StagingRules(
             small_wait=timedelta(0),
             medium_wait=timedelta(days=7),
-            big_wait=timedelta(days=30),
+            large_wait=timedelta(days=30),
         )
-        waiting = staging.evaluate_staging("big", available_since=NOW, now=NOW, rules=rules)
+        waiting = staging.evaluate_staging("large", available_since=NOW, now=NOW, rules=rules)
         assert waiting.status == "waiting"
         assert waiting.remaining == timedelta(days=30)
 
         ready = staging.evaluate_staging(
-            "big", available_since=NOW, now=NOW + timedelta(days=30), rules=rules
+            "large", available_since=NOW, now=NOW + timedelta(days=30), rules=rules
         )
         assert ready.status == "ready"
 
     def test_small_can_be_forced_to_always_blocked_too(self):
         # Symmetric with the above: any size can be locked to "always
-        # blocked" via None, not just "big".
+        # blocked" via None, not just "large".
         rules = staging.StagingRules(
             small_wait=None,
             medium_wait=timedelta(days=7),
-            big_wait=None,
+            large_wait=None,
         )
         result = staging.evaluate_staging("small", available_since=NOW, now=NOW, rules=rules)
         assert result.status == "blocked"

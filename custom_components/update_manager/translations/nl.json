@@ -1,0 +1,44 @@
+{
+    "title": "Update Manager",
+    "config": {
+        "step": {
+            "user": {
+                "title": "Update Manager instellen",
+                "description": "Update Manager past lokale, semver-bewuste uitstelregels toe op je Home Assistant-updates. Beheer de regels achteraf op Update Manager's eigen \"Update Manager\"-paneel in de zijbalk, onder de tab Instellingen."
+            }
+        },
+        "abort": {
+            "single_instance_allowed": "Update Manager is al ingesteld. Er is maar één instantie nodig."
+        }
+    },
+    "entity": {
+        "sensor": {
+            "ready": {
+                "name": "Klaar om te updaten"
+            },
+            "waiting": {
+                "name": "Uitgesteld"
+            },
+            "blocked": {
+                "name": "Afgeraden"
+            },
+            "skipped": {
+                "name": "Overgeslagen"
+            },
+            "not_installable": {
+                "name": "Niet installeerbaar"
+            }
+        },
+        "switch": {
+            "enabled": {
+                "name": "Update Manager ingeschakeld"
+            }
+        }
+    },
+    "issues": {
+        "github_link_expired": {
+            "title": "Update Manager's GitHub-koppeling is verlopen",
+            "description": "Je gekoppelde GitHub-account, gebruikt om community-stemmen op updates in te dienen, is niet meer geldig (ingetrokken, of langer dan 6 maanden niet gebruikt). Open de tab Instellingen van het Update Manager-paneel en koppel je GitHub-account opnieuw om te kunnen blijven stemmen.\n\nDit heeft geen invloed op het uitstellen of automatisch installeren van updates, alleen op community-stemmen."
+        }
+    }
+}

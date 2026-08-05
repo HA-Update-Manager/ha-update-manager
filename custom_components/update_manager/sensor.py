@@ -1,20 +1,27 @@
-"""A single "Update Manager" summary sensor, not one entity per `update.*`
-entity -- a large instance can easily have 100+ update entities, which
-would otherwise mean 100+ near-useless extra entities, pure clutter for
-what's fundamentally one overview. State is the number of updates ready to
-install now; the per-update breakdown (version jump, status, remaining
-wait) lives in this one entity's attributes.
+"""One sensor per status the Updates tab itself groups by -- Ready to
+update, Postponed, Discouraged, Skipped, Not installable -- replacing the
+single UpdateManagerSummarySensor (direct user feedback, 2026-08-07: "State
+1 zegt niks" -- a lone summary sensor's state was just a bare "ready" count
+with everything else buried in attributes, not something you could point an
+automation's numeric_state trigger at for, say, "notify me when something's
+Discouraged"). update_status.categorize_updates does the actual grouping,
+mirroring the panel JS's own groupUpdates() exactly (see that module's own
+docstring for the shared precedence rule).
+
+Still one entity per *status*, not one per `update.*` entity -- a large
+instance can easily have 100+ update entities, which would otherwise mean
+100+ near-useless extra entities for what's fundamentally 5 overviews (see
+the original summary sensor's own reasoning, carried over unchanged). State
+is each bucket's own count; the per-update breakdown (entity_id, version
+jump) lives in that one sensor's own attributes.
 
 Reads from the shared UpdateManagerCoordinator (coordinator.py) rather than
-computing anything itself -- this entity is a cheap debug view (Developer
-Tools -> States) on top of that shared computation, not its source (see
-FUTURE.md): Phase 2's future panel is meant to read the coordinator via
-websocket_api.py instead, so it never depends on this entity existing.
-
-Deliberately minimal so far: read-only, no auto-install/rollout-pacing
-wired up yet.
+computing anything itself -- these are a cheap, read-only view on top of
+that shared computation, not its source (see FUTURE.md).
 """
 from __future__ import annotations
+
+from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant, callback
@@ -22,7 +29,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
+from .device import device_info
 from .runtime_data import UpdateManagerConfigEntry
+from .update_status import STATUSES, categorize_updates, icon_for_status
 
 PARALLEL_UPDATES = 0
 
@@ -32,23 +41,30 @@ async def async_setup_entry(
     config_entry: UpdateManagerConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    async_add_entities([UpdateManagerSummarySensor(config_entry.runtime_data.coordinator)])
+    coordinator = config_entry.runtime_data.coordinator
+    async_add_entities(
+        [UpdateManagerStatusSensor(config_entry, coordinator, status) for status in STATUSES]
+    )
 
 
-class UpdateManagerSummarySensor(SensorEntity):
+class UpdateManagerStatusSensor(SensorEntity):
     _attr_should_poll = False
-    _attr_unique_id = f"{DOMAIN}_summary"
-    # has_entity_name + translation_key, not a bare _attr_name -- quality-scale
-    # has-entity-name/entity-translations. No device_info exists on this
-    # entity, so friendly_name is just entity.name unchanged (confirmed
-    # against HA's own entity-naming docs): this is a pure compliance change,
-    # not a visible rename. Name/icon now come from translations/en.json and
-    # icons.json respectively, not hardcoded here.
+    _attr_native_unit_of_measurement = "updates"
+    # has_entity_name + translation_key -- quality-scale has-entity-name/
+    # entity-translations. Combined with device_info below, each entity's
+    # own friendly name (e.g. "Ready to update", from translations/en.json)
+    # reads as "Update Manager Ready to update" wherever HA shows the full
+    # device+entity name, and just "Ready to update" on the device's own
+    # page -- no hand-written "Update Manager " prefix needed here.
     _attr_has_entity_name = True
-    _attr_translation_key = "summary"
 
-    def __init__(self, coordinator: UpdateManagerCoordinator) -> None:
+    def __init__(self, entry: UpdateManagerConfigEntry, coordinator: UpdateManagerCoordinator, status: str) -> None:
+        self._entry = entry
         self._coordinator = coordinator
+        self._status = status
+        self._attr_unique_id = f"{DOMAIN}_{status}"
+        self._attr_translation_key = status
+        self._attr_device_info = device_info(entry)
         self._refresh_from_coordinator()
 
     async def async_added_to_hass(self) -> None:
@@ -61,16 +77,25 @@ class UpdateManagerSummarySensor(SensorEntity):
         if self.hass.is_running:
             self.async_write_ha_state()
 
-    def _refresh_from_coordinator(self) -> None:
-        updates = list(self._coordinator.cache.values())
-        ready = sum(1 for u in updates if u["status"] == "ready")
-        waiting = sum(1 for u in updates if u["status"] == "waiting")
-        blocked = sum(1 for u in updates if u["status"] == "blocked")
+    @property
+    def icon(self) -> str | None:
+        """None for every status except blocked/not_installable (see
+        update_status.py's own icon_for_status docstring) -- returning None
+        here falls straight back to icons.json's own translated default,
+        exactly the icon this entity would show without this property
+        existing at all."""
+        return icon_for_status(self._status, self._attr_native_value)
 
-        self._attr_native_value = ready
+    def _refresh_from_coordinator(self) -> None:
+        bucket = categorize_updates(list(self._coordinator.cache.values())).get(self._status, [])
+        self._attr_native_value = len(bucket)
         self._attr_extra_state_attributes = {
-            "updates": updates,
-            "ready_count": ready,
-            "waiting_count": waiting,
-            "blocked_count": blocked,
+            "entities": [
+                {
+                    "entity_id": u.get("entity_id"),
+                    "installed_version": u.get("installed_version"),
+                    "latest_version": u.get("latest_version"),
+                }
+                for u in bucket
+            ]
         }

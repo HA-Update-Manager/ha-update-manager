@@ -5,7 +5,7 @@ imports, following the same pure-logic-first pattern as semver.py/staging.py
 existing tests use, bypassing pytest-homeassistant-custom-component.
 
 An update reaching "ready" (staging.py) with auto-install enabled for its
-size (small/medium/big, see semver.py) doesn't get installed immediately:
+size (small/medium/large, see semver.py) doesn't get installed immediately:
 it's announced first, with a fixed, cancellable wait before
 install_manager.py actually calls `update.install`. This module only
 decides *what should happen right now* for one entity; it owns no state
@@ -29,7 +29,7 @@ AutoInstallReason = Literal["rules", "trusted_voter"]
 class AutoInstallRules(NamedTuple):
     small_auto_install: bool
     medium_auto_install: bool
-    big_auto_install: bool
+    large_auto_install: bool
     announce_wait: timedelta
 
 
@@ -51,7 +51,7 @@ def size_auto_install_enabled(size: Size, rules: AutoInstallRules) -> bool:
     return {
         "small": rules.small_auto_install,
         "medium": rules.medium_auto_install,
-        "big": rules.big_auto_install,
+        "large": rules.large_auto_install,
     }[size]
 
 

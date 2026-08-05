@@ -1,5 +1,5 @@
 """Size-aware staging: given a version-size classification (small/medium/
-big, see semver.py) and how long the update has been available, decide
+large, see semver.py) and how long the update has been available, decide
 whether it's ready, still waiting out its cooldown, or blocked pending a
 manual decision.
 
@@ -22,11 +22,11 @@ StagingStatus = Literal["ready", "waiting", "blocked"]
 
 class StagingRules(NamedTuple):
     """Wait time before showing/installing is allowed, per size. Every
-    size -- including "big" -- is independently configurable: a wait of
+    size -- including "large" -- is independently configurable: a wait of
     None means "always blocked", never resolving to "ready" on its own no
     matter how long the update has existed, but that's a choice encoded in
     the rules passed in, not something this module enforces on anyone's
-    behalf. Being conservative about "big" is the *default* (see
+    behalf. Being conservative about "large" is the *default* (see
     DEFAULT_RULES below), not a built-in floor a user can't turn off --
     same reasoning as Core/Supervisor/HAOS being a hard, non-configurable
     exception in FUTURE.md, except here even the default is meant to be
@@ -34,19 +34,19 @@ class StagingRules(NamedTuple):
 
     small_wait: timedelta | None
     medium_wait: timedelta | None
-    big_wait: timedelta | None
+    large_wait: timedelta | None
 
 
 # A reasonable, conservative starting point; expected to become a
 # user-configurable choice (the "Behoudend/Gebalanceerd/Vrij" presets from
 # FUTURE.md) once there's a config/options flow for it, not a decision this
 # module should hardcode an opinion about beyond providing *a* sensible
-# default. big_wait defaults to None (always blocked) but, unlike the
+# default. large_wait defaults to None (always blocked) but, unlike the
 # previous design, a caller can set it to a real timedelta.
 DEFAULT_RULES = StagingRules(
     small_wait=timedelta(0),
     medium_wait=timedelta(days=7),
-    big_wait=None,
+    large_wait=None,
 )
 
 
@@ -64,7 +64,7 @@ def wait_for_size(rules: StagingRules, size: Size) -> timedelta | None:
     return {
         "small": rules.small_wait,
         "medium": rules.medium_wait,
-        "big": rules.big_wait,
+        "large": rules.large_wait,
     }[size]
 
 

@@ -32,11 +32,13 @@ wait). See "How auto-install decides" below for exactly how the two combine.
 * **Community verdict and voting:** link your GitHub account to see whether others found your specific
   version *jump* healthy or problematic, and cast your own vote. Covers HACS integrations, Home Assistant
   Core/Supervisor/OS, real vendor Zigbee device firmware, and Supervisor add-ons.
-* **Trusted voters and community block:** a trusted GitHub username's *healthy* verdict installs
-  regardless of your own rules; any problematic vote from anyone blocks auto-install outright (see "How
+* **Trusted voters and community block:** a trusted username's *healthy* verdict overrides your own rules
+  and any problem report; without one, any problematic vote blocks auto-install outright (see "How
   auto-install decides" below).
 * **Sidebar panel:** Updates tab with live progress, History tab with a full per-entry audit trail, and
   an autosaving Settings tab.
+* **Native HA look and feel:** built directly against Home Assistant's own components and patterns, so it
+  looks and behaves like part of Home Assistant itself, not a separate UI to learn.
 * **Real release notes:** falls back to fetching GitHub's own release notes directly whenever an entity
   has nothing useful to show, correctly compiles every version covered by a multi-version or downgrade
   jump, and surfaces a wrapped add-on's real upstream project notes (e.g. Zigbee2MQTT, Mealie,
@@ -69,7 +71,7 @@ There's nothing to fill in during setup itself; every actual setting lives on th
 Settings tab (autosaving, no separate Save button) instead of the usual Devices & Services options
 screen:
 
-* **Waiting period per size** (small/medium/big): how many days a small/medium/big update sits before
+* **Waiting period per size** (small/medium/large): how many days a small/medium/large update sits before
   it counts as ready.
 * **Auto-install, per size**: whether that size installs itself once ready (still announced first, with
   a cancellable countdown).
@@ -79,8 +81,8 @@ screen:
 * **Excluded entities**: specific `update.*` entities that should always stay manual, regardless of the
   size rules above.
 * **Trusted voters**: GitHub usernames whose community verdict on a version jump overrides your own
-  auto-install rules (see Features above).
-* **Enabled**: the master pause switch, also available as its own switch entity (`switch.update_manager_enabled`).
+  auto-install rules (see "How auto-install decides" below).
+* **Enabled**: the master pause switch, also available as its own switch entity (`switch.update_manager`).
 
 ## How auto-install decides
 
@@ -110,6 +112,54 @@ way. See Known limitations below.
 * You want a second opinion from others who already made the same version jump, or one specific person's
   judgment to be able to override your own rules automatically.
 
+## Automating
+
+Every entity Update Manager creates lives under its own "Update Manager" device.
+
+* **Status sensors**: one per status the Updates tab itself groups by: `sensor.update_manager_ready`
+  ("Ready to update"), `_waiting` ("Postponed"), `_blocked` ("Discouraged"), `_skipped` ("Skipped"), and
+  `_not_installable` ("Not installable"). Each sensor's state is that status's own count, with the
+  affected entities (entity_id, installed/latest version) listed in its attributes: point a
+  `numeric_state` trigger at one directly, e.g. to notify when anything becomes Discouraged.
+* **Events**, fired on `hass.bus` for the three discrete moments an automation might want to react to:
+
+  | Event | Fired when | Data |
+  | --- | --- | --- |
+  | `update_manager_announced` | An auto-install countdown starts | `entity_id`, `from_version`, `to_version`, `execute_at` |
+  | `update_manager_installed` | An install completes, auto or manual alike | `entity_id`, `from_version`, `to_version`, `auto_installed`, `auto_install_reason`, `trusted_voter_usernames` |
+  | `update_manager_install_failed` | An auto-install's `update.install` call raised | `entity_id`, `to_version` |
+
+  Ongoing status (which updates are currently Ready/Postponed/etc.) is already covered by the sensors
+  above; these events are only for the moments in between.
+
+**Example: send yourself a notification for every scheduled auto-install**, the same message the built-in
+persistent notification already shows, just on your phone instead:
+
+```yaml
+automation:
+  - alias: "Update Manager: notify on scheduled auto-install"
+    trigger:
+      - trigger: event
+        event_type: update_manager_announced
+    variables:
+      device_name: >-
+        {{ state_attr(trigger.event.data.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
+    action:
+      - action: notify.notify  # replace with your own target, e.g. notify.mobile_app_your_phone
+        data:
+          title: "Scheduled update"
+          message: >-
+            Update Manager wants to update {{ device_name }} to version {{ trigger.event.data.to_version }}
+            on {{ as_timestamp(trigger.event.data.execute_at) | timestamp_custom('%d-%m-%Y %H:%M') }}.
+          data:
+            url: /update-manager/updates          # opens the Update Manager page on tap, iOS
+            clickAction: /update-manager/updates   # same, for Android
+            group: update_manager_announced        # bundles every one of these together in the notification shade
+            tag: "{{ device_name }}"               # a newer announcement for the same device replaces the old one instead of stacking
+            push:
+              interruption-level: passive          # iOS only, quiet, no sound/wake, doesn't override Focus modes
+```
+
 ## How data updates
 
 Updates/History refresh automatically as Home Assistant reports new information. Community-vote data is
@@ -118,7 +168,7 @@ every 15 minutes.
 
 ## Known limitations
 
-* Staging rules apply per update *size* (small/medium/big), not per individual entity: an entity can be
+* Staging rules apply per update *size* (small/medium/large), not per individual entity: an entity can be
   excluded entirely, but can't get its own, different waiting period.
 * Voting only works for entities identifiable as a HACS integration, Home Assistant Core/Supervisor/OS,
   a recognized Zigbee device model, or a Supervisor add-on.

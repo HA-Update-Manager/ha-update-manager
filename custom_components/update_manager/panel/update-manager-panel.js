@@ -87,530 +87,25 @@ function verdictIcon(isProblematic) {
   return isProblematic ? ICON_ALERT : ICON_THUMB_UP;
 }
 
-// hass.language-driven, same convention this project family's other files
-// use (see cover-media-card.js's TRANSLATIONS/_tr) -- flat keys, English as
-// the base/fallback language. Found live: a user with hass.language "en"
-// still saw an all-Dutch panel, since nothing here ever looked at
-// hass.language at all before this.
-const TRANSLATIONS = {
-  en: {
-    // Explicit BCP-47 locale for absoluteWhen's own toLocaleDateString/
-    // toLocaleTimeString calls -- found live: passing `undefined` there
-    // uses the browser's own OS-level locale instead, which isn't
-    // necessarily the same as hass.language (a user can easily have
-    // these two disagree), producing a mixed-language result (e.g. an
-    // English "today" from our own tr object right next to a Dutch
-    // weekday name from the browser's locale).
-    locale: "en",
-    tab_updates: "Updates",
-    tab_history: "History",
-    tab_settings: "Settings",
-    refresh: "Refresh",
-    checking_updates_toast: "Checking for updates…",
-    refreshed_toast: "Update Manager refreshed",
-    dash: "–",
-    // Deliberately generic, not semver's own vocabulary (renamed
-    // 2026-07-16, see FUTURE.md): "Small/Medium/Big" is a scale any version
-    // scheme maps onto -- semver, calendar versioning, and git commit
-    // hashes each have their own notion of "small" (see semver.py). The
-    // _desc text is the settings screen's expandable-section *description*
-    // (ha-form's own computeHelper for that schema entry, confirmed against
-    // ha-form-expandable.ts -- renders as its own line below the header,
-    // not squeezed into the header itself, direct user feedback) -- the
-    // Updates tab's "Impact" column shows the _short word only, no room/
-    // need for the explanation there.
-    size_small_short: "Small",
-    // Functions, not plain strings, for the two with a calendar-version
-    // example (currentCalendarVersion): always today's real year/month,
-    // never a hardcoded date that quietly goes stale. size_big_desc stays
-    // a function too, purely so every size_*_desc can be called the same
-    // way (see computeHelper below) rather than branching per size.
-    size_small_desc: () => {
-      const { year, month } = currentCalendarVersion();
-      return `A patch release (e.g. 1.0.0 → 1.0.1), or the same calendar month (e.g. ${year}.${month}.0 → ${year}.${month}.1).`;
-    },
-    size_medium_short: "Medium",
-    size_medium_desc: () => {
-      const { year, month, nextYear, nextMonth } = currentCalendarVersion();
-      return (
-        `A minor release (e.g. 1.0.0 → 1.1.0), a new calendar month/year (e.g. ${year}.${month}.0 → ` +
-        `${nextYear}.${nextMonth}.0), or a commit-hash update (e.g. 7sg82tw → 8dhw8wg).`
-      );
-    },
-    size_big_short: "Big",
-    size_big_desc: () => "A major release (e.g. 1.0.0 → 2.0.0) or a jump too different to classify.",
-    // Used in the detail dialog's status alert (see statusText/
-    // _openDetailDialog) -- no emoji prefix here, the alert's own color and
-    // icon (a real ha-alert, success/info/warning) already carry that, an
-    // emoji on top would be redundant. Green means the wait is over,
-    // nothing is literally "done" yet on its own -- it may already be
-    // auto-installing (status_pending_install below covers that case
-    // specifically, with a matching download icon instead of the alert's
-    // default one, see timerBadge). Orange is still waiting it out. Red is
-    // reserved for a future signal (e.g. a community verdict, see
-    // FUTURE.md's Fase 1/3) that actively discourages an update; nothing
-    // in today's local rules produces it (see the settings legend's note).
-    status_ready: "Ready to update",
-    status_waiting_manual: (when) => `Ready to update ${when}`,
-    status_waiting_soon: "Postponed (almost ready)",
-    // Short, unparameterized form -- for the dialog header's brief .state
-    // value (matching state-card-update.ts's own short state text, not a
-    // full sentence -- the countdown itself already lives in the alert
-    // body below via statusText).
-    status_waiting_short: "Postponed",
-    status_blocked: "Discouraged",
-    status_skipped: "Skipped",
-    // Lowercase, distinct from the Title Case group heading above -- matches
-    // ha-config-updates.ts's own row template, confirmed against its real
-    // source: `${title} ${latest_version} (${localize("ui.panel.config.updates.skipped")})`.
-    status_skipped_suffix: "skipped",
-    // Overrides every other status while attributes.in_progress is true
-    // (see statusText/timerBadge's own installing check) -- HA's own
-    // ui.panel.config.updates.update_in_progress is only ever used as an
-    // accessibility label (a spinner's aria-label/ha-progress-ring's own
-    // label, confirmed against ha-config-updates.ts's real source), never
-    // shown as visible text anywhere in HA itself -- this is our own
-    // dialog's status-alert text specifically, which (unlike HA's) has no
-    // other way to say what's happening right now.
-    status_installing: "Installing…",
-    status_pending_install: (when) => `Will update automatically ${when}`,
-    // Plain " ⋅ " separator, not a parenthetical -- same separator already
-    // used elsewhere in this file (e.g. the history entry's
-    // "from → to ⋅ when" line) to combine two independent facts.
-    always_manual_suffix: " ⋅ Always manual",
-    field_excluded_entities: "Always manual",
-    field_excluded_entities_helper:
-      "Still shown normally in Updates and History. Update Manager just never auto-installs these, regardless of what's configured above.",
-    field_wait_days: "Postponement period (days)",
-    field_auto_install: "Update automatically",
-    auto_install_section_title: "Auto-update",
-    field_hide_postponed: "Hide postponed updates",
-    field_hide_postponed_helper:
-      "Marks a postponed update as skipped in Home Assistant itself until it's actually ready. Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
-    auto_install_section_desc:
-      "The postponement/auto-install rules above apply per size. Everything below (announcement notice, always-manual entities, trusted voters) applies regardless of size. Also regardless of any setting here: any problematic community vote on a version jump already blocks auto-install for it, with or without a trusted voter configured.",
-    field_trusted_voters: "Trusted voters",
-    field_trusted_voters_helper:
-      "GitHub usernames whose healthy community vote (see the Community section in a version's own dialog) auto-installs that exact version jump immediately, skipping your own rules above entirely. Blocking doesn't need this list at all: any problematic vote, from anyone, already does that on its own (see above). If more than one trusted voter disagrees on the same jump, a problematic vote still wins.",
-    announce_hours_label: "Announcement notice (hours)",
-    announce_hours_helper:
-      "How long you have to cancel a scheduled automatic install (Updates tab) before it actually happens, once the postponement period is over.",
-    col_impact: "Impact",
-    // Noun, not "Announced" -- deliberately different label for the
-    // projected-but-not-yet-real case (see projectedAnnouncementTime's own
-    // comment), direct user feedback, 2026-08-01: "dan is het niet
-    // Announced maar Announcement, toch?" -- "Announced" asserts it already
-    // happened, which isn't true yet for a still-"waiting" update.
-    dialog_announcement_label: "Announcement",
-    dialog_current_version: "Installed version",
-    dialog_new_version: "Latest version",
-    dialog_community_verdict_disclaimer:
-      "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
-    // Also the "nothing at all" row of the Community section's own fact
-    // stack (see _buildCommunitySection) -- same wording either way, direct
-    // user feedback, 2026-07-27: replaces the old question+"not yet rated"
-    // pairing, which read as a non-answer with no clear next step.
-    community_not_yet_rated: "No one's reported on this jump yet.",
-    community_vote_link_prompt: "Link your GitHub account in Settings to vote.",
-    // Surfaces whether a configured trusted voter is among the people who
-    // voted on this exact jump -- direct user feedback, 2026-07-27: "dat
-    // zie ik niet terug", after a trusted voter's own vote didn't show up
-    // anywhere even though it's exactly what changes auto-install behavior
-    // for this jump (see announcer.py's own effective_auto_install_state).
-    // "Trusted vote:" prefix, not "Trusted voter(s)": names can be one or
-    // several, this avoids needing a separate singular/plural form.
-    community_trusted_vote_healthy: (names) => `Trusted vote: ${names} reported this jump as healthy.`,
-    community_trusted_vote_problematic: (names) => `Trusted vote: ${names} reported this jump as problematic.`,
-    community_trusted_voter_label: "Trusted voter",
-    community_other_jumps_heading: "Other jumps to this version",
-    community_other_jump_line: (fromVersion, badgeTitle) => `From ${fromVersion}: ${badgeTitle}`,
-    community_problematic_reasons_heading: "Reported reasons",
-    community_report_toggle: "Report a known issue",
-    community_report_intro:
-      "Already know this update will cause problems, e.g. from the release notes? Report it before installing, so others are warned before they update too.",
-    community_vote_healthy: "Mark as healthy",
-    community_vote_problematic: "Report as problematic",
-    community_vote_submit: "Submit",
-    // `updated` (see websocket_api.py's own is_vote_update): a repeat vote
-    // on the same version now replaces your earlier one instead of being
-    // rejected, 2026-07-23, direct user feedback ("kan ik wel mijn stem
-    // wijzigen?") -- said plainly here instead of leaving the previous
-    // vote's confirmation text up as if this were the first time.
-    // ownRepoHealthyVote (see websocket_api.py's own is_own_repo_healthy_vote):
-    // mirrors community-votes' own "asymmetric weight for the repo owner"
-    // rule -- a maintainer's own healthy vote on their own release is
-    // recorded but never counts toward the tally, so said here instead of
-    // showing a generic confirmation the standing then silently contradicts.
-    community_vote_confirmed_healthy: (updated, ownRepoHealthyVote) => {
-      if (ownRepoHealthyVote) {
-        return "Marked as healthy. As the maintainer, this doesn't count toward the community tally, but thanks!";
-      }
-      return updated ? "Vote updated to healthy." : "Marked as healthy. Thanks for helping others decide.";
-    },
-    community_vote_confirmed_problematic: (reason, updated) =>
-      updated ? `Vote updated to problematic: ${reason}.` : `Reported: ${reason}. Thanks for the heads-up.`,
-    community_vote_reason_required: "Pick a reason first.",
-    vote_field_reason_category: "Reason",
-    vote_field_notes: "Notes (optional)",
-    vote_field_link: "Issue or changelog link (optional)",
-    vote_reason_broken: "Broken functionality",
-    vote_reason_requires_newer: "Requires a newer HA version",
-    vote_reason_dev_build: "Dev/pre-release build",
-    vote_reason_breaking_change: "Breaking change",
-    vote_reason_other: "Other",
-    // Used to match real HA's own more-info-update.ts wording exactly
-    // ("Read release announcement", confirmed live 2026-07-27). Changed to
-    // "Open", 2026-08-01, direct user feedback: unlike HA's own dialog,
-    // this link can now sit right below release notes we've *already*
-    // shown (see appendReleaseNotesSection) -- "Read" implies you haven't
-    // seen it yet, which reads oddly right under content you're looking
-    // at; "Open" is just about visiting the source, correct either way,
-    // whether the notes above are shown or this link is the section's only
-    // content.
-    dialog_release_announcement: "Open release announcement",
-    dialog_history_heading: "History",
-    // No reason recorded at all: an entry logged before this field existed
-    // (2026-07-23) -- the generic fallback, not "unknown".
-    dialog_history_auto: "Automatically updated",
-    dialog_history_changelog: "View changelog",
-    dialog_history_available_since: "Available since",
-    dialog_history_announced: "Announced",
-    dialog_history_installed_at: "Installed",
-    dialog_history_method_label: "Install method",
-    dialog_history_method_manual: "Manual",
-    dialog_history_method_rules: "Automatic, your own rules",
-    dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
-    dialog_history_backup_label: "Backup",
-    dialog_history_backup_yes: "Taken before installing",
-    dialog_history_backup_no: "Not supported by this entity",
-    dialog_release_notes_heading: "Release notes",
-    dialog_upstream_release_notes: (repo) => `${repo}'s own release notes:`,
-    dialog_community_heading: "Community",
-    list_and: "and",
-    dialog_auto_install_held_back: (names) => `Auto-install held back: ${names} reported this jump as problematic.`,
-    dialog_auto_install_held_back_community: (count) =>
-      count === 1
-        ? "Auto-install held back: 1 person reported this jump as problematic."
-        : `Auto-install held back: ${count} people reported this jump as problematic.`,
-    dialog_more_info: "More info",
-    paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
-    // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
-    // that this card also covers hide_postponed (merged in from its own
-    // former "Visibility in Home Assistant" card), "the settings page's
-    // own name repeated as a card title on the settings page" read as odd,
-    // and "General" is what this actually is: the settings that aren't
-    // specific to any one size, as opposed to "Update rules" (per size)
-    // and "Auto-update" (the auto-install mechanism's own details) below
-    // it.
-    enabled_section_title: "General",
-    community_section_title: "Community",
-    community_section_desc:
-      "Link your GitHub account to vote on whether an update turned out healthy or problematic, helping others decide.",
-    community_link: "Link GitHub account",
-    community_unlink: "Unlink",
-    community_linked_as: (username) => `Linked as @${username}`,
-    community_link_instructions: "Go to the page below and enter this code:",
-    community_link_waiting: "Waiting for you to approve on GitHub...",
-    community_link_timed_out: "The linking code expired before it was approved, try again.",
-    community_link_failed: "Linking failed or was declined, try again.",
-    field_enabled: "Enabled",
-    field_enabled_helper:
-      "Pauses every automatic action below: no announcements, no automatic installs, and postponed updates stop being hidden from Home Assistant's own update count. Everything you've configured stays saved, it just isn't applied until you turn this back on.",
-    settings_header: "Update rules",
-    settings_hint:
-      "Every update is grouped into one of these three sizes, based on how big the version jump " +
-      "is. For each, choose how many days to postpone it, and whether Update Manager should then " +
-      "install it for you.",
-    save: "Save",
-    settings_saved_toast: "Settings saved",
-    cancel_auto_install: "Cancel",
-    dialog_open_update: "Open update",
-    dialog_skip: "Skip",
-    dialog_unskip: "Clear skipped",
-    group_ready: "Ready to update",
-    group_waiting: "Postponed",
-    group_blocked: "Discouraged",
-    update_all: "Update all",
-    // Rollout-pacing queue cards (see rollout_manager.py): one Zigbee
-    // firmware install at a time per network, not several at once (real
-    // radio traffic that can destabilize the mesh). Only ever shown once a
-    // second device from the same network/model/version is asked to
-    // install while one is already in flight.
-    rollout_queue_title_zha: "ZHA update queue",
-    rollout_queue_title_z2m: "Zigbee2MQTT update queue",
-    rollout_queue_subtitle: "Installs one at a time to avoid overloading the Zigbee network.",
-    // Reused verbatim for the dialog's own Install button while an entity
-    // is queued (not yet its turn): no override, direct user feedback,
-    // the queue must stay authoritative, not something a hurried click can
-    // jump.
-    rollout_queue_waiting: (name) => `Waiting for ${name}`,
-    // Community-verdict fact rows (see _buildCommunitySection, and
-    // aggregateVerdictText for how these four get picked), read-only slice
-    // added 2026-07-22: https://github.com/HA-Update-Manager/community-votes.
-    // Redesigned 2026-07-27, direct user feedback: rather than one sentence
-    // that silently drops whichever count loses (problematic used to always
-    // win, even when e.g. 2 people said healthy and only 1 said
-    // problematic), "people"/"others" perspective + a "_mixed" variant show
-    // both numbers whenever both exist.
-    community_verdict_healthy: (count) =>
-      `${count} ${count === 1 ? "person" : "people"} reported this jump as healthy.`,
-    community_verdict_problematic: (count) =>
-      `${count} ${count === 1 ? "person" : "people"} reported this jump as problematic.`,
-    community_verdict_mixed: (healthyCount, problematicCount) =>
-      `${healthyCount} reported this jump as healthy, ${problematicCount} as problematic.`,
-    // "others" perspective: used instead of the three above whenever a
-    // separate "You reported..." row (below) is already shown, so these
-    // counts exclude your own vote instead of restating it.
-    community_verdict_others_healthy: (count) =>
-      `${count} ${count === 1 ? "other person" : "others"} reported this jump as healthy.`,
-    community_verdict_others_problematic: (count) =>
-      `${count} ${count === 1 ? "other person" : "others"} reported this jump as problematic.`,
-    community_verdict_others_mixed: (healthyCount, problematicCount) =>
-      `${healthyCount} ${healthyCount === 1 ? "other person" : "others"} reported this jump as healthy, ${problematicCount} as problematic.`,
-    // Your own vote, shown as its own fact regardless of whether it agrees
-    // with everyone else (direct user feedback, 2026-07-22: "I can't see
-    // that I voted myself"; redesigned 2026-07-27 to always show, even when
-    // your vote is the dissenting one -- it used to silently disappear from
-    // the sentence entirely whenever it didn't match the leading direction,
-    // see my_votes.py). The wider picture, if any, is the separate
-    // aggregate row above/below this, not merged into this same sentence.
-    community_verdict_you_healthy: "You reported this jump as healthy.",
-    community_verdict_you_problematic: "You reported this jump as problematic.",
-    // Count+pluralized, matching ha-config-section-updates.ts's own real
-    // title_skipped/title_not_installable convention (confirmed against its
-    // source: both are passed {count} and pluralize the same way
-    // ui.card.updates.count_updates does) -- direct user feedback: "HA doet
-    // '3 skipped updates' en '1 not installable update'. Waarom heb je deze
-    // logica niet overgenomen?".
-    group_skipped: (count) => `${count} ${count === 1 ? "skipped update" : "skipped updates"}`,
-    group_not_installable: (count) => `${count} ${count === 1 ? "not installable update" : "not installable updates"}`,
-    updates_empty: "No updates need attention, everything is up to date.",
-    history_empty: "No updates logged yet.",
-    // History's own date sections (see historySections), relative rather
-    // than a fixed calendar date range in the heading itself, same spirit
-    // as relativeTime/absoluteWhen elsewhere in this file: "This week"
-    // stays true and readable all week, a literal date range would need
-    // recomputing (and re-reading) every single day.
-    history_section_today: "Today",
-    history_section_yesterday: "Yesterday",
-    history_section_this_week: "This week",
-    history_section_this_month: "This month",
-    history_section_earlier: "Earlier",
-    loading: "Loading…",
-    load_error_prefix: "Couldn't load Update Manager: ",
-    units: [
-      ["year", "years"],
-      ["month", "months"],
-      ["week", "weeks"],
-      ["day", "days"],
-      ["hour", "hours"],
-      ["minute", "minutes"],
-    ],
-    relative_ago: (n, unit) => `${n} ${unit} ago`,
-    relative_future: (n, unit) => `in ${n} ${unit}`,
-    relative_just_now: "just now",
-    relative_soon: "very soon",
-    when_today: (time) => `today ${time}`,
-    when_tomorrow: (time) => `tomorrow ${time}`,
-    when_weekday: (weekday, time) => `${weekday} ${time}`,
-    when_date: (date, time) => `${date}, ${time}`,
-  },
-  nl: {
-    locale: "nl",
-    tab_updates: "Updates",
-    tab_history: "Historie",
-    tab_settings: "Instellingen",
-    refresh: "Vernieuwen",
-    checking_updates_toast: "Bezig met controleren op updates…",
-    refreshed_toast: "Update Manager ververst",
-    dash: "–",
-    size_small_short: "Klein",
-    size_small_desc: () => {
-      const { year, month } = currentCalendarVersion();
-      return `Een patch-release (bijv. 1.0.0 → 1.0.1), of dezelfde kalendermaand (bijv. ${year}.${month}.0 → ${year}.${month}.1).`;
-    },
-    size_medium_short: "Gemiddeld",
-    size_medium_desc: () => {
-      const { year, month, nextYear, nextMonth } = currentCalendarVersion();
-      return (
-        `Een minor-release (bijv. 1.0.0 → 1.1.0), een nieuwe kalendermaand/-jaar (bijv. ${year}.${month}.0 → ` +
-        `${nextYear}.${nextMonth}.0), of een commit-update (bijv. 7sg82tw → 8dhw8wg).`
-      );
-    },
-    size_big_short: "Groot",
-    size_big_desc: () => "Een major-release (bijv. 1.0.0 → 2.0.0), of een sprong die niet te classificeren is.",
-    status_ready: "Klaar om te updaten",
-    status_waiting_manual: (when) => `Klaar om te updaten ${when}`,
-    status_waiting_soon: "Uitgesteld (bijna zo ver)",
-    status_waiting_short: "Uitgesteld",
-    status_blocked: "Afgeraden",
-    status_skipped: "Overgeslagen",
-    status_skipped_suffix: "overgeslagen",
-    status_installing: "Bezig met installeren…",
-    status_pending_install: (when) => `Wordt automatisch geüpdatet ${when}`,
-    always_manual_suffix: " ⋅ Altijd handmatig",
-    field_excluded_entities: "Altijd handmatig",
-    field_excluded_entities_helper:
-      "Blijven gewoon zichtbaar bij Updates en Historie. Update Manager installeert ze alleen nooit automatisch, ongeacht wat je hierboven instelt.",
-    field_wait_days: "Uitsteltermijn (dagen)",
-    field_auto_install: "Automatisch updaten",
-    auto_install_section_title: "Auto-update",
-    auto_install_section_desc:
-      "De uitstel-/auto-installatieregels hierboven gelden per grootte. Alles hieronder (aankondigingstermijn, altijd-handmatige entiteiten, vertrouwde stemmers) geldt sowieso, ongeacht grootte. Ook ongeacht elke instelling hier: een problematische community-stem op een sprong blokkeert auto-installatie daarvoor al, met of zonder vertrouwde stemmer.",
-    field_trusted_voters: "Vertrouwde stemmers",
-    field_trusted_voters_helper:
-      "GitHub-gebruikersnamen wiens gezonde community-stem (zie de sectie Community in de dialoog van een versie) die exacte sprong meteen automatisch installeert, ongeacht je eigen regels hierboven. Blokkeren hoeft niet via deze lijst: elke problematische stem, van wie dan ook, doet dat al op zichzelf (zie hierboven). Staan er meerdere vertrouwde stemmers in de lijst en zijn ze het niet eens over dezelfde sprong, dan wint een problematische stem alsnog.",
-    field_hide_postponed: "Uitgestelde updates verbergen",
-    field_hide_postponed_helper:
-      "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
-    announce_hours_label: "Aankondigingstermijn (uren)",
-    announce_hours_helper:
-      "Hoelang je hebt om een geplande automatische installatie (Updates-tab) te annuleren voordat die echt gebeurt, zodra de uitsteltermijn voorbij is.",
-    col_impact: "Impact",
-    dialog_announcement_label: "Aankondiging",
-    dialog_current_version: "Geïnstalleerde versie",
-    dialog_new_version: "Nieuwste versie",
-    dialog_community_verdict_disclaimer:
-      "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
-    community_not_yet_rated: "Niemand heeft nog iets over deze sprong gemeld.",
-    community_vote_link_prompt: "Koppel je GitHub-account in Instellingen om te stemmen.",
-    community_trusted_vote_healthy: (names) =>
-      `Vertrouwde stem: deze sprong is door ${names} als probleemloos beoordeeld.`,
-    community_trusted_vote_problematic: (names) =>
-      `Vertrouwde stem: deze sprong is door ${names} als problematisch beoordeeld.`,
-    community_trusted_voter_label: "Vertrouwde stemmer",
-    community_other_jumps_heading: "Andere sprongen naar deze versie",
-    community_other_jump_line: (fromVersion, badgeTitle) => `Van ${fromVersion}: ${badgeTitle}`,
-    community_problematic_reasons_heading: "Gerapporteerde redenen",
-    community_report_toggle: "Meld een bekend probleem",
-    community_report_intro:
-      "Weet je al dat deze update problemen gaat geven, bijvoorbeeld via de release notes? Meld dat vast voordat je 'm installeert, zodat anderen gewaarschuwd zijn voordat ze zelf updaten.",
-    community_vote_healthy: "Markeer als probleemloos",
-    community_vote_problematic: "Meld als problematisch",
-    community_vote_submit: "Versturen",
-    community_vote_confirmed_healthy: (updated, ownRepoHealthyVote) => {
-      if (ownRepoHealthyVote) {
-        return "Gemarkeerd als probleemloos. Als maker telt dit niet mee voor de community-telling, maar toch bedankt!";
-      }
-      return updated ? "Stem gewijzigd naar probleemloos." : "Gemarkeerd als probleemloos. Bedankt dat je anderen hiermee helpt.";
-    },
-    community_vote_confirmed_problematic: (reason, updated) =>
-      updated ? `Stem gewijzigd naar problematisch: ${reason}.` : `Gemeld: ${reason}. Bedankt voor de tip.`,
-    community_vote_reason_required: "Kies eerst een reden.",
-    vote_field_reason_category: "Reden",
-    vote_field_notes: "Toelichting (optioneel)",
-    vote_field_link: "Issue- of changelog-link (optioneel)",
-    vote_reason_broken: "Functionaliteit kapot",
-    vote_reason_requires_newer: "Vereist nieuwere HA-versie",
-    vote_reason_dev_build: "Dev/pre-release-build",
-    vote_reason_breaking_change: "Breaking change",
-    vote_reason_other: "Anders",
-    dialog_release_announcement: "Release-aankondiging openen",
-    dialog_history_heading: "Geschiedenis",
-    dialog_history_auto: "Automatisch geüpdatet",
-    dialog_history_changelog: "Changelog bekijken",
-    dialog_history_available_since: "Beschikbaar sinds",
-    dialog_history_announced: "Aangekondigd",
-    dialog_history_installed_at: "Geïnstalleerd",
-    dialog_history_method_label: "Installatiemethode",
-    dialog_history_method_manual: "Handmatig",
-    dialog_history_method_rules: "Automatisch, je eigen regels",
-    dialog_history_method_trusted: (names) => `Automatisch, vertrouwde stem van ${names}`,
-    dialog_history_backup_label: "Back-up",
-    dialog_history_backup_yes: "Gemaakt voor het installeren",
-    dialog_history_backup_no: "Niet ondersteund door deze entity",
-    dialog_release_notes_heading: "Release notes",
-    dialog_upstream_release_notes: (repo) => `Eigen release notes van ${repo}:`,
-    dialog_community_heading: "Community",
-    list_and: "en",
-    // Passive voice ("door X beoordeeld als"), not "X beoordeelde" -- avoids
-    // needing separate singular/plural verb forms for a variable-length,
-    // possibly multi-name subject.
-    dialog_auto_install_held_back: (names) =>
-      `Auto-installatie tegengehouden: deze sprong is door ${names} als problematisch beoordeeld.`,
-    dialog_auto_install_held_back_community: (count) =>
-      count === 1
-        ? "Auto-installatie tegengehouden: 1 persoon heeft deze sprong als problematisch gerapporteerd."
-        : `Auto-installatie tegengehouden: ${count} mensen hebben deze sprong als problematisch gerapporteerd.`,
-    dialog_more_info: "Meer info",
-    paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
-    enabled_section_title: "Algemeen",
-    community_section_title: "Community",
-    community_section_desc:
-      "Koppel je GitHub-account om te stemmen of een update probleemloos of problematisch bleek, en help zo anderen.",
-    community_link: "GitHub-account koppelen",
-    community_unlink: "Ontkoppelen",
-    community_linked_as: (username) => `Gekoppeld als @${username}`,
-    community_link_instructions: "Ga naar onderstaande pagina en voer deze code in:",
-    community_link_waiting: "Wachten tot je akkoord geeft op GitHub...",
-    community_link_timed_out: "De koppelcode is verlopen voordat 'm werd goedgekeurd, probeer het opnieuw.",
-    community_link_failed: "Koppelen is mislukt of geweigerd, probeer het opnieuw.",
-    field_enabled: "Ingeschakeld",
-    field_enabled_helper:
-      "Pauzeert alle automatische acties hieronder: geen aankondigingen, geen automatische installaties, en uitgestelde updates worden niet langer verborgen voor Home Assistants eigen update-telling. Alles wat je hebt ingesteld blijft opgeslagen, het wordt alleen niet toegepast totdat je dit weer aanzet.",
-    settings_header: "Update-regels",
-    settings_hint:
-      "Elke update valt in een van deze drie groottes, op basis van hoe groot de versiesprong is. " +
-      "Per grootte kies je hoeveel dagen je 'm uitstelt, en of Update Manager 'm daarna zelf " +
-      "installeert.",
-    save: "Opslaan",
-    settings_saved_toast: "Instellingen opgeslagen",
-    cancel_auto_install: "Annuleren",
-    dialog_open_update: "Update openen",
-    dialog_skip: "Overslaan",
-    dialog_unskip: "Overslaan ongedaan maken",
-    group_ready: "Klaar om te updaten",
-    group_waiting: "Uitgesteld",
-    group_blocked: "Afgeraden",
-    update_all: "Alles updaten",
-    rollout_queue_title_zha: "ZHA-wachtrij",
-    rollout_queue_title_z2m: "Zigbee2MQTT-wachtrij",
-    rollout_queue_subtitle: "Installeert één voor één om het Zigbee-netwerk niet te overbelasten.",
-    rollout_queue_waiting: (name) => `Wacht op ${name}`,
-    community_verdict_healthy: (count) =>
-      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als probleemloos.`,
-    community_verdict_problematic: (count) =>
-      `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als problematisch.`,
-    community_verdict_mixed: (healthyCount, problematicCount) =>
-      `${healthyCount} ${healthyCount === 1 ? "persoon meldt" : "mensen melden"} deze sprong als probleemloos, ${problematicCount} als problematisch.`,
-    community_verdict_others_healthy: (count) =>
-      `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos.`,
-    community_verdict_others_problematic: (count) =>
-      `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als problematisch.`,
-    community_verdict_others_mixed: (healthyCount, problematicCount) =>
-      `${healthyCount} ${healthyCount === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos, ${problematicCount} als problematisch.`,
-    community_verdict_you_healthy: "Jij meldde deze sprong als probleemloos.",
-    community_verdict_you_problematic: "Jij meldde deze sprong als problematisch.",
-    group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,
-    group_not_installable: (count) =>
-      `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
-    updates_empty: "Geen updates die aandacht nodig hebben, alles is up-to-date.",
-    history_empty: "Nog geen updates gelogd.",
-    history_section_today: "Vandaag",
-    history_section_yesterday: "Gisteren",
-    history_section_this_week: "Deze week",
-    history_section_this_month: "Deze maand",
-    history_section_earlier: "Eerder",
-    loading: "Laden…",
-    load_error_prefix: "Kon Update Manager niet laden: ",
-    units: [
-      ["jaar", "jaar"],
-      ["maand", "maanden"],
-      ["week", "weken"],
-      ["dag", "dagen"],
-      ["uur", "uur"],
-      ["minuut", "minuten"],
-    ],
-    relative_ago: (n, unit) => `${n} ${unit} geleden`,
-    relative_future: (n, unit) => `over ${n} ${unit}`,
-    relative_just_now: "zojuist",
-    relative_soon: "zo dadelijk",
-    when_today: (time) => `vandaag ${time}`,
-    when_tomorrow: (time) => `morgen ${time}`,
-    when_weekday: (weekday, time) => `${weekday} ${time}`,
-    when_date: (date, time) => `${date}, ${time}`,
-  },
-};
+// TRANSLATIONS itself now lives in its own file, translations.js (2026-08-07,
+// direct user feedback: "Ik wil alle copy, bij alle projecten, centraal
+// kunnen beheren per taal"), loaded dynamically below rather than via a
+// plain static `import` -- see _loadTranslations' own comment for why a
+// static import would risk exactly the kind of stale-browser-cache bug
+// panel.py's own _panel_js_cache_key already exists to prevent for this
+// file itself.
+//
+// Reuses the exact ?v= query string this module itself was loaded with
+// (import.meta.url already carries it), so translations.js busts the
+// browser's cache in lockstep with this file -- panel.py's own
+// _panel_js_cache_key hashes both files' combined content for that same
+// query string, see its own docstring.
+function _loadTranslations() {
+  const panelUrl = new URL(import.meta.url);
+  const translationsUrl = new URL(`translations.js${panelUrl.search}`, panelUrl);
+  return import(translationsUrl.href).then((module) => module.TRANSLATIONS);
+}
+const _translationsPromise = _loadTranslations();
 // Seconds per unit, in the same order as tr.units -- language-independent,
 // kept separate from the translated words themselves.
 const _UNIT_SECONDS = [365 * 24 * 3600, 30 * 24 * 3600, 7 * 24 * 3600, 24 * 3600, 3600, 60];
@@ -637,7 +132,7 @@ function tabForPath(relativePath) {
 // what you're looking at at a
 // time -- the section title itself (tr.size_*, shown once per size, with
 // its explanation) is what would otherwise have needed repeating.
-const SIZES = ["small", "medium", "big"];
+const SIZES = ["small", "medium", "large"];
 
 // vote_reason_* translation keys, one shared source of truth (see
 // _buildVoteControls): found by review, two independently hand-written
@@ -712,7 +207,7 @@ function pickKnownSettings(data) {
 // standing, most "proven" update sinks to the top of its group); within
 // "waiting", soonest-to-turn-green first instead (least remaining_seconds)
 // -- oldest-available doesn't mean the same thing there (found live: a
-// "big" update available 59 days into a 60-day wait sorted above a
+// "large" update available 59 days into a 60-day wait sorted above a
 // "medium" update 12 hours from ready, since it had simply existed longer,
 // not because it was closer to actionable).
 const STATUS_SORT_PRIORITY = { ready: 0, waiting: 1, blocked: 2, skipped: 3 };
@@ -1253,24 +748,6 @@ function _breakdown(tr, abs) {
     }
   }
   return null;
-}
-
-// The real current year/month, not a hardcoded example that would
-// otherwise silently go stale (e.g. "2026.7" still shown as the calendar-
-// versioning example long after that month has passed). Used by
-// TRANSLATIONS' own size_small_desc/size_medium_desc, direct user
-// feedback. month is already 1-indexed (getMonth() + 1). Also includes the
-// following month/year (found by review, 2026-07-22: this exact rollover
-// arithmetic was independently duplicated in both the en and nl
-// size_medium_desc entries), so both locales can just consume the values
-// instead of each re-deriving them.
-function currentCalendarVersion() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
-  const nextMonth = month === 12 ? 1 : month + 1;
-  const nextYear = month === 12 ? year + 1 : year;
-  return { year, month, nextYear, nextMonth };
 }
 
 // HA's own relative-time display is a live-updating component
@@ -1835,6 +1312,16 @@ class UpdateManagerPanel extends HTMLElement {
     // websocket_api.py docstring ("the right price for always tell the
     // truth right now").
     this._releaseNotesCache = new Map();
+    // translations.js, loaded dynamically (see _loadTranslations' own
+    // comment) -- null until _translationsReady resolves. _updateShell/
+    // _renderContent below self-guard on this (deferring to
+    // _translationsReady rather than rendering with nothing to read text
+    // from) since connectedCallback/set hass/set route can each be the
+    // very first thing HA's panel resolver calls, in no guaranteed order.
+    this._translations = null;
+    this._translationsReady = _translationsPromise.then((t) => {
+      this._translations = t;
+    });
   }
 
   set hass(hass) {
@@ -1854,7 +1341,8 @@ class UpdateManagerPanel extends HTMLElement {
   }
 
   get _tr() {
-    return TRANSLATIONS[this._hass && this._hass.language] || TRANSLATIONS.en;
+    if (!this._translations) return null;
+    return this._translations[this._hass && this._hass.language] || this._translations.en;
   }
 
   set narrow(narrow) {
@@ -1891,7 +1379,13 @@ class UpdateManagerPanel extends HTMLElement {
     this._renderContent();
   }
 
-  set panel(_panel) {}
+  // Only ever read for its own config.integration_version (see panel.py's
+  // own comment on why that's sourced from the real manifest.json instead
+  // of a second, hand-maintained JS constant like the sibling Lovelace
+  // cards' own CARD_VERSION) -- _buildVersionLink below is the one reader.
+  set panel(panel) {
+    this._panel = panel;
+  }
 
   connectedCallback() {
     this._ensureShell();
@@ -2225,6 +1719,15 @@ class UpdateManagerPanel extends HTMLElement {
   // afterwards, not recreated every render, so it (and any child state like
   // scroll position) survives tab switches and data refreshes.
   _ensureShell() {
+    // Deferred, not rendered with nothing to read text from, whenever this
+    // fires (via connectedCallback or _initialLoad) before translations.js
+    // has actually resolved -- see the constructor's own comment. Re-enters
+    // itself once ready; _shellBuilt below still makes the real build run
+    // exactly once either way.
+    if (!this._translations) {
+      this._translationsReady.then(() => this._ensureShell());
+      return;
+    }
     if (this._shellBuilt) return;
     this._shellBuilt = true;
 
@@ -2276,6 +1779,23 @@ class UpdateManagerPanel extends HTMLElement {
   }
 
   _updateShell() {
+    // Same reasoning as _ensureShell's own guard above -- callers (e.g.
+    // connectedCallback) call all three of _ensureShell/_updateShell/
+    // _renderContent back to back, synchronously; if translations weren't
+    // ready yet, _ensureShell's own deferred re-invocation runs (and
+    // resolves _subpageEl) *after* this exact call already returned, so
+    // this needs its own deferred re-invocation too, not just the
+    // pre-existing !this._subpageEl guard below (that one alone would
+    // leave the panel blank forever: nothing else re-triggers this call
+    // once _ensureShell finally does build the shell). Promise .then()
+    // callbacks fire in registration order, so _ensureShell's own deferred
+    // continuation (registered first by every caller) always resolves
+    // before this one -- _subpageEl is guaranteed to exist by the time
+    // this re-invocation actually runs.
+    if (!this._translations) {
+      this._translationsReady.then(() => this._updateShell());
+      return;
+    }
     if (!this._subpageEl) return;
     this._subpageEl.hass = this._hass;
     this._subpageEl.narrow = this._narrow;
@@ -2411,7 +1931,24 @@ class UpdateManagerPanel extends HTMLElement {
       // sequence a second time.
       this._afterDialogAction(this._dialogEntityId);
     } else if (anyVersionChanged) {
-      this._loadAll().then(() => this._renderContent());
+      // Gated on the Updates tab, same as installingChanged right below --
+      // found live, 2026-08-07, direct user feedback: typing in the
+      // Settings tab's trusted-voters field (a free-text ha-form) could
+      // lose focus mid-word, "niet altijd, soms". Root cause: this branch
+      // used to call _renderContent() unconditionally whenever *any*
+      // tracked update entity's version changed anywhere in the system --
+      // entirely unrelated to whatever tab is actually showing, and with
+      // no regard for a field the user might be actively editing.
+      // _renderContent() wipes and rebuilds the current tab's whole DOM
+      // (innerHTML = ""), which replaces the <ha-form> element itself,
+      // not just its value -- the browser can't keep focus on a node that
+      // no longer exists. Settings' own content never depends on
+      // this._updates at all, so skipping the render there loses nothing:
+      // _loadAll() still refreshes the underlying data in the background,
+      // and switching to Updates/History later renders it fresh anyway.
+      this._loadAll().then(() => {
+        if (this._tab === "updates") this._renderContent();
+      });
     } else if (installingChanged && this._tab === "updates") {
       this._renderContent();
     }
@@ -2478,6 +2015,11 @@ class UpdateManagerPanel extends HTMLElement {
   }
 
   _renderContent() {
+    // Same reasoning as _updateShell's own guard above.
+    if (!this._translations) {
+      this._translationsReady.then(() => this._renderContent());
+      return;
+    }
     if (!this._contentEl) return;
     // Found by review: the device-flow poll (_buildCommunityCard) used to
     // only ever get cleared by rebuilding the Settings card itself, so
@@ -3230,7 +2772,7 @@ class UpdateManagerPanel extends HTMLElement {
         buildKeyValueRows([
           [tr.dialog_current_version, u.installed_version],
           [tr.dialog_new_version, u.latest_version],
-          [tr.col_impact, sizeShort],
+          [tr.col_jump, sizeShort],
           [announcementLabel, announcementValue],
         ])
       );
@@ -3984,7 +3526,25 @@ class UpdateManagerPanel extends HTMLElement {
 
     wrap.appendChild(this._buildCommunityCard(tr));
 
+    // Always last, below every card -- same "Slideshow Card vX.Y.Z" link
+    // this project's own sibling Lovelace cards already put at the bottom
+    // of their editor, direct user feedback: "die GitHub link met versie
+    // die we in elke card editor in de footer hebben staan wil ik voor
+    // update manager helemaal onderop de settings pagina hebben".
+    wrap.appendChild(this._buildVersionLink());
+
     return wrap;
+  }
+
+  _buildVersionLink() {
+    const link = document.createElement("a");
+    link.href = "https://github.com/HA-Update-Manager/ha-update-manager";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.className = "version-link";
+    const version = this._panel && this._panel.config && this._panel.config.integration_version;
+    link.textContent = version ? `Update Manager v${version}` : "Update Manager";
+    return link;
   }
 
   // Account linking only (read-only slice, 2026-07-22): no voting UI yet,
@@ -4573,13 +4133,13 @@ class UpdateManagerPanel extends HTMLElement {
     };
     form.computeHelper = (s) => {
       // The per-size expandable section's own description (its `name` is
-      // just "small"/"medium"/"big"), rendered by ha-form-expandable as
+      // just "small"/"medium"/"large"), rendered by ha-form-expandable as
       // its own line below the header, not squeezed into the title
       // itself, and visible regardless of expanded state.
       if (SIZES.includes(s.name)) return tr[`size_${s.name}_desc`]();
       // No per-field helper for auto_install (direct user feedback:
       // text-heavy page): it used to repeat the exact same sentence
-      // identically under Small, Medium, and Big, since all three
+      // identically under Small, Medium, and Large, since all three
       // sections used to be always expanded at once. Said once now, in
       // settings_hint above, instead of three times in a row.
       return "";
@@ -4594,12 +4154,13 @@ class UpdateManagerPanel extends HTMLElement {
     return card;
   }
 
-  // Its own card, only once some size actually has auto-install on --
-  // neither field has any effect otherwise (nothing to announce, and
-  // nothing to exclude from auto-installing when nothing auto-installs at
-  // all). Announcement above the entities list, not below (direct user
-  // feedback: that list can grow long and would push the announcement
-  // setting further down the page).
+  // Its own card, always rendered regardless of whether any size's own
+  // auto-install toggle is on (see _buildSettingsCard's own comment on
+  // this: the trusted-voter override living here is reachable independent
+  // of any size toggle, so hiding this card behind one made no sense).
+  // Announcement above the entities list, not below (direct user feedback:
+  // that list can grow long and would push the announcement setting
+  // further down the page).
   _buildAutoInstallCard(tr) {
     const card = document.createElement("ha-card");
     card.outlined = true;
@@ -4840,6 +4401,17 @@ class UpdateManagerPanel extends HTMLElement {
          Same centering mechanism .update-groups ha-card below already uses
          in its own plain block context, just adapted for this flex one. */
       .settings-cards ha-card { width: 100%; max-width: 600px; margin: 0 auto; }
+      /* Same "Update Manager vX.Y.Z" link this project's own sibling
+         Lovelace cards already put at the bottom of their editor --
+         .settings-cards' own flex gap above already gives this the same
+         24px breathing room from the last card as every other section, so
+         unlike the compact editor version this doesn't need its own
+         border-top divider on top of that. */
+      .settings-cards .version-link {
+        display: block; text-align: center; text-decoration: none;
+        font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color);
+      }
+      .settings-cards .version-link:hover { text-decoration: underline; }
       ha-card { margin: 0; }
       .card-content { padding: 0 16px 16px; display: flex; flex-direction: column; }
       .card-content > *:not(:first-child) { margin-top: 16px; }

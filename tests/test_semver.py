@@ -162,28 +162,28 @@ class TestClassifyVersionSize:
     def test_medium(self):
         assert semver.classify_version_size("1.2.3", "1.3.0") == "medium"
 
-    def test_big(self):
-        assert semver.classify_version_size("1.2.3", "2.0.0") == "big"
+    def test_large(self):
+        assert semver.classify_version_size("1.2.3", "2.0.0") == "large"
 
     def test_medium_bump_resets_small_comparison(self):
         # Only the highest-order differing component should count.
         assert semver.classify_version_size("1.2.9", "1.3.0") == "medium"
 
-    def test_big_bump_takes_precedence_over_medium_and_small(self):
-        assert semver.classify_version_size("1.2.9", "2.0.1") == "big"
+    def test_large_bump_takes_precedence_over_medium_and_small(self):
+        assert semver.classify_version_size("1.2.9", "2.0.1") == "large"
 
-    def test_no_change_is_big(self):
-        assert semver.classify_version_size("1.2.3", "1.2.3") == "big"
+    def test_no_change_is_large(self):
+        assert semver.classify_version_size("1.2.3", "1.2.3") == "large"
 
-    def test_downgrade_is_big(self):
-        assert semver.classify_version_size("1.2.3", "1.2.0") == "big"
-        assert semver.classify_version_size("2.0.0", "1.9.9") == "big"
+    def test_downgrade_is_large(self):
+        assert semver.classify_version_size("1.2.3", "1.2.0") == "large"
+        assert semver.classify_version_size("2.0.0", "1.9.9") == "large"
 
-    def test_non_semver_previous_is_big(self):
-        assert semver.classify_version_size("not-a-version", "1.2.3") == "big"
+    def test_non_semver_previous_is_large(self):
+        assert semver.classify_version_size("not-a-version", "1.2.3") == "large"
 
-    def test_non_semver_current_is_big(self):
-        assert semver.classify_version_size("1.2.3", "not-a-version") == "big"
+    def test_non_semver_current_is_large(self):
+        assert semver.classify_version_size("1.2.3", "not-a-version") == "large"
 
     def test_calendar_same_year_and_month_is_small(self):
         assert semver.classify_version_size("2026.7.1", "2026.7.2") == "small"
@@ -192,63 +192,63 @@ class TestClassifyVersionSize:
         assert semver.classify_version_size("2026.7.1", "2026.8.0") == "medium"
 
     def test_calendar_zero_padded_month_same_month_is_small(self):
-        # Found live, 2026-07-27: fell through to "big" before the
+        # Found live, 2026-07-27: fell through to "large" before the
         # zero-padded month fix, since HA Core reports "2026.07.3", not
         # "2026.7.3".
         assert semver.classify_version_size("2026.07.3", "2026.07.4") == "small"
 
-    def test_calendar_year_rollover_is_medium_not_big(self):
+    def test_calendar_year_rollover_is_medium_not_large(self):
         # A year rollover is just another month boundary in this scheme's
         # own release cadence -- not a signal of more risk than any other
         # monthly release, so this is deliberately capped at "medium", the
-        # same as any other month-to-month jump, never "big".
+        # same as any other month-to-month jump, never "large".
         assert semver.classify_version_size("2026.12.3", "2027.1.0") == "medium"
 
-    def test_calendar_downgrade_is_big(self):
-        assert semver.classify_version_size("2026.8.0", "2026.7.1") == "big"
+    def test_calendar_downgrade_is_large(self):
+        assert semver.classify_version_size("2026.8.0", "2026.7.1") == "large"
 
-    def test_mixed_calendar_and_semver_is_big(self):
+    def test_mixed_calendar_and_semver_is_large(self):
         # Genuinely ambiguous rather than a jump we can meaningfully name --
         # shouldn't normally happen for the same entity in practice.
-        assert semver.classify_version_size("1.2.3", "2026.7.1") == "big"
-        assert semver.classify_version_size("2026.7.1", "1.2.3") == "big"
+        assert semver.classify_version_size("1.2.3", "2026.7.1") == "large"
+        assert semver.classify_version_size("2026.7.1", "1.2.3") == "large"
 
-    def test_prerelease_of_new_big_is_still_big(self):
-        assert semver.classify_version_size("1.2.3", "2.0.0-beta.1") == "big"
+    def test_prerelease_of_new_large_is_still_large(self):
+        assert semver.classify_version_size("1.2.3", "2.0.0-beta.1") == "large"
 
     def test_commit_hashes_on_both_sides_is_medium(self):
         assert semver.classify_version_size("4c6e21e", "a8b49eb") == "medium"
 
-    def test_identical_commit_hashes_is_big(self):
+    def test_identical_commit_hashes_is_large(self):
         # No real jump to classify, same conservative treatment as an
         # identical semver/calendar re-announcement.
-        assert semver.classify_version_size("4c6e21e", "4c6e21e") == "big"
+        assert semver.classify_version_size("4c6e21e", "4c6e21e") == "large"
 
-    def test_mixed_commit_and_semver_is_big(self):
-        assert semver.classify_version_size("4c6e21e", "1.2.3") == "big"
-        assert semver.classify_version_size("1.2.3", "4c6e21e") == "big"
+    def test_mixed_commit_and_semver_is_large(self):
+        assert semver.classify_version_size("4c6e21e", "1.2.3") == "large"
+        assert semver.classify_version_size("1.2.3", "4c6e21e") == "large"
 
     def test_short_semver_minor_change_is_medium(self):
-        # Found live, 2026-07-25: "18.0" -> "18.1" used to be "big" purely
+        # Found live, 2026-07-25: "18.0" -> "18.1" used to be "large" purely
         # for not being strict three-part semver, despite being an ordered,
         # clearly-tracked jump.
         assert semver.classify_version_size("18.0", "18.1") == "medium"
 
-    def test_short_semver_major_change_is_big(self):
-        assert semver.classify_version_size("18.0", "19.0") == "big"
+    def test_short_semver_major_change_is_large(self):
+        assert semver.classify_version_size("18.0", "19.0") == "large"
 
-    def test_short_semver_downgrade_is_big(self):
-        assert semver.classify_version_size("18.1", "18.0") == "big"
+    def test_short_semver_downgrade_is_large(self):
+        assert semver.classify_version_size("18.1", "18.0") == "large"
 
-    def test_identical_short_semver_is_big(self):
-        assert semver.classify_version_size("18.1", "18.1") == "big"
+    def test_identical_short_semver_is_large(self):
+        assert semver.classify_version_size("18.1", "18.1") == "large"
 
-    def test_mixed_short_semver_and_full_semver_major_change_is_big(self):
-        assert semver.classify_version_size("18.0", "1.2.3") == "big"
-        assert semver.classify_version_size("1.2.3", "18.0") == "big"
+    def test_mixed_short_semver_and_full_semver_major_change_is_large(self):
+        assert semver.classify_version_size("18.0", "1.2.3") == "large"
+        assert semver.classify_version_size("1.2.3", "18.0") == "large"
 
     def test_mixed_short_semver_and_full_semver_minor_change_is_medium(self):
-        # Found live, 2026-07-27: "0.36.2" -> "0.37" used to be "big" purely
+        # Found live, 2026-07-27: "0.36.2" -> "0.37" used to be "large" purely
         # for not being *both* short or *both* full semver, even though the
         # minor component's own change (36 -> 37) is perfectly ordinary and
         # detectable once "0.37"'s missing patch is just treated as 0.
@@ -256,5 +256,5 @@ class TestClassifyVersionSize:
 
     def test_mixed_short_semver_and_full_semver_patch_only_change_is_small(self):
         # The short side's implicit patch=0 still participates normally in
-        # the small/medium/big tiering, not just major/minor.
+        # the small/medium/large tiering, not just major/minor.
         assert semver.classify_version_size("1.2", "1.2.3") == "small"

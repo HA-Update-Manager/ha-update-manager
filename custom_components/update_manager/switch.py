@@ -13,12 +13,12 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import CONF_ENABLED, DOMAIN
 from .coordinator import UpdateManagerCoordinator
+from .device import device_info
 from .runtime_data import UpdateManagerConfigEntry
 from .websocket_api import async_apply_options
 
@@ -37,24 +37,50 @@ async def async_setup_entry(
 
 class UpdateManagerEnabledSwitch(SwitchEntity):
     _attr_should_poll = False
+    # unique_id intentionally unchanged (was already f"{DOMAIN}_enabled"
+    # before this entity got a device) -- only entity_id/name are changing
+    # here, and unique_id is the one thing that must never move, or this
+    # would look like a brand-new entity to HA instead of the same one
+    # being renamed, orphaning history/customizations tied to the old id.
+    # __init__.py's own _migrate_enabled_switch_entity_id renames the
+    # *entity_id* in place (switch.update_manager_enabled ->
+    # switch.update_manager) for anyone upgrading from before this device
+    # existed.
     _attr_unique_id = f"{DOMAIN}_enabled"
-    # has_entity_name + translation_key, not a bare _attr_name -- same
-    # reasoning as UpdateManagerSummarySensor's own comment (sensor.py):
-    # no device_info here either, so this is a pure compliance change, not
-    # a visible rename. Name/icon now come from translations/en.json and
-    # icons.json (state-aware: a different icon while paused).
+    # has_entity_name True + _attr_name None (not a translated name) --
+    # this is now the device's own unnamed "main feature" entity (direct
+    # user feedback, 2026-08-07: "switch.update_manager_enabled zou gewoon
+    # switch.update_manager kunnen worden? ... 'Enabled' geeft een state
+    # aan, terwijl de state ook 'disabled' zou kunnen zijn"): its friendly
+    # name is just the device's own name, "Update Manager", the on/off
+    # state itself already says everything "Enabled"/"State" would have
+    # tried to add on top. translation_key is kept (not removed) purely
+    # for icon-translations lookup (icons.json's own state-aware icon) --
+    # confirmed against Entity._name_internal's real source: it returns
+    # _attr_name immediately whenever the attribute is set at all (even to
+    # None), before ever consulting translation_key's own name, so this
+    # combination is safe and does exactly what it looks like.
     _attr_has_entity_name = True
+    _attr_name = None
     _attr_translation_key = "enabled"
-    # This toggles the integration's own automatic behavior, not a
-    # standalone physical switch -- quality-scale entity-category. Moves it
-    # into the entity's own "Configuration" grouping in the UI instead of
-    # sitting among primary controls.
-    _attr_entity_category = EntityCategory.CONFIG
+    # Deliberately no entity_category (was EntityCategory.CONFIG until
+    # direct user feedback, 2026-08-07: "de main switch zou ik verwachten
+    # onder 'Controls' ipv onder 'Configuration'"). Confirmed against
+    # developers.home-assistant.io's own entity docs: CONFIG is for an
+    # entity that changes a *secondary* aspect of a device (its own
+    # example: a switch's background-illumination toggle), not the
+    # device's own main function -- and this virtual device's entire
+    # reason to exist *is* this switch (has_entity_name=True + name=None
+    # above already marks it as the device's own unnamed main feature
+    # entity, see that combination's own comment), so it belongs among
+    # primary controls like any other device's main on/off switch, not
+    # tucked into Configuration alongside secondary settings.
 
     def __init__(self, hass: HomeAssistant, entry: UpdateManagerConfigEntry, coordinator: UpdateManagerCoordinator) -> None:
         self.hass = hass
         self._entry = entry
         self._coordinator = coordinator
+        self._attr_device_info = device_info(entry)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

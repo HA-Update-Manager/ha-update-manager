@@ -26,8 +26,8 @@ from homeassistant.util import dt as dt_util
 
 from .community_verdict import CommunityVerdictManager
 from .const import (
-    CONF_BIG_WAIT_DAYS,
     CONF_EXCLUDED_ENTITIES,
+    CONF_LARGE_WAIT_DAYS,
     CONF_MEDIUM_WAIT_DAYS,
     CONF_SMALL_WAIT_DAYS,
     CONF_TRUSTED_VOTERS,
@@ -171,8 +171,8 @@ def rules_from_options(options: dict) -> StagingRules:
     """Builds a StagingRules from the settings panel's stored values, falling
     back to const.py's own DEFAULT_WAIT_DAYS for anything not set yet (e.g.
     before the settings have ever been saved) -- not staging.py's own
-    DEFAULT_RULES, whose big_wait=None means "always blocked". DEFAULT_WAIT_DAYS
-    gives "big" a real, finite wait, so a freshly-created config entry
+    DEFAULT_RULES, whose large_wait=None means "always blocked". DEFAULT_WAIT_DAYS
+    gives "large" a real, finite wait, so a freshly-created config entry
     (options == {}) reads like a freshly-saved default setup, not like a
     deliberate "block all major updates forever" choice nobody actually
     made. Fixed 2026-07-16: found live -- a brand new install showed a major
@@ -184,7 +184,7 @@ def rules_from_options(options: dict) -> StagingRules:
     return StagingRules(
         small_wait=_wait(CONF_SMALL_WAIT_DAYS),
         medium_wait=_wait(CONF_MEDIUM_WAIT_DAYS),
-        big_wait=_wait(CONF_BIG_WAIT_DAYS),
+        large_wait=_wait(CONF_LARGE_WAIT_DAYS),
     )
 
 
@@ -635,7 +635,7 @@ class UpdateManagerCoordinator:
         size = classify_version_size(current, latest)
         now = dt_util.utcnow()
         # Uses this entry's actual configured rules (settings panel), not
-        # always the hardcoded defaults -- a user may have given "big" a
+        # always the hardcoded defaults -- a user may have given "large" a
         # real wait instead of "always blocked" (see FUTURE.md). Only skip
         # the recorder query when the *configured* wait for this size is
         # None, since only then can available_since not change the answer.

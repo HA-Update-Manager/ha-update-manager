@@ -1,5 +1,5 @@
 """Version-size classification: given the versions an update jumps between,
-how big a change is this -- small, medium, or big?
+how large a change is this -- small, medium, or large?
 
 Kept free of any homeassistant import so it can be unit tested with plain
 pytest -- see tests/test_semver.py and the same reasoning already applied to
@@ -11,21 +11,23 @@ import re
 from typing import Literal, NamedTuple
 
 # Deliberately generic, not semver's own vocabulary (renamed 2026-07-16, see
-# FUTURE.md): "small"/"medium"/"big" is a scale any version scheme's own
+# FUTURE.md): "small"/"medium"/"large" is a scale any version scheme's own
 # classifier can map onto -- semver, HA Core's calendar versioning, and git
 # commit hashes each have their own notion of "small" below, and a future
 # scheme can add its own without needing new top-level categories. There's
 # no separate "unknown" bucket: anything that can't be confidently placed
 # (not strict semver, not HA Core's calendar shape, not a recognizable
-# commit hash, a downgrade, or an identical/re-announced version) is "big",
-# the same conservative-by-default treatment "unknown" used to get.
-Size = Literal["small", "medium", "big"]
+# commit hash, a downgrade, or an identical/re-announced version) is "large"
+# (renamed from "big" 2026-08-07, direct user feedback: "large" reads as a
+# plain size next to small/medium, where "big" read more like a judgment
+# call), the same conservative-by-default treatment "unknown" used to get.
+Size = Literal["small", "medium", "large"]
 
 # Strict semver: exactly major.minor.patch, each a plain non-negative
 # integer (no leading zeros other than "0" itself), with an optional
 # pre-release (-foo.1) and/or build metadata (+build.5) suffix that we parse
 # but deliberately ignore for size classification -- a pre-release of a new
-# major is still "big", not something in between.
+# major is still "large", not something in between.
 _SEMVER_RE = re.compile(
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
@@ -40,10 +42,10 @@ _SEMVER_RE = re.compile(
 # release the following year bumps the first number for calendar reasons
 # alone, not because of a breaking change. Recognized as its own,
 # deliberately excluded category rather than silently misclassified as
-# "big". Month accepts a zero-padded form ("07") as well as bare ("7") --
+# "large". Month accepts a zero-padded form ("07") as well as bare ("7") --
 # found live, 2026-07-27: "2026.07.3" -> "2026.07.4" fell through this *and*
 # strict semver's own leading-zero rejection, landing on the conservative
-# "big" default despite being an ordinary same-month patch bump.
+# "large" default despite being an ordinary same-month patch bump.
 _CALENDAR_VERSION_RE = re.compile(r"^20\d{2}\.(?:0[1-9]|[1-9]|1[0-2])\.\d+$")
 
 # A short (or full) git commit hash, e.g. HACS tracking a repo by commit
@@ -60,7 +62,7 @@ _GIT_COMMIT_RE = re.compile(r"^(?=.*[a-fA-F])[0-9a-fA-F]{6,40}$")
 # versioning (which requires a year-shaped first component): some
 # integrations/devices genuinely only ever report two numbers, with no
 # separate patch tier to be "small" against. Found live, 2026-07-25: this
-# used to silently fall through to "big" (the same conservative default any
+# used to silently fall through to "large" (the same conservative default any
 # genuinely unrecognized shape gets), even for as small a jump as 18.0 ->
 # 18.1.
 _SHORT_SEMVER_RE = re.compile(
@@ -169,7 +171,7 @@ def _parse_semver_or_short(version: str) -> ParsedVersion | None:
     same-shape pair would, instead of needing its own special case. Found
     live, 2026-07-27: this exact mixed case used to fall through both the
     "both short" and "both full" branches entirely (neither "both" condition
-    was true) straight to the conservative "big" default, even though the
+    was true) straight to the conservative "large" default, even though the
     minor component's own change (36 -> 37) was perfectly ordinary and
     detectable once the short side's missing patch is just treated as 0."""
     parsed = parse_semver(version)
@@ -184,7 +186,7 @@ def classify_version_size(previous: str, current: str) -> Size:
     HA Core's calendar versioning (year.month.patch) is handled on its own
     terms when *both* sides use it: the month is what "medium" means here
     (a new monthly feature release), the patch component is what "small"
-    means (an in-month bugfix release) -- but never "big", on purpose. A
+    means (an in-month bugfix release) -- but never "large", on purpose. A
     year rollover (2026.12.x -> 2027.1.0) is just another month boundary in
     HA's own release cadence, not a signal of more risk than any other
     monthly release; treating the year digit as meaningful would repeat the
@@ -200,14 +202,14 @@ def classify_version_size(previous: str, current: str) -> Size:
     "18.1") is handled on the same terms as full semver (see
     _parse_semver_or_short): its missing patch is treated as 0, so "medium"
     still means the minor component changed, same reasoning as the
-    git-commit-hash case for why this isn't left as unrecognized/"big" --
+    git-commit-hash case for why this isn't left as unrecognized/"large" --
     a real, ordered jump between two recognized versions is a
     deliberately-tracked scheme. This also covers a *mixed* pair, one side
     full semver and the other short (e.g. "0.36.2" -> "0.37") the same way,
-    found live 2026-07-27: this used to fall through to "big" for not being
+    found live 2026-07-27: this used to fall through to "large" for not being
     strict three-part semver *and* not being short on both sides at once.
 
-    "big" (treated conservatively, i.e. as if it might be a breaking change)
+    "large" (treated conservatively, i.e. as if it might be a breaking change)
     covers everything else: either side not recognized as semver or short
     semver at all, exactly one side (not both) using HA Core's calendar
     scheme or a commit hash, identical hashes/versions (no real jump to
@@ -219,28 +221,28 @@ def classify_version_size(previous: str, current: str) -> Size:
         prev = _parse_calendar(previous)
         curr = _parse_calendar(current)
         if curr <= prev:
-            return "big"
+            return "large"
         if curr.major != prev.major or curr.minor != prev.minor:
             return "medium"
         return "small"
     if prev_is_calendar or curr_is_calendar:
-        return "big"
+        return "large"
 
     prev_is_commit = is_git_commit_version(previous)
     curr_is_commit = is_git_commit_version(current)
     if prev_is_commit and curr_is_commit:
-        return "big" if current == previous else "medium"
+        return "large" if current == previous else "medium"
     if prev_is_commit or curr_is_commit:
-        return "big"
+        return "large"
 
     prev = _parse_semver_or_short(previous)
     curr = _parse_semver_or_short(current)
     if prev is None or curr is None:
-        return "big"
+        return "large"
     if curr <= prev:
-        return "big"
+        return "large"
     if curr.major != prev.major:
-        return "big"
+        return "large"
     if curr.minor != prev.minor:
         return "medium"
     return "small"

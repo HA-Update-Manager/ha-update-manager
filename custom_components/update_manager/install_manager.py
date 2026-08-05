@@ -32,11 +32,13 @@ from .announcer import (
 )
 from .const import (
     CONF_ANNOUNCE_HOURS,
-    CONF_BIG_AUTO_INSTALL,
+    CONF_LARGE_AUTO_INSTALL,
     CONF_MEDIUM_AUTO_INSTALL,
     CONF_SMALL_AUTO_INSTALL,
     DEFAULT_ANNOUNCE_HOURS,
     DOMAIN,
+    EVENT_ANNOUNCED,
+    EVENT_INSTALL_FAILED,
 )
 from .coordinator import UpdateManagerCoordinator
 from .rollout_manager import RolloutManager
@@ -102,7 +104,7 @@ def auto_install_rules_from_options(options: dict) -> AutoInstallRules:
     return AutoInstallRules(
         small_auto_install=bool(options.get(CONF_SMALL_AUTO_INSTALL, False)),
         medium_auto_install=bool(options.get(CONF_MEDIUM_AUTO_INSTALL, False)),
-        big_auto_install=bool(options.get(CONF_BIG_AUTO_INSTALL, False)),
+        large_auto_install=bool(options.get(CONF_LARGE_AUTO_INSTALL, False)),
         announce_wait=timedelta(hours=options.get(CONF_ANNOUNCE_HOURS, DEFAULT_ANNOUNCE_HOURS)),
     )
 
@@ -423,6 +425,21 @@ class InstallManager:
             title=strings["title"],
             notification_id=f"{_NOTIFICATION_ID_PREFIX}{entity_id}",
         )
+        # See const.py's own EVENT_ANNOUNCED docstring for the events
+        # design overall. from_version comes from the coordinator's cache,
+        # not the (possibly stale-by-now) update entity's own state
+        # directly, same source install_log.py's own entries already use
+        # for the same fact.
+        cached = self._coordinator.cache.get(entity_id)
+        self.hass.bus.async_fire(
+            EVENT_ANNOUNCED,
+            {
+                "entity_id": entity_id,
+                "from_version": cached.get("installed_version") if cached else None,
+                "to_version": to_version,
+                "execute_at": announcement.execute_at.isoformat(),
+            },
+        )
 
     async def _async_execute(
         self, entity_id: str, to_version: str, reason: AutoInstallReason, trusted_voter_usernames: list[str]
@@ -574,6 +591,9 @@ class InstallManager:
             title=strings["title"],
             notification_id=f"{_FAILURE_NOTIFICATION_ID_PREFIX}{entity_id}",
         )
+        # See const.py's own EVENT_ANNOUNCED docstring for the events
+        # design overall.
+        self.hass.bus.async_fire(EVENT_INSTALL_FAILED, {"entity_id": entity_id, "to_version": to_version})
 
     async def _async_remove(self, entity_id: str) -> None:
         if entity_id in self._pending:

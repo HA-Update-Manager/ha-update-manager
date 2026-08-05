@@ -32,6 +32,19 @@ class UpdateManagerData:
     community_verdict_manager: CommunityVerdictManager
     github_auth_manager: GitHubAuthManager
     my_votes_manager: MyVotesManager
+    # manifest.json's own version (str(Integration.version)), fetched once in
+    # __init__.py's async_setup_entry -- device.py's own device_info reads
+    # this for the device info page's own "Software version" (sw_version),
+    # direct user feedback, 2026-08-07: "Ik mis bij service info ook de
+    # versie van de integratie". Not re-fetched on every device_info() call
+    # (unlike panel.py's own always-fresh read, see that function's own
+    # docstring for why *it* deliberately doesn't cache): device_info() is
+    # a plain sync function, called from several entities' own __init__
+    # (sensor.py/switch.py), not just this async setup -- caching once here
+    # keeps it sync-callable everywhere without threading an async fetch
+    # through every entity constructor, and a version only actually changes
+    # across a reload/restart anyway, exactly when this cache is rebuilt.
+    integration_version: str
 
 
 UpdateManagerConfigEntry = ConfigEntry[UpdateManagerData]

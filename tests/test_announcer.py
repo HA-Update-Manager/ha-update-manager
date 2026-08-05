@@ -31,12 +31,12 @@ class TestSizeAutoInstallEnabled:
         rules = announcer.AutoInstallRules(
             small_auto_install=True,
             medium_auto_install=False,
-            big_auto_install=True,
+            large_auto_install=True,
             announce_wait=WAIT,
         )
         assert announcer.size_auto_install_enabled("small", rules) is True
         assert announcer.size_auto_install_enabled("medium", rules) is False
-        assert announcer.size_auto_install_enabled("big", rules) is True
+        assert announcer.size_auto_install_enabled("large", rules) is True
 
 
 class TestEffectiveAutoInstallState:
