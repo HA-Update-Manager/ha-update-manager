@@ -92,7 +92,7 @@ def strip_version_prefix(version: str) -> str:
     every call site here; made explicit so hacs_identity.py's own,
     previously-duplicated version of this same rule can reuse it directly
     instead of drifting out of sync)."""
-    candidate = version.strip()
+    candidate = str(version).strip()
     match = _V_PREFIX_RE.match(candidate)
     return match.group(1) if match else candidate
 
@@ -126,7 +126,7 @@ def is_calendar_version(version: str) -> bool:
 def is_git_commit_version(version: str) -> bool:
     """True for something shaped like a git commit hash (e.g. HACS tracking
     a repo by commit rather than a release tag)."""
-    return bool(_GIT_COMMIT_RE.match(version.strip()))
+    return bool(_GIT_COMMIT_RE.match(str(version).strip()))
 
 
 def is_short_semver_version(version: str) -> bool:
@@ -215,6 +215,8 @@ def classify_version_size(previous: str, current: str) -> Size:
     scheme or a commit hash, identical hashes/versions (no real jump to
     classify), or `current` not actually newer than `previous` (e.g. a
     rollback or a re-announced identical version)."""
+    previous = str(previous)
+    current = str(current)
     prev_is_calendar = is_calendar_version(previous)
     curr_is_calendar = is_calendar_version(current)
     if prev_is_calendar and curr_is_calendar:
