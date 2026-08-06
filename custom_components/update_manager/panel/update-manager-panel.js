@@ -175,7 +175,7 @@ function fieldKind(name) {
 // on both load and save means stale keys just quietly stop being sent,
 // instead of silently accumulating.
 function knownSettingsFields() {
-  const names = ["enabled", "announce_hours", "excluded_entities", "hide_postponed", "trusted_voters"];
+    const names = ["enabled", "announce_hours", "excluded_entities", "hide_postponed", "hide_skipped_updates", "hide_not_installable_updates", "trusted_voters"];
   for (const size of SIZES) {
     names.push(`${size}_wait_days`, `${size}_auto_install`);
   }
@@ -711,7 +711,26 @@ function installMethodText(tr, entry) {
 // coordinator.py's own is_own_skip distinction; our own staging_skip.py
 // auto-skips never show up as this status at all, they just read as
 // "waiting").
-function groupUpdates(tr, updates) {
+// `settings` (this._formData/this._settings' own hide_skipped_updates /
+// hide_not_installable_updates, see _buildGeneralCard) is optional and
+// defaults to neither hidden -- callers that don't care about the Settings
+// tab's own filters (there are none left in this file, but keeping the
+// param optional avoids a hard crash for any future/external caller that
+// still passes just two args). Entities dropped here are dropped from the
+// panel's own count entirely, not just visually collapsed: this mirrors
+// "hide postponed" in spirit (also a pure visibility choice, see const.py's
+// CONF_HIDE_POSTPONED comment) even though the mechanism is different --
+// that one hides via HA's own skip state, these two just never build the
+// group at all.
+function groupUpdates(tr, updates, settings) {
+  const hideSkipped = !!(settings && settings.hide_skipped_updates);
+  const hideNotInstallable = !!(settings && settings.hide_not_installable_updates);
+
+  // Classification itself is unchanged from before these two settings
+  // existed -- hiding a group drops it from the output below, it never
+  // reclassifies those entities into ready/waiting/blocked instead (they
+  // just disappear from the panel entirely, same as a hidden-postponed
+  // entity disappears from HA's own count elsewhere).
   const notInstallable = updates.filter((u) => !u.installable);
   const rest = updates.filter((u) => u.installable);
   const skipped = rest.filter((u) => u.status === "skipped");
@@ -726,10 +745,10 @@ function groupUpdates(tr, updates) {
   if (byStatus.ready.length) groups.push({ key: "ready", title: tr.group_ready, entities: byStatus.ready });
   if (byStatus.waiting.length) groups.push({ key: "waiting", title: tr.group_waiting, entities: byStatus.waiting });
   if (byStatus.blocked.length) groups.push({ key: "blocked", title: tr.group_blocked, entities: byStatus.blocked });
-  if (skipped.length) {
+  if (!hideSkipped && skipped.length) {
     groups.push({ key: "skipped", title: tr.group_skipped(skipped.length), entities: skipped });
   }
-  if (notInstallable.length) {
+  if (!hideNotInstallable && notInstallable.length) {
     groups.push({ key: "not_installable", title: tr.group_not_installable(notInstallable.length), entities: notInstallable });
   }
   return groups;
@@ -1442,6 +1461,8 @@ class UpdateManagerPanel extends HTMLElement {
           excluded_entities: [],
           trusted_voters: [],
           hide_postponed: true,
+          hide_skipped_updates: false,
+          hide_not_installable_updates: false,
           ...fallback,
           ...pickKnownSettings(this._settings),
         };
@@ -2295,7 +2316,7 @@ class UpdateManagerPanel extends HTMLElement {
     const remainingUpdates = this._updates.filter((u) => !queuedEntityIds.has(u.entity_id));
     if (!remainingUpdates.length) return outer;
 
-    const groups = groupUpdates(tr, remainingUpdates);
+    const groups = groupUpdates(tr, remainingUpdates, this._settings);
 
     const wrap = document.createElement("div");
     wrap.className = "update-groups";
@@ -3476,10 +3497,28 @@ class UpdateManagerPanel extends HTMLElement {
     form.schema = [
       { name: "enabled", selector: { boolean: {} } },
       { name: "hide_postponed", selector: { boolean: {} } },
-    ];
+      { name: "hide_skipped_updates", selector: { boolean: {} } },
+      { name: "hide_not_installable_updates", selector: { boolean: {} } },
+      ];
     form.data = this._formData;
-    form.computeLabel = (s) => (s.name === "enabled" ? tr.field_enabled : tr.field_hide_postponed);
-    form.computeHelper = (s) => (s.name === "enabled" ? tr.field_enabled_helper : tr.field_hide_postponed_helper);
+    // Own labels/helpers per field, same reasoning as the enabled/hide_postponed
+    // pair above -- these two are display-only filters for the Updates tab
+    // (see groupUpdates), unlike hide_postponed which changes real HA skip
+    // state, so their own helper text says so rather than reusing hide_postponed's.
+    const _GENERAL_FIELD_LABEL = {
+      enabled: tr.field_enabled,
+      hide_postponed: tr.field_hide_postponed,
+      hide_skipped_updates: tr.field_hide_skipped_updates,
+      hide_not_installable_updates: tr.field_hide_not_installable_updates,
+    };
+    const _GENERAL_FIELD_HELPER = {
+      enabled: tr.field_enabled_helper,
+      hide_postponed: tr.field_hide_postponed_helper,
+      hide_skipped_updates: tr.field_hide_skipped_updates_helper,
+      hide_not_installable_updates: tr.field_hide_not_installable_updates_helper,
+    };
+    form.computeLabel = (s) => _GENERAL_FIELD_LABEL[s.name] || s.name;
+    form.computeHelper = (s) => _GENERAL_FIELD_HELPER[s.name] || "";
     form.addEventListener("value-changed", (e) => {
       this._formData = { ...this._formData, ...e.detail.value };
       form.data = this._formData;
