@@ -258,3 +258,31 @@ class TestClassifyVersionSize:
         # The short side's implicit patch=0 still participates normally in
         # the small/medium/large tiering, not just major/minor.
         assert semver.classify_version_size("1.2", "1.2.3") == "small"
+
+
+class TestNonStringVersionInput:
+    """Regression tests for HA-Update-Manager/ha-update-manager#1: a real
+    update.* entity can report installed_version/latest_version as a raw
+    int (some devices/add-ons expose a bare numeric firmware/build number
+    rather than a version string) -- previously an unhandled AttributeError
+    (str.strip() called directly on a non-str) inside coordinator.py's own
+    initial bulk scan (async_start), which took down the *entire*
+    integration's async_setup_entry, not just that one entity. Every
+    non-string input here must classify the same conservative way any other
+    unrecognized shape already does ("large"), never raise."""
+
+    def test_classify_version_size_with_int_inputs(self):
+        assert semver.classify_version_size(5, 6) == "large"
+
+    def test_classify_version_size_with_one_int_one_str(self):
+        assert semver.classify_version_size("1.2.3", 6) == "large"
+        assert semver.classify_version_size(6, "1.2.3") == "large"
+
+    def test_classify_version_size_with_identical_ints(self):
+        assert semver.classify_version_size(5, 5) == "large"
+
+    def test_strip_version_prefix_with_int(self):
+        assert semver.strip_version_prefix(5) == "5"
+
+    def test_is_git_commit_version_with_int(self):
+        assert semver.is_git_commit_version(123456) is False
