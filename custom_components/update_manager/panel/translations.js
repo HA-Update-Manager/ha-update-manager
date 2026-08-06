@@ -134,6 +134,12 @@ export const TRANSLATIONS = {
     field_hide_postponed: "Hide postponed updates",
     field_hide_postponed_helper:
       "Marks a postponed update as skipped in Home Assistant itself until it's actually ready. Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
+    field_hide_skipped_updates: "Hide skipped updates",
+    field_hide_skipped_updates_helper:
+        "Leaves updates you've marked \"Skip this version\" out of the Updates tab entirely, instead of showing them in their own Skipped group.",
+    field_hide_not_installable_updates: "Hide updates that aren't installable",
+    field_hide_not_installable_updates_helper:
+        "Leaves updates whose entity doesn't support installing from Home Assistant out of the Updates tab entirely, instead of showing them in their own Not installable group.",
     auto_install_section_desc:
       "The postponement/auto-install rules above apply per size. Everything below (announcement notice, always-manual entities, trusted voters) applies regardless of size.",
     field_trusted_voters: "Trusted voters",
@@ -414,7 +420,13 @@ export const TRANSLATIONS = {
       "Een GitHub-gebruikersnaam die je meer vertrouwt dan je eigen regels. Hun gezonde stem overrult je eigen regels hierboven en installeert die sprong meteen automatisch, ook als iemand anders 'm als problematisch meldde.",
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper:
-      "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
+            "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
+    field_hide_skipped_updates: "Overgeslagen updates verbergen",
+    field_hide_skipped_updates_helper:
+        "Laat updates die je hebt gemarkeerd als \"Deze versie overslaan\" helemaal weg uit de Updates-tab, in plaats van ze in hun eigen groep Overgeslagen te tonen.",
+    field_hide_not_installable_updates: "Niet-installeerbare updates verbergen",
+    field_hide_not_installable_updates_helper:
+        "Laat updates waarvan de entiteit installeren vanuit Home Assistant niet ondersteunt helemaal weg uit de Updates-tab, in plaats van ze in hun eigen groep Niet installeerbaar te tonen.",
     announce_hours_label: "Aankondigingstermijn (uren)",
     announce_hours_helper:
       "Hoelang je hebt om een geplande automatische installatie (Updates-tab) te annuleren voordat die echt gebeurt, zodra de uitsteltermijn voorbij is.",
