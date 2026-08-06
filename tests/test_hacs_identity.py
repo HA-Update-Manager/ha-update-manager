@@ -250,3 +250,41 @@ class TestResolveIdentity:
             is_hacs_entity=True,
         )
         assert identity.jump_key == "hacs/owner/repo/1.2.3::1.0.0"
+
+
+class TestCorrectedReleaseUrl:
+    def test_core_gets_a_real_version_specific_github_url(self):
+        # Not Core's own native release_url ("always latest"), a real
+        # per-version github.com/.../releases/tag/<version> one instead.
+        assert hacs_identity.corrected_release_url(
+            "update.home_assistant_core_update",
+            "https://www.home-assistant.io/latest-release-notes/",
+            "2026.7.3",
+        ) == "https://github.com/home-assistant/core/releases/tag/2026.7.3"
+
+    def test_core_v_prefix_stripped(self):
+        assert hacs_identity.corrected_release_url(
+            "update.home_assistant_core_update", None, "v2026.7.3"
+        ) == "https://github.com/home-assistant/core/releases/tag/2026.7.3"
+
+    def test_core_dev_build_falls_back_to_native(self):
+        # Never tagged on GitHub at all -- linking there would be a 404.
+        native = "https://www.home-assistant.io/latest-release-notes/"
+        assert hacs_identity.corrected_release_url(
+            "update.home_assistant_core_update", native, "2026.8.0.dev20260701"
+        ) == native
+
+    def test_supervisor_and_os_pass_through_unchanged(self):
+        # Their own native release_url is already a real, version-specific
+        # GitHub releases URL -- nothing to correct.
+        native = "https://github.com/home-assistant/supervisor/releases/tag/2026.07.3"
+        assert hacs_identity.corrected_release_url(
+            "update.home_assistant_supervisor_update", native, "2026.07.3"
+        ) == native
+
+    def test_non_home_assistant_entity_passes_through_unchanged(self):
+        native = "https://github.com/owner/repo/releases/tag/1.2.3"
+        assert hacs_identity.corrected_release_url("update.some_integration", native, "1.2.3") == native
+
+    def test_none_native_release_url_for_non_core_stays_none(self):
+        assert hacs_identity.corrected_release_url("update.some_integration", None, "1.2.3") is None

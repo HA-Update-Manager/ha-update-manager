@@ -59,6 +59,41 @@ _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID = {
 }
 
 
+def corrected_release_url(entity_id: str, native_release_url: str | None, latest_version: str) -> str | None:
+    """The release_url a Core update entity's own dialog/History entry
+    should actually use -- corrects for a real bug in Core's own update
+    entity (SupervisorCoreUpdateEntity.release_url, hassio/update.py): it's
+    a fixed "https://www.home-assistant.io/latest-release-notes/" (or
+    "rc." for a beta build), always the *current* latest notes regardless
+    of which version this call is actually about (verified directly
+    against home-assistant/core's own source, 2026-07-31) -- fine, by
+    coincidence, for a pending update (that genuinely is the latest), but
+    actively wrong for a History entry of an older install, and not a real
+    github.com URL at all so nothing that expects one (e.g. the GitHub
+    release-notes fallback fetch) can do anything useful with it either.
+
+    Built ourselves instead, from home-assistant/core's own GitHub
+    releases: every tagged release (stable and beta alike) uses the
+    version string verbatim as its tag, no "v" prefix, no reformatting
+    (confirmed live against 4 real releases spanning 2024.1.0 through
+    2026.8.0b3, 2026-07-31, not assumed from a single lucky example). Dev
+    builds ("2026.8.0.dev...") are never tagged there at all (confirmed: a
+    404), so those fall through to native_release_url unchanged rather
+    than linking to a release that doesn't exist.
+
+    OS/Supervisor's own native release_url (hassio/update.py's own
+    SupervisorOS/SupervisorSupervisorUpdateEntity) is already a real,
+    version-specific github.com/home-assistant/{operating-system,
+    supervisor}/releases/tag/{version} URL, so those (and every entity_id
+    that isn't one of HA's own three fixed ones at all) pass
+    native_release_url straight through unchanged -- only Core is
+    actually broken."""
+    to_version = strip_version_prefix(latest_version)
+    if _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID.get(entity_id) != "core" or ".dev" in to_version:
+        return native_release_url
+    return f"https://github.com/home-assistant/core/releases/tag/{to_version}"
+
+
 class ResolvedIdentity(NamedTuple):
     """Everything both the read side (community_verdict.py, needs only
     .to_version_path plus from_version as a lookup key) and the write side
@@ -186,36 +221,16 @@ def resolve_identity(
     component = _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID.get(entity_id)
     if component is not None:
         to_version = strip_version_prefix(latest_version)
-        # OS/Supervisor's own release_url (hassio/update.py, SupervisorOS/
-        # SupervisorSupervisorUpdateEntity) is a real, version-specific
-        # github.com/home-assistant/{operating-system,supervisor}/releases/
-        # tag/{version} URL -- safe to reuse exactly like the hacs case
-        # below. Core's own (SupervisorCoreUpdateEntity) is neither: it's a
-        # fixed "https://www.home-assistant.io/latest-release-notes/" (or
-        # "rc." for a beta build), always the *current* latest notes
-        # regardless of which version this call is actually about, verified
-        # directly against home-assistant/core's own source, 2026-07-31--
-        # so this never reuses Core's own release_url at all.
-        #
-        # Built ourselves instead, from home-assistant/core's own GitHub
-        # releases: every tagged release (stable and beta alike) uses the
-        # version string verbatim as its tag, no "v" prefix, no
-        # reformatting -- confirmed live against 4 real releases spanning
-        # 2024.1.0 through the current 2026.8.0b3 beta, 2026-07-31, not
-        # assumed from a single lucky example. Dev builds ("2026.8.0.dev...")
-        # are never tagged there at all (confirmed: a 404), so those are
-        # excluded here rather than linking to a release that doesn't exist.
-        core_release_url = (
-            f"https://github.com/home-assistant/core/releases/tag/{to_version}"
-            if component == "core" and ".dev" not in to_version
-            else None
-        )
+        # See corrected_release_url's own docstring: Core's own native
+        # release_url is a real bug (always "latest", never version-
+        # specific), OS/Supervisor's isn't -- that function already knows
+        # the difference, shared here rather than re-deriving it.
         return ResolvedIdentity(
             "home-assistant",
             to_version,
             from_version,
             component=component,
-            release_url=release_url if component in ("os", "supervisor") else core_release_url,
+            release_url=corrected_release_url(entity_id, release_url, latest_version),
         )
 
     identity = extract_hacs_identity(release_url) if is_hacs_entity else None

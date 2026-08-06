@@ -38,6 +38,14 @@
 // panel, which was the bug found via live testing: tabs navigated to the
 // site root (e.g. /updates) instead of /update-manager/updates.
 const PANEL_PATH = "/update-manager";
+// HA Core's own, fixed, well-known update entity_id -- confirmed against
+// real bug reports/service-call examples referencing it, same one
+// hacs_identity.py's own _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID already
+// keys off (kept in sync by hand, JS/Python can't literally share a
+// constant). Only used to decide whether to also fetch the Core-specific
+// announcement blog link (_fetchCoreAnnouncement) -- see that method's own
+// comment.
+const CORE_UPDATE_ENTITY_ID = "update.home_assistant_core_update";
 // Raw MDI SVG path data, not an icon name -- hass-tabs-subpage's tabs
 // render via ha-svg-icon (.path=), unlike <ha-icon icon="mdi:...">
 // elsewhere in this file, which resolves a name to a path itself at
@@ -617,11 +625,23 @@ function buildReleaseUrlLinkRow(tr, releaseUrl) {
 // decoration (parsing owner/repo for #issue/@mention links) even when
 // linkUrl is given -- both describe the same repo, only the tag differs,
 // so there's nothing to correct there.
-function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl) {
+//
+// intro, when given (only ever for a Core .0 release, see
+// _fetchCoreAnnouncement's own callers), is a short, human-written summary
+// shown right under the heading, above the technical notes -- read order:
+// heading, then "what this release is about" in plain language, then the
+// actual technical detail, then the link to read the full announcement.
+function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl, intro) {
   container.insertBefore(document.createElement("hr"), before);
   const heading = document.createElement("h3");
   heading.textContent = tr.dialog_release_notes_heading;
   container.insertBefore(heading, before);
+  if (intro) {
+    const introEl = document.createElement("p");
+    introEl.className = "release-notes-intro";
+    introEl.textContent = intro;
+    container.insertBefore(introEl, before);
+  }
   if (notes) {
     const markdown = document.createElement("ha-markdown");
     markdown.content = _decorateReleaseNotes(_trimChangelogToVersion(notes, fromVersion, toVersion), releaseUrl);
@@ -1541,6 +1561,31 @@ class UpdateManagerPanel extends HTMLElement {
       return { notes: null, correctedUrl: null };
     }
     const resolved = { notes: (result && result.notes) || null, correctedUrl: (result && result.corrected_url) || null };
+    this._releaseNotesCache.set(cacheKey, resolved);
+    return resolved;
+  }
+
+  // Same cache, a "core" key prefix so it can never collide with this
+  // method's own "github"/"native" siblings -- see websocket_api.py's own
+  // _async_fetch_core_announcement for what this actually fetches
+  // (home-assistant.io's own release-notes blog, not GitHub). Only ever
+  // called for the one Core update entity (see CORE_UPDATE_ENTITY_ID),
+  // used to override that entity's own "Open release announcement" link
+  // (and, for a .0 release, add a short intro above the technical notes)
+  // -- see appendReleaseNotesSection's own two call sites. Cached by
+  // latest_version alone, not per-entity: every install of the same
+  // version resolves to the exact same blog post/intro, nothing
+  // instance-specific about it.
+  async _fetchCoreAnnouncement(latestVersion) {
+    const cacheKey = `core:${latestVersion}`;
+    if (this._releaseNotesCache.has(cacheKey)) return this._releaseNotesCache.get(cacheKey);
+    let result;
+    try {
+      result = await this._hass.callWS({ type: "update_manager/core_announcement", latest_version: latestVersion });
+    } catch {
+      result = null;
+    }
+    const resolved = { url: (result && result.url) || null, intro: (result && result.intro) || null };
     this._releaseNotesCache.set(cacheKey, resolved);
     return resolved;
   }
@@ -2782,9 +2827,17 @@ class UpdateManagerPanel extends HTMLElement {
       // "Read release announcement is soms een wat vreemde tekst als die
       // notes er gewoon boven staan. En als die notes ontbreken, dan staat
       // die link bij de details ipv onder het kopje 'Release notes'." Kept
-      // here only as the plain attribute read -- straight from the
-      // entity's own state, not something we compute ourselves.
-      const releaseUrl = state && state.attributes && state.attributes.release_url;
+      // here only as the plain attribute read.
+      //
+      // u.release_url (coordinator.py's own cache, via update_manager/updates),
+      // not state.attributes.release_url directly, 2026-08-07: for a Core
+      // update specifically, the entity's own native release_url is a real
+      // bug (always "https://www.home-assistant.io/latest-release-notes/",
+      // never version-specific, see hacs_identity.py's own
+      // corrected_release_url docstring) -- the backend already corrects
+      // this once, for every entity, so the frontend just uses that instead
+      // of re-reading (and getting wrong) the raw attribute itself.
+      const releaseUrl = u.release_url;
 
       // Journey A (report-only, no healthy button) unconditionally -- this
       // is inherently about a not-yet-installed version, regardless of
@@ -2836,9 +2889,20 @@ class UpdateManagerPanel extends HTMLElement {
       // enough to show the section, just with only the link in it (see
       // insertReleaseNotesSection's own comment). Never called at all when
       // both are empty, same "no empty section" treatment as before.
-      const appendReleaseNotesSection = (notes, linkUrl) => {
-        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl);
+      const appendReleaseNotesSection = (notes, linkUrl, intro) => {
+        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, intro);
         if (notes) this._appendUpstreamReleaseNotes(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version);
+      };
+      // entityId === CORE_UPDATE_ENTITY_ID only: also resolve the blog
+      // announcement (_fetchCoreAnnouncement's own comment), overriding
+      // just the *link* (never the notes -- those stay GitHub's own
+      // technical PR list either way) and adding the intro for a .0
+      // release. A no-op passthrough for every other entity, so both
+      // branches below can call this unconditionally.
+      const withCoreAnnouncement = async (correctedUrl) => {
+        if (entityId !== CORE_UPDATE_ENTITY_ID) return { linkUrl: correctedUrl, intro: null };
+        const { url, intro } = await this._fetchCoreAnnouncement(u.latest_version);
+        return { linkUrl: url || correctedUrl, intro };
       };
       if (supportsReleaseNotes) {
         const loader = buildReleaseNotesLoader();
@@ -2865,8 +2929,9 @@ class UpdateManagerPanel extends HTMLElement {
               releaseUrl, u.installed_version, u.latest_version
             ));
           }
+          const { linkUrl, intro } = await withCoreAnnouncement(correctedUrl);
           loader.remove();
-          if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, correctedUrl);
+          if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, linkUrl, intro);
         });
       } else {
         const releaseSummary = state && state.attributes && state.attributes.release_summary;
@@ -2875,9 +2940,10 @@ class UpdateManagerPanel extends HTMLElement {
         } else {
           const loader = buildReleaseNotesLoader();
           body.insertBefore(loader, releaseNotesAnchor);
-          this._fetchGithubReleaseNotesFallback(releaseUrl, u.installed_version, u.latest_version).then(({ notes, correctedUrl }) => {
+          this._fetchGithubReleaseNotesFallback(releaseUrl, u.installed_version, u.latest_version).then(async ({ notes, correctedUrl }) => {
+            const { linkUrl, intro } = await withCoreAnnouncement(correctedUrl);
             loader.remove();
-            if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, correctedUrl);
+            if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, linkUrl, intro);
           });
         }
       }
@@ -3121,7 +3187,20 @@ class UpdateManagerPanel extends HTMLElement {
           // fetch itself can still take a moment after that click.
           const loader = buildReleaseNotesLoader();
           expandWrap.insertBefore(loader, changelogAnchor.nextSibling);
-          this._fetchGithubReleaseNotesFallback(entry.release_url, entry.from_version, entry.to_version).then(({ notes, correctedUrl }) => {
+          this._fetchGithubReleaseNotesFallback(entry.release_url, entry.from_version, entry.to_version).then(async ({ notes, correctedUrl }) => {
+            // Same Core-only override as the pending-update section's own
+            // withCoreAnnouncement -- see _fetchCoreAnnouncement's own
+            // comment. entry.to_version (the version this History entry
+            // actually installed), not entry.from_version: the blog/intro
+            // describes what was *installed*, same as entry.release_url
+            // itself already does.
+            let linkUrl = correctedUrl;
+            let intro = null;
+            if (entry.entity_id === CORE_UPDATE_ENTITY_ID) {
+              const announcement = await this._fetchCoreAnnouncement(entry.to_version);
+              linkUrl = announcement.url || correctedUrl;
+              intro = announcement.intro;
+            }
             loader.remove();
             if (isDialogStale()) return;
             // changelogAnchor.nextSibling evaluated fresh right here (not
@@ -3137,7 +3216,7 @@ class UpdateManagerPanel extends HTMLElement {
             // find the wrong node (its own just-inserted <hr>, not the
             // original insertion point).
             const insertionPoint = changelogAnchor.nextSibling;
-            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, correctedUrl);
+            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl, intro);
             if (notes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version);
           });
         };
@@ -4433,6 +4512,11 @@ class UpdateManagerPanel extends HTMLElement {
          unit, not two separate blocks. */
       .field-label { font-size: var(--ha-font-size-m, 14px); color: var(--primary-text-color); margin: 0; }
       .field-label + .hint { margin-top: var(--ha-space-1, 4px); }
+      /* Core's own release-notes intro (insertReleaseNotesSection's own
+         intro param) -- normal body text, not muted like .hint above: this
+         is the actual human-written "what's new" summary, not a secondary
+         explanation of a nearby control. */
+      .release-notes-intro { margin: 0; line-height: 1.4; }
 
       /* One shared page grid for all three tabs (2026-07-21, direct user
          feedback: Updates, History and Settings each had their own

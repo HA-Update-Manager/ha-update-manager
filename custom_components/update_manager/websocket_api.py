@@ -53,11 +53,20 @@ from .coordinator import (
     rules_from_options,
     trusted_voters_from_options,
 )
+from .core_blog_notes import (
+    extract_blog_path,
+    extract_description,
+    find_patch_heading,
+    major_minor as core_major_minor,
+    post_source_path,
+    slugify_heading,
+)
 from .device_identity import resolve_full_identity
 from .github_release_notes import compile_release_range, find_release_by_version, parse_release_url
 from .hacs_identity import ResolvedIdentity
 from .install_manager import auto_install_rules_from_options
 from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
+from .semver import strip_version_prefix
 from .vote_issue_body import REASON_CATEGORIES
 
 _WS_REGISTERED = f"{DOMAIN}_ws_registered"
@@ -379,6 +388,89 @@ async def _handle_github_release_notes(hass: HomeAssistant, connection: websocke
         return
     owner, repo, notes, corrected_url = result
     connection.send_result(msg["id"], {"notes": notes, "owner": owner, "repo": repo, "corrected_url": corrected_url})
+
+
+async def _async_fetch_text(hass: HomeAssistant, url: str) -> str | None:
+    """Plain GET, text body, None on anything but a clean 200 -- shared by
+    both fetches _async_fetch_core_announcement below needs. No
+    authentication: both files this is ever called with live in a public
+    repo (home-assistant/home-assistant.io), no rate-limit-sensitive volume
+    expected here (the frontend caches every result, per exact version, in
+    its own existing _releaseNotesCache -- see _fetchCoreAnnouncement's own
+    comment)."""
+    try:
+        async with async_get_clientsession(hass).get(url, timeout=10) as response:
+            if response.status != 200:
+                return None
+            return await response.text()
+    except Exception:
+        return None
+
+
+async def _async_fetch_core_announcement(hass: HomeAssistant, latest_version: str) -> dict[str, str | None] | None:
+    """{"url": ..., "intro": ...} for a Core update's own "Open release
+    announcement" link -- see core_blog_notes.py's own module docstring for
+    the two-file fetch this does (home-assistant/home-assistant.io's own
+    changelog file, then the blog post it points at). url always has a
+    patch-specific anchor appended once past .0 (e.g. "#202671---july-3"
+    for 2026.7.1); intro is the blog's own frontmatter description, only
+    for a genuine .0 release -- a patch's own "Patch releases" section is
+    just a bare bug-fix list, the same content the GitHub release notes
+    fetch above already shows, so there's nothing extra worth surfacing
+    from the blog post itself for a patch (direct user feedback, 2026-08-07:
+    "die zou dan gewoon de bugfix-lijst dupliceren die we al tonen").
+
+    None on any failure (network error, unexpected status, expected content
+    not found in either file) -- callers fall back to the plain GitHub
+    releases tag link (corrected_release_url) instead, never show a
+    broken/guessed URL."""
+    version = strip_version_prefix(latest_version)
+    changelog_url = (
+        "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/"
+        f"source/changelogs/core-{core_major_minor(version)}.markdown"
+    )
+    changelog_markdown = await _async_fetch_text(hass, changelog_url)
+    if changelog_markdown is None:
+        return None
+    blog_path = extract_blog_path(changelog_markdown)
+    if blog_path is None:
+        return None
+
+    is_dot_zero = version.endswith(".0")
+    intro: str | None = None
+    anchor: str | None = None
+    post_path = post_source_path(blog_path)
+    if post_path is not None:
+        post_url = f"https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/{post_path}"
+        post_markdown = await _async_fetch_text(hass, post_url)
+        if post_markdown is not None:
+            if is_dot_zero:
+                intro = extract_description(post_markdown)
+            else:
+                heading = find_patch_heading(post_markdown, version)
+                if heading is not None:
+                    anchor = slugify_heading(heading)
+
+    url = f"https://www.home-assistant.io{blog_path}"
+    if anchor:
+        url = f"{url}#{anchor}"
+    return {"url": url, "intro": intro}
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/core_announcement",
+        vol.Required("latest_version"): str,
+    }
+)
+async def _handle_core_announcement(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    result = await _async_fetch_core_announcement(hass, msg["latest_version"])
+    if result is None:
+        connection.send_result(msg["id"], {"url": None, "intro": None})
+        return
+    connection.send_result(msg["id"], result)
 
 
 @callback
@@ -915,6 +1007,7 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _handle_updates)
     websocket_api.async_register_command(hass, _handle_refresh_community_verdicts)
     websocket_api.async_register_command(hass, _handle_github_release_notes)
+    websocket_api.async_register_command(hass, _handle_core_announcement)
     websocket_api.async_register_command(hass, _handle_install_log)
     websocket_api.async_register_command(hass, _handle_cancel_pending_install)
     websocket_api.async_register_command(hass, _handle_install)

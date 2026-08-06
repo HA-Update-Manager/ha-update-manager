@@ -24,6 +24,7 @@ from .coordinator import (
 )
 from .device import device_info as update_manager_device_info
 from .github_auth import GitHubAuthManager
+from .hacs_identity import corrected_release_url
 from .install_log import InstallLog
 from .install_manager import InstallManager, auto_install_rules_from_options
 from .my_votes import MyVotesManager
@@ -228,7 +229,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
                 entity_id,
                 old_version,
                 new_version,
-                release_url=new_state.attributes.get("release_url"),
+                # Corrected for Core the same way coordinator.py's own cache
+                # already is -- see corrected_release_url's own docstring.
+                # A History entry's own release_url is captured once, right
+                # here, and never revisited, so getting this right at
+                # logging time matters even more than for the live cache:
+                # there's no later recompute to fix a wrong value.
+                release_url=corrected_release_url(entity_id, new_state.attributes.get("release_url"), new_version),
                 supported_features=new_state.attributes.get("supported_features", 0),
                 auto_installed=context is not None,
                 auto_install_reason=reason,

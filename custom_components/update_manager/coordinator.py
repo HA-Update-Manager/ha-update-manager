@@ -34,6 +34,7 @@ from .const import (
     DEFAULT_WAIT_DAYS,
     DOMAIN,
 )
+from .hacs_identity import corrected_release_url
 from .semver import classify_version_size
 from .staging import StagingRules, evaluate_staging, wait_for_size
 
@@ -688,6 +689,15 @@ class UpdateManagerCoordinator:
                 round(result.remaining.total_seconds()) if result.remaining is not None else None
             ),
             "installable": installable,
+            # Corrected here (not left to the frontend to read state.attributes
+            # itself) specifically for Core -- see corrected_release_url's own
+            # docstring for the real bug this fixes: Core's own native
+            # release_url is a fixed "always latest" URL, never version-
+            # specific, useless for the GitHub release-notes fallback fetch
+            # and actively wrong once a newer version comes out. A no-op for
+            # every other entity (OS/Supervisor/anything else), returns
+            # whatever state already had.
+            "release_url": corrected_release_url(entity_id, state.attributes.get("release_url"), latest),
             # Exposed mainly so the recorder lookup above can actually be
             # checked by hand (diagnostics download) instead of only being
             # inferable from status/remaining_seconds.
@@ -819,6 +829,10 @@ class UpdateManagerCoordinator:
             "status": "skipped",
             "remaining_seconds": None,
             "installable": bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL),
+            # Same correction as _async_cache_active's own -- see
+            # corrected_release_url's own docstring. Every cache entry gets
+            # the same shape (see this method's own comment further down).
+            "release_url": corrected_release_url(entity_id, state.attributes.get("release_url"), latest),
             "available_since": available_since,
             "auto_install_excluded": _is_excluded_from_auto_install(self.hass, entity_id, self.excluded_entities),
             # Always False here -- reaching _cache_skipped at all already
