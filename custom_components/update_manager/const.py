@@ -59,6 +59,21 @@ CONF_EXCLUDED_ENTITIES = "excluded_entities"
 # tuning value). See staging_skip.py for what it actually does.
 CONF_HIDE_POSTPONED = "hide_postponed"
 
+# Purely a display filter for the panel's own Updates tab -- unlike
+# CONF_HIDE_POSTPONED above, neither of these touches Home Assistant's own
+# update state/count or any staging rule; they only decide whether
+# groupUpdates' own "Skipped"/"Not installable" groups (panel JS,
+# ha-config-section-updates.ts's same two categories) get built at all.
+# Off by default (opt-in, not opt-out like CONF_HIDE_POSTPONED): hiding
+# entities from view is more surprising to a first-time upgrader than a
+# skip-state change most people never look at closely, so this shouldn't
+# silently change what an existing instance shows the first time these
+# fields are introduced. Not part of any profile preset, same reasoning as
+# CONF_EXCLUDED_ENTITIES/CONF_HIDE_POSTPONED: a behavior toggle, not a
+# wait/auto-install tuning value.
+CONF_HIDE_SKIPPED_UPDATES = "hide_skipped_updates"
+CONF_HIDE_NOT_INSTALLABLE_UPDATES = "hide_not_installable_updates"
+
 # A plain list of GitHub usernames, empty by default -- "I trust @someone's
 # judgement more than my own rules" (see FUTURE.md's "vertrouwenspersoon"
 # note), not part of any profile preset, same reasoning as
