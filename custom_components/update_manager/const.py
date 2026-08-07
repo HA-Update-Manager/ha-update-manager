@@ -59,6 +59,24 @@ CONF_EXCLUDED_ENTITIES = "excluded_entities"
 # tuning value). See staging_skip.py for what it actually does.
 CONF_HIDE_POSTPONED = "hide_postponed"
 
+# Purely a display filter for the panel's own Updates tab, unlike
+# CONF_HIDE_POSTPONED above: neither of these touches Home Assistant's own
+# update state/count or any staging rule, they only decide whether the
+# panel's own "Skipped"/"Not installable" groups get shown at all -- no
+# Python code anywhere else ever reads them, both are read/written by the
+# panel JS alone (see update-manager-panel.js's own groupUpdates). Mirrors
+# Home Assistant's own native /config/system/updates page (ha-config-
+# section-updates.ts's own "Show skipped updates" overflow-menu item),
+# deliberately following the same pattern/interaction/placement HA itself
+# uses, as two independent toggles rather than HA's own single shared one,
+# and saved (unlike HA's own page, whose own toggle resets on every visit)
+# so the choice sticks across sessions.
+# Default True (shown) for both: matches what every existing install
+# already sees today, so nothing changes for anyone until they actually
+# open the panel's own Updates-tab menu and turn one off.
+CONF_SHOW_SKIPPED_UPDATES = "show_skipped_updates"
+CONF_SHOW_NOT_INSTALLABLE_UPDATES = "show_not_installable_updates"
+
 # A plain list of GitHub usernames, empty by default -- "I trust @someone's
 # judgement more than my own rules" (see FUTURE.md's "vertrouwenspersoon"
 # note), not part of any profile preset, same reasoning as

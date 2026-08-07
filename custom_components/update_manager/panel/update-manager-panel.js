@@ -183,7 +183,15 @@ function fieldKind(name) {
 // on both load and save means stale keys just quietly stop being sent,
 // instead of silently accumulating.
 function knownSettingsFields() {
-  const names = ["enabled", "announce_hours", "excluded_entities", "hide_postponed", "trusted_voters"];
+  const names = [
+    "enabled",
+    "announce_hours",
+    "excluded_entities",
+    "hide_postponed",
+    "show_skipped_updates",
+    "show_not_installable_updates",
+    "trusted_voters",
+  ];
   for (const size of SIZES) {
     names.push(`${size}_wait_days`, `${size}_auto_install`);
   }
@@ -731,11 +739,28 @@ function installMethodText(tr, entry) {
 // coordinator.py's own is_own_skip distinction; our own staging_skip.py
 // auto-skips never show up as this status at all, they just read as
 // "waiting").
-function groupUpdates(tr, updates) {
-  const notInstallable = updates.filter((u) => !u.installable);
-  const rest = updates.filter((u) => u.installable);
-  const skipped = rest.filter((u) => u.status === "skipped");
-  const installable = rest.filter((u) => u.status !== "skipped");
+// showSkipped/showNotInstallable (both default true, matching what every
+// existing install already saw before these existed at all) -- the
+// Updates tab's own overflow-menu checkboxes (see _ensureShell), backed
+// by this._formData.show_skipped_updates/.show_not_installable_updates,
+// direct user feedback, 2026-08-07: two independent, saved toggles (not
+// HA's own single shared one), living in the same menu/location HA's own
+// page puts its own single toggle. Classification itself is unchanged by
+// either flag -- hiding a group drops it from the returned list below, it
+// never reclassifies those entities into ready/waiting/blocked instead.
+// Shared with _syncOverflowMenu (see its own comment), so the "what counts
+// as skipped/not installable" rule only lives in one place.
+function isNotInstallableUpdate(u) {
+  return !u.installable;
+}
+function isSkippedUpdate(u) {
+  return u.installable && u.status === "skipped";
+}
+
+function groupUpdates(tr, updates, showSkipped = true, showNotInstallable = true) {
+  const notInstallable = updates.filter(isNotInstallableUpdate);
+  const skipped = updates.filter(isSkippedUpdate);
+  const installable = updates.filter((u) => u.installable && u.status !== "skipped");
 
   const byStatus = { ready: [], waiting: [], blocked: [] };
   installable.forEach((u) => {
@@ -746,10 +771,10 @@ function groupUpdates(tr, updates) {
   if (byStatus.ready.length) groups.push({ key: "ready", title: tr.group_ready, entities: byStatus.ready });
   if (byStatus.waiting.length) groups.push({ key: "waiting", title: tr.group_waiting, entities: byStatus.waiting });
   if (byStatus.blocked.length) groups.push({ key: "blocked", title: tr.group_blocked, entities: byStatus.blocked });
-  if (skipped.length) {
+  if (showSkipped && skipped.length) {
     groups.push({ key: "skipped", title: tr.group_skipped(skipped.length), entities: skipped });
   }
-  if (notInstallable.length) {
+  if (showNotInstallable && notInstallable.length) {
     groups.push({ key: "not_installable", title: tr.group_not_installable(notInstallable.length), entities: notInstallable });
   }
   return groups;
@@ -1462,6 +1487,8 @@ class UpdateManagerPanel extends HTMLElement {
           excluded_entities: [],
           trusted_voters: [],
           hide_postponed: true,
+          show_skipped_updates: true,
+          show_not_installable_updates: true,
           ...fallback,
           ...pickKnownSettings(this._settings),
         };
@@ -1790,13 +1817,109 @@ class UpdateManagerPanel extends HTMLElement {
     // top-level HA panel, not a back arrow.
     subpage.mainPage = true;
 
+    // A single wrapping div, not each toolbar icon slotted separately --
+    // found live: hass-tabs-subpage's own #toolbar-icon wrapper (confirmed
+    // against its real source) has no display:flex of its own for
+    // whatever lands in its "toolbar-icon" slot; only its own
+    // ::slotted([slot="toolbar-icon"]) rule gives *each* individually
+    // slotted element its own display:flex (for centering that one
+    // element's own content), which says nothing about how multiple
+    // *siblings* stack relative to each other -- with only the refresh
+    // button ever slotted before, that ambiguity never surfaced. Now that
+    // there are two, they stacked vertically instead of sitting side by
+    // side. Slotting one flex-row wrapper instead sidesteps the whole
+    // question: hass-tabs-subpage's own rule still applies (to this one
+    // wrapper), and this file's own toolbar-icons rule below lays out
+    // *its* children in a row itself.
+    const toolbarIcons = document.createElement("div");
+    toolbarIcons.className = "toolbar-icons";
+    toolbarIcons.setAttribute("slot", "toolbar-icon");
+
+    // Overflow (⋮) menu, same underlying component (ha-dropdown/
+    // ha-dropdown-item) HA's own real /config/system/updates page uses
+    // for its own "Show skipped updates" toggle (ha-config-section-
+    // updates.ts, confirmed against its real source), deliberately
+    // following its pattern/interaction/placement. Two independent
+    // checkboxes (HA's own page shares one toggle for both groups) --
+    // unlike HA's own page, which resets its toggle on every visit, both
+    // are saved through the normal settings autosave, so the choice
+    // sticks across sessions -- see _updateShell's own comment for how
+    // their own .checked state stays in sync with that saved value.
+    //
+    // Placed *before* refreshBtn in this wrapper (left of it, not right
+    // like HA's own page), and only ever shown on the Updates tab (see
+    // _syncOverflowMenu) so that refresh keeps the same screen position on
+    // every tab. This whole icon group sits flush against the toolbar's
+    // own right edge (hass-tabs-subpage's own tab bar/title area to its
+    // left absorbs all remaining space, confirmed against its real
+    // source), so refreshBtn, being *last*, keeps the exact same
+    // on-screen position regardless of whether this menu is currently
+    // shown or hidden -- putting the menu *after* refreshBtn instead
+    // would have made refreshBtn's own position shift sideways every
+    // time the menu appears/disappears.
+    const menuBtn = document.createElement("button");
+    menuBtn.className = "icon-btn";
+    menuBtn.title = this._hass.localize("ui.common.menu");
+    menuBtn.setAttribute("slot", "trigger");
+    menuBtn.innerHTML = `<ha-icon icon="mdi:dots-vertical"></ha-icon>`;
+
+    const overflowMenu = document.createElement("ha-dropdown");
+    overflowMenu.appendChild(menuBtn);
+
+    const makeMenuCheckbox = (value, label) => {
+      const item = document.createElement("ha-dropdown-item");
+      item.type = "checkbox";
+      item.value = value;
+      item.textContent = label;
+      overflowMenu.appendChild(item);
+      return item;
+    };
+    const showSkippedItem = makeMenuCheckbox("show_skipped_updates", this._tr.menu_show_skipped_updates);
+    const showNotInstallableItem = makeMenuCheckbox(
+      "show_not_installable_updates",
+      this._tr.menu_show_not_installable_updates
+    );
+
+    // Own instance fields (not re-queried from the DOM each time), so
+    // _updateShell can refresh their own .checked whenever this._formData
+    // changes elsewhere -- this menu is built exactly once (see this
+    // method's own top-level guard), so nothing else keeps these two
+    // elements' own .checked in sync on its own otherwise.
+    this._showSkippedMenuItem = showSkippedItem;
+    this._showNotInstallableMenuItem = showNotInstallableItem;
+
+    // wa-select bubbles up from whichever ha-dropdown-item was clicked
+    // (HA's own real event, confirmed against ha-dropdown.ts's own
+    // HaDropdownSelectEvent type) -- same field this project's own
+    // settings fields already write straight into this._formData on every
+    // change (see e.g. _buildGeneralCard), just triggered from this menu
+    // instead of a form. Toggles the clicked field's own current value
+    // (checkbox items don't carry their own new value in the event,
+    // unlike ha-form's value-changed), immediately re-renders (so the
+    // Updates tab reflects the new filter right away, not after the
+    // debounced save resolves) and schedules the same autosave every
+    // other setting already goes through.
+    overflowMenu.addEventListener("wa-select", (e) => {
+      const field = e.detail.item.value;
+      if (field !== "show_skipped_updates" && field !== "show_not_installable_updates") return;
+      this._formData = { ...this._formData, [field]: !this._formData[field] };
+      showSkippedItem.checked = this._formData.show_skipped_updates;
+      showNotInstallableItem.checked = this._formData.show_not_installable_updates;
+      this._renderContent();
+      this._scheduleAutosave();
+    });
+
+    toolbarIcons.appendChild(overflowMenu);
+    this._overflowMenuEl = overflowMenu;
+
     const refreshBtn = document.createElement("button");
     refreshBtn.className = "icon-btn refresh-btn";
     refreshBtn.title = this._tr.refresh;
-    refreshBtn.setAttribute("slot", "toolbar-icon");
     refreshBtn.innerHTML = `<ha-icon icon="mdi:refresh"></ha-icon>`;
     refreshBtn.addEventListener("click", () => this._refresh());
-    subpage.appendChild(refreshBtn);
+    toolbarIcons.appendChild(refreshBtn);
+
+    subpage.appendChild(toolbarIcons);
 
     const content = document.createElement("div");
     content.className = "content";
@@ -1860,6 +1983,52 @@ class UpdateManagerPanel extends HTMLElement {
     // and skip -- found live: the tab bar never visibly showed which tab
     // was current at all.
     if (this._route) this._subpageEl.route = { ...this._route };
+
+    // Keeps the overflow menu's own two checkboxes (see _ensureShell)
+    // reflecting whatever this._formData actually holds -- that menu is
+    // only ever built once, but this._formData itself doesn't exist yet
+    // at that exact moment (built later, inside _loadAll, see its own
+    // comment) and can also change afterwards from other sources (a
+    // fresh _loadAll response). _updateShell already runs after every one
+    // of those, so re-applying .checked here (cheap, idempotent) keeps
+    // both in sync without needing its own separate refresh mechanism.
+    if (this._showSkippedMenuItem && this._formData) {
+      this._showSkippedMenuItem.checked = this._formData.show_skipped_updates;
+      this._showNotInstallableMenuItem.checked = this._formData.show_not_installable_updates;
+    }
+  }
+
+  // Keeps the overflow menu (and its own two checkboxes) matching what's
+  // actually in the list right now, not just which tab is active. A
+  // checkbox for a group that's currently empty toggles nothing visible,
+  // which reads as broken -- so each checkbox is hidden while its own
+  // group is empty, and the whole menu (trigger included) is hidden too
+  // once *both* are empty, rather than opening onto two checkboxes that
+  // both do nothing. The saved setting itself is untouched either way
+  // (this._formData keeps whatever value it already had, still going
+  // through the normal autosave), so it's preserved across that -- once
+  // something actually gets skipped again later, the checkbox reappears
+  // already set the way it was left.
+  //
+  // Called from _renderContent only, not _updateShell -- every real trigger
+  // for this (a tab switch via the route setter, or this._updates changing
+  // via _loadAll) already calls _renderContent right after _updateShell in
+  // the same synchronous flow, so a second call from _updateShell would
+  // just re-check the same, unchanged inputs (the two setters that call
+  // _updateShell alone, hass/narrow, never touch this._tab or this._updates).
+  _syncOverflowMenu() {
+    if (!this._overflowMenuEl) return;
+    const updates = this._updates || [];
+    const hasNotInstallable = updates.some(isNotInstallableUpdate);
+    const hasSkipped = updates.some(isSkippedUpdate);
+    if (this._showSkippedMenuItem) {
+      this._showSkippedMenuItem.style.display = hasSkipped ? "" : "none";
+    }
+    if (this._showNotInstallableMenuItem) {
+      this._showNotInstallableMenuItem.style.display = hasNotInstallable ? "" : "none";
+    }
+    this._overflowMenuEl.style.display =
+      this._tab === "updates" && (hasSkipped || hasNotInstallable) ? "" : "none";
   }
 
   // Fired on every hass push (see set hass), same as more-info-update.ts's
@@ -2066,6 +2235,10 @@ class UpdateManagerPanel extends HTMLElement {
       return;
     }
     if (!this._contentEl) return;
+    // See _syncOverflowMenu's own comment -- this is the one place reliably
+    // re-run every time this._updates itself changes (a refresh, an
+    // install/skip/unskip finishing, etc.), not just on a tab switch.
+    this._syncOverflowMenu();
     // Found by review: the device-flow poll (_buildCommunityCard) used to
     // only ever get cleared by rebuilding the Settings card itself, so
     // switching to another tab mid-poll (waiting for GitHub approval) left
@@ -2340,7 +2513,12 @@ class UpdateManagerPanel extends HTMLElement {
     const remainingUpdates = this._updates.filter((u) => !queuedEntityIds.has(u.entity_id));
     if (!remainingUpdates.length) return outer;
 
-    const groups = groupUpdates(tr, remainingUpdates);
+    const groups = groupUpdates(
+      tr,
+      remainingUpdates,
+      this._formData.show_skipped_updates,
+      this._formData.show_not_installable_updates
+    );
 
     const wrap = document.createElement("div");
     wrap.className = "update-groups";
@@ -4411,12 +4589,37 @@ class UpdateManagerPanel extends HTMLElement {
          sitting directly in this panel's own shadow tree. */
       a { color: var(--primary-color); }
 
+      /* The single element actually slotted into hass-tabs-subpage's own
+         "toolbar-icon" slot (see _ensureShell's own comment on why: its
+         own #toolbar-icon wrapper has no display:flex of its own for
+         multiple slotted siblings, only a single slotted element's own
+         *individual* display:flex, which says nothing about how several
+         such elements stack relative to each other). Lays out its own
+         children (the refresh button, the overflow menu) in a row itself. */
+      .toolbar-icons { display: flex; align-items: center; }
+      /* color: inherit is deliberate, not a default left alone -- it picks
+         up --sidebar-icon-color from hass-tabs-subpage's own
+         ::slotted([slot="toolbar-icon"]) rule (confirmed against its real
+         source), the exact same color HA's own real toolbar icon buttons
+         (ha-icon-button, e.g. its own refresh/overflow icons on
+         /config/system/updates) end up with too, since ha-icon-button
+         itself colors its icon via currentColor rather than a color of
+         its own. */
       .icon-btn {
         border: none; background: none; color: inherit; cursor: pointer;
         display: flex; align-items: center; justify-content: center;
         width: 40px; height: 40px; border-radius: 50%;
       }
-      .icon-btn:hover { background: rgba(0, 0, 0, 0.05); }
+      /* Matches ha-icon-button's own real hover overlay exactly (confirmed
+         against its actual source, home-assistant/frontend's
+         ha-icon-button.ts): a currentColor-tinted background at 10%
+         opacity, not a fixed black -- the old rgba(0,0,0,0.05) barely
+         showed at all in dark theme, since these icons already inherit
+         --sidebar-icon-color (light-ish in dark theme) from
+         hass-tabs-subpage's own ::slotted rule, and a black overlay reads
+         as near-invisible against a light icon color. currentColor
+         adapts automatically to both themes the same way HA's own does. */
+      .icon-btn:hover { background: color-mix(in srgb, currentColor 10%, transparent); }
       .icon-btn:disabled { cursor: default; opacity: 0.6; }
       .icon-btn ha-icon.spinning { animation: um-spin 1s linear infinite; }
       @keyframes um-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

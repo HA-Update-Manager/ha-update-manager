@@ -55,6 +55,19 @@ export const TRANSLATIONS = {
     refresh: "Refresh",
     checking_updates_toast: "Checking for updates…",
     refreshed_toast: "Update Manager refreshed",
+    // Updates tab's own overflow (⋮) menu, next to the refresh button --
+    // same interaction/component as Home Assistant's own native
+    // /config/system/updates page (ha-config-section-updates.ts), deliberately
+    // following its pattern. menu_show_skipped_updates matches HA's own real
+    // string verbatim (confirmed against home-assistant/frontend's own
+    // src/translations/en.json, ui.panel.config.updates.show_skipped: "Show
+    // skipped updates") -- menu_show_not_installable_updates has no HA
+    // equivalent to match (HA's own page shares one toggle for both groups,
+    // ours are independent), written to match that same string's own
+    // "Show ... updates" shape and HA's own title_not_installable
+    // vocabulary ("not installable").
+    menu_show_skipped_updates: "Show skipped updates",
+    menu_show_not_installable_updates: "Show not installable updates",
     dash: "–",
     // Deliberately generic, not semver's own vocabulary (renamed
     // 2026-07-16, see FUTURE.md): "Small/Medium/Large" is a scale any version
@@ -375,6 +388,8 @@ export const TRANSLATIONS = {
     refresh: "Vernieuwen",
     checking_updates_toast: "Bezig met controleren op updates…",
     refreshed_toast: "Update Manager ververst",
+    menu_show_skipped_updates: "Overgeslagen updates tonen",
+    menu_show_not_installable_updates: "Niet-installeerbare updates tonen",
     dash: "–",
     size_small_short: "Klein",
     size_small_desc: () => {

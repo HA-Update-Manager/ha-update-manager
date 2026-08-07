@@ -34,6 +34,8 @@ from .const import (
     CONF_LARGE_WAIT_DAYS,
     CONF_MEDIUM_AUTO_INSTALL,
     CONF_MEDIUM_WAIT_DAYS,
+    CONF_SHOW_NOT_INSTALLABLE_UPDATES,
+    CONF_SHOW_SKIPPED_UPDATES,
     CONF_SMALL_AUTO_INSTALL,
     CONF_SMALL_WAIT_DAYS,
     CONF_TRUSTED_VOTERS,
@@ -417,8 +419,7 @@ async def _async_fetch_core_announcement(hass: HomeAssistant, latest_version: st
     for a genuine .0 release -- a patch's own "Patch releases" section is
     just a bare bug-fix list, the same content the GitHub release notes
     fetch above already shows, so there's nothing extra worth surfacing
-    from the blog post itself for a patch (direct user feedback, 2026-08-07:
-    "die zou dan gewoon de bugfix-lijst dupliceren die we al tonen").
+    from the blog post itself for a patch, it would just duplicate that.
 
     None on any failure (network error, unexpected status, expected content
     not found in either file) -- callers fall back to the plain GitHub
@@ -666,6 +667,8 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
                 vol.Required(CONF_ANNOUNCE_HOURS): vol.All(vol.Coerce(int), vol.Range(min=1, max=336)),
                 vol.Required(CONF_EXCLUDED_ENTITIES): [str],
                 vol.Required(CONF_HIDE_POSTPONED): bool,
+                vol.Required(CONF_SHOW_SKIPPED_UPDATES): bool,
+                vol.Required(CONF_SHOW_NOT_INSTALLABLE_UPDATES): bool,
                 vol.Required(CONF_TRUSTED_VOTERS): [str],
             },
             extra=vol.REMOVE_EXTRA,
