@@ -1,11 +1,11 @@
 """Persists a history of completed updates -- entity, old version, new
-version, when, and release notes -- so Phase 2's panel has something to show
-under its "History" tab (see FUTURE.md). This is genuinely new data only
+version, when, and release notes -- so the panel has something to show
+under its "History" tab. This is genuinely new data only
 Update Manager creates, unlike coordinator.py's ready/waiting/blocked status
 (a live recomputation of HA's own update-entity state, never stored), so
 unlike that one this does need real persistent storage. No entity: a
 growing, unbounded history list doesn't belong in an entity's state/attribute
-footprint, and the intended reader is the future panel's websocket_api call,
+footprint, and the intended reader is the panel's own websocket_api call,
 not the state machine.
 """
 from __future__ import annotations
@@ -101,7 +101,8 @@ class InstallLog:
                 # stays None there -- same "hide the fact entirely rather
                 # than show an unreliable guess" treatment as
                 # auto_install_reason below. Direct user feedback, 2026-08-01:
-                # "we tonen nergens of die backup ook echt gelukt is"
+                # nowhere did the panel actually show whether that backup
+                # succeeded
                 # (following up on an earlier request to verify this
                 # actually happens at all) -- this is what makes that
                 # already-verified behaviour visible per install, not just
@@ -109,9 +110,8 @@ class InstallLog:
                 "backup_used": bool(supported_features & UpdateEntityFeature.BACKUP) if auto_installed else None,
                 # None on a manual install, or on any entry logged before
                 # this field existed at all -- the panel hides these facts
-                # entirely rather than showing "unknown" when they're None
-                # (see FUTURE.md's own note on this, added alongside
-                # CONF_TRUSTED_VOTERS/effective_auto_install_state).
+                # entirely rather than showing "unknown" when they're None,
+                # added alongside CONF_TRUSTED_VOTERS/effective_auto_install_state.
                 "auto_install_reason": auto_install_reason,
                 "trusted_voter_usernames": trusted_voter_usernames or [],
                 "announced_at": announced_at,

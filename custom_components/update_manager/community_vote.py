@@ -1,6 +1,6 @@
 """Submits a vote to community-votes as a GitHub Issue, mirroring
-community_verdict.py's own shape but for writing (see FUTURE.md and this
-session's own live test: any GitHub account can open an issue on a public
+community_verdict.py's own shape but for writing (confirmed via a live
+test: any GitHub account can open an issue on a public
 repo the target App is installed on, regardless of collaborator status, so
 no fork/App-install is needed on the voter's side, only the linked account's
 own access token, see github_auth.py).

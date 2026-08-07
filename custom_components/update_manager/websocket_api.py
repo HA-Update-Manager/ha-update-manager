@@ -1,8 +1,7 @@
 """Exposes Update Manager's computed state over HA's websocket API. This,
-not the summary sensor, is the intended data source for Phase 2's panel
-(see FUTURE.md) -- the sensor stays around as a cheap debug view, but a
-growing update list / install history doesn't belong in an entity's state
-machine footprint.
+not the summary sensor, is the intended data source for the panel -- the
+sensor stays around as a cheap debug view, but a growing update list /
+install history doesn't belong in an entity's state machine footprint.
 
 Also the panel's only way to change the staging rules: a config_entry's
 options can't be written from a plain custom element, so save_settings
@@ -270,8 +269,8 @@ async def _async_fetch_github_release_notes(
     whenever pending_restart is still true, or the installed version isn't
     in its own published_tags; Home Assistant Supervisor's own update entity
     doesn't support UpdateEntityFeature.RELEASE_NOTES at all (verified
-    against hassio's own update.py, 2026-08-01) -- confirmed live, direct
-    user feedback: "dus het is absoluut niet alleen hacs". owner/repo are
+    against hassio's own update.py, 2026-08-01) -- confirmed live, and not
+    just for HACS. owner/repo are
     returned alongside the notes so the frontend can turn #1234/@username
     references in the notes into real GitHub links without having to
     re-parse release_url itself.
@@ -581,8 +580,8 @@ async def _handle_skip(hass: HomeAssistant, connection: websocket_api.ActiveConn
     """A genuine user-initiated skip (the panel's own Skip button) -- not
     a plain passthrough like _handle_unskip below, because this one can
     target an entity staging_skip.py already auto-skipped for
-    hide_postponed. Found live: clicking Skip there "leek helemaal niks te
-    doen" -- skipped_version already equalled latest_version in real HA
+    hide_postponed. Found live: clicking Skip there appeared to do nothing
+    at all -- skipped_version already equalled latest_version in real HA
     state (the service call was a genuine no-op, no state_changed fired),
     and is_own_skip kept claiming the entity as staging_skip.py's own,
     leaving it classified as "waiting"/postponed instead of turning into a

@@ -21,9 +21,9 @@ class UpdateManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(step_id="user")
 
-    # No options flow: staging rules now live on the "Instellingen" tab of
+    # No options flow: staging rules now live on the Settings tab of
     # Update Manager's own panel (panel.py), not in a generic HA options
-    # screen -- see FUTURE.md's "Tussenstap" note (2026-07-15) on why that
-    # was always meant to be temporary. The underlying data (the config
-    # entry's options dict) is unchanged, just written by the panel's
-    # update_manager/save_settings websocket command instead.
+    # screen -- an options flow here was always meant to be a temporary
+    # stand-in, from before the panel existed. The underlying data (the
+    # config entry's options dict) is unchanged, just written by the
+    # panel's update_manager/save_settings websocket command instead.

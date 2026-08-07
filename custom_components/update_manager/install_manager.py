@@ -2,9 +2,8 @@
 auto-install announcements (Store, survives restarts), runs a periodic
 check, actually calls `update.install` (with `backup=True` when the entity
 supports it) once an announcement's wait elapses uncancelled, and shows/
-clears a `persistent_notification` -- deliberately not a Repair issue, see
-FUTURE.md's "Auto-install (niveau 3)" note: this isn't a problem to fix,
-just an announcement.
+clears a `persistent_notification` -- deliberately not a Repair issue: this
+isn't a problem to fix, just an announcement.
 """
 from __future__ import annotations
 

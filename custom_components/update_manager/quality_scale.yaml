@@ -148,9 +148,8 @@ rules:
     status: exempt
     comment: >-
       Nothing to reconfigure via config_flow (no fields at all). Settings live on
-      the panel's own Settings tab instead of a config_flow options step -- see
-      FUTURE.md's "Tussenstap" note for why that's a deliberate, if nonstandard,
-      choice for this integration specifically.
+      the panel's own Settings tab instead of a config_flow options step -- a
+      deliberate, if nonstandard, choice for this integration specifically.
   repair-issues:
     status: done
     comment: >-

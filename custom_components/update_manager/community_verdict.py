@@ -1,6 +1,6 @@
 """Reads (never writes) a community-computed verdict for an update entity,
-from the community-votes repo built and live-tested 2026-07-22 (see
-FUTURE.md): https://github.com/HA-Update-Manager/community-votes. Read-only
+from the community-votes repo, built and live-tested 2026-07-22:
+https://github.com/HA-Update-Manager/community-votes. Read-only
 slice only, no voting, no OAuth, no settings toggle (confirmed with the
 user: pure reading, nothing sent, always on).
 
@@ -117,8 +117,8 @@ async def async_fetch_vote_for_jump_key(
     to_version_path/from_version rather than a full ResolvedIdentity -- used
     by websocket_api.py's own refresh_community_verdicts handler when
     reconciling my_votes.py's *entire* local record (direct user feedback,
-    2026-08-01: "ik zou dit alsnog in de refresh knop willen"), where only
-    the jump_key string is available for a possibly-old/no-longer-pending
+    2026-08-01, asking for this to also happen from the refresh button),
+    where only the jump_key string is available for a possibly-old/no-longer-pending
     jump (see ResolvedIdentity.jump_key: it already encodes
     to_version_path::from_version, so splitting that back apart is enough,
     no need to re-resolve a full identity for an entity that might not even
@@ -276,9 +276,9 @@ class CommunityVerdictManager:
 
         # force=True skips the freshness check entirely, always doing a
         # live fetch -- the panel's own manual refresh button, direct user
-        # feedback 2026-07-25: "als ik op de refresh knop druk wil ik dat
-        # hij ook de meest recente info van de votes naar binnen haalt",
-        # not silently keep showing whatever was cached up to an hour ago.
+        # feedback 2026-07-25: clicking refresh should also pull in the
+        # latest vote data, not silently keep showing whatever was cached
+        # up to an hour ago.
         if not force:
             is_fresh, cached_verdict = self._fresh_cached(entity_id, latest_version, installed_version)
             if is_fresh:
@@ -348,12 +348,12 @@ async def async_fetch_verdict_uncached(
     reasons, my own problematic reason, my own live verdict, whether this
     fetch actually succeeded) -- all derived from the one fetch, direct user
     feedback 2026-07-24 (other_jumps), 2026-07-27 (trusted_vote/
-    trusted_voters_matched, "toevallig mijn trusted voter die heeft
-    gestemd, maar dat zie ik niet terug" -- the dialog's own verdict line
-    for a specific jump had no idea whether a trusted voter was among the
-    people who voted on it, even though that's exactly what changes
+    trusted_voters_matched: the dialog's own verdict line
+    for a specific jump had no idea whether a trusted voter happened to be
+    among the people who voted on it, even though that's exactly what changes
     auto-install behavior for this jump), 2026-07-29 (problematic_
-    reasons/my_reason, "ik zie in de interface nergens de reden staan"), and
+    reasons/my_reason: a problematic vote's own reason was nowhere to be
+    found in the interface), and
     2026-08-01 (my_live_verdict/fetch_ok, direct user feedback: deleting a
     vote file on community-votes still left the panel showing "you voted" --
     websocket_api.py's own verdict_for_version handler cross-checks

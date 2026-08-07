@@ -17,7 +17,7 @@ jump) lives in that one sensor's own attributes.
 
 Reads from the shared UpdateManagerCoordinator (coordinator.py) rather than
 computing anything itself -- these are a cheap, read-only view on top of
-that shared computation, not its source (see FUTURE.md).
+that shared computation, not its source.
 """
 from __future__ import annotations
 

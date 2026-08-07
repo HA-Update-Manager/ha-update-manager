@@ -1,4 +1,4 @@
-"""Registers Update Manager's own sidebar panel (Phase 2, see FUTURE.md) --
+"""Registers Update Manager's own sidebar panel --
 a plain custom element, no build step, same convention as this project's
 sibling Lovelace cards (cover-media-card.js etc.), just loaded as a HA
 sidebar panel instead of a dashboard card resource.
@@ -102,7 +102,7 @@ async def async_register_update_manager_panel(hass: HomeAssistant) -> None:
     # project's own release process already bumps) rather than a second,
     # hand-maintained copy in the JS file itself -- this project's sibling
     # Lovelace cards each keep their own CARD_VERSION constant in sync by
-    # hand at release time (see STANDARDS.md), but a panel, unlike a card,
+    # hand at release time, but a panel, unlike a card,
     # can just ask HA for the real value at registration time instead, so
     # there's nothing here that could ever drift out of sync. Read fresh on
     # every call (not cached), matching this whole function's own "re-

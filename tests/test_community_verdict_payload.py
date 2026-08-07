@@ -85,8 +85,8 @@ class TestTrustedVoteFromPayload:
         )
 
     def test_any_problematic_wins_even_if_others_voted_healthy(self):
-        # Same asymmetric-safety rule as the aggregate auto-install quorum
-        # (FUTURE.md's own point 5): one problematic vote among the trusted
+        # Same asymmetric-safety rule as the aggregate auto-install quorum:
+        # one problematic vote among the trusted
         # list blocks outright, regardless of how many others voted healthy.
         payload = _payload(
             **{

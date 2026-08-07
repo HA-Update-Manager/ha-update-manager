@@ -35,8 +35,8 @@ class UpdateManagerData:
     # manifest.json's own version (str(Integration.version)), fetched once in
     # __init__.py's async_setup_entry -- device.py's own device_info reads
     # this for the device info page's own "Software version" (sw_version),
-    # direct user feedback, 2026-08-07: "Ik mis bij service info ook de
-    # versie van de integratie". Not re-fetched on every device_info() call
+    # direct user feedback, 2026-08-07, noting the integration's own version
+    # was missing from that page. Not re-fetched on every device_info() call
     # (unlike panel.py's own always-fresh read, see that function's own
     # docstring for why *it* deliberately doesn't cache): device_info() is
     # a plain sync function, called from several entities' own __init__

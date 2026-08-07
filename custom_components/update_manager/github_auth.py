@@ -1,7 +1,7 @@
-"""Links a GitHub account via OAuth Device Flow, so a future voting feature
-can submit a vote as that real, identifiable account, with no fork, no App
-installation, and no client secret needed anywhere (see FUTURE.md and this
-session's own live test against the community-votes repo).
+"""Links a GitHub account via OAuth Device Flow, so the voting feature
+(community_vote.py) can submit a vote as that real, identifiable account,
+with no fork, no App installation, and no client secret needed anywhere
+(confirmed via a live test against the community-votes repo).
 
 Device Flow was chosen specifically because it needs no client secret at
 all, unlike the ordinary OAuth redirect flow: an integration that runs

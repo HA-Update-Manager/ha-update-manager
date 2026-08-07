@@ -1,8 +1,7 @@
 """Owns the one shared computation of "how should each pending update be
 staged right now". Built once per config entry and read by both the summary
-sensor (a cheap debug view, see FUTURE.md) and, eventually, the websocket API
-Phase 2's panel will use -- neither should duplicate this refresh logic or
-the recorder lookups it can trigger.
+sensor (a cheap debug view) and the panel's own websocket API -- neither
+should duplicate this refresh logic or the recorder lookups it can trigger.
 
 Also the single place that notices when an update actually completes
 (installed_version changed), regardless of who/what triggered it (a manual
@@ -57,7 +56,7 @@ _HISTORY_LOOKBACK = timedelta(days=30)
 # ATTR_VERSION_LATEST = "version_latest" per hassio/const.py). Matched by
 # unique_id rather than by platform == "hassio": that platform also
 # provides regular add-ons' update entities, which are a different,
-# instelbaar category (see FUTURE.md), not this hard exception.
+# per-entity configurable category, not this hard exception.
 _HARD_EXCLUDED_UNIQUE_IDS = frozenset(
     {
         "home_assistant_core_version_latest",
@@ -91,9 +90,9 @@ def _matches_hard_exclusion(entity_id: str, unique_id: str | None) -> bool:
 
 def _is_hard_excluded_from_auto_install(hass: HomeAssistant, entity_id: str) -> bool:
     """Core/Supervisor/HAOS always stay manual, never auto-install,
-    regardless of any setting -- decided 2026-07-15, see FUTURE.md: the
-    impact of a misser here is the whole HA instance, not one integration/
-    add-on/device. Still shown normally otherwise (real size classification,
+    regardless of any setting -- decided 2026-07-15: the
+    impact of getting this wrong is the whole HA instance, not one
+    integration/add-on/device. Still shown normally otherwise (real size classification,
     a real ready/waiting/blocked status) -- this only ever gates
     install_manager.py's auto-install, never the informational display."""
     entry = er.async_get(hass).async_get(entity_id)
@@ -135,7 +134,7 @@ def _is_excluded_from_auto_install(hass: HomeAssistant, entity_id: str, excluded
     picked themselves on the settings screen (direct user feedback: expected
     a way to add their own entities to the same always-manual behaviour, not
     just the 3 hardcoded ones). Same rule either way: still shown normally
-    in Updates/Historie, install_manager.py just never auto-installs it."""
+    in Updates/History, install_manager.py just never auto-installs it."""
     return _is_hard_excluded_from_auto_install(hass, entity_id) or entity_id in excluded_entities
 
 
@@ -637,7 +636,7 @@ class UpdateManagerCoordinator:
         now = dt_util.utcnow()
         # Uses this entry's actual configured rules (settings panel), not
         # always the hardcoded defaults -- a user may have given "large" a
-        # real wait instead of "always blocked" (see FUTURE.md). Only skip
+        # real wait instead of "always blocked". Only skip
         # the recorder query when the *configured* wait for this size is
         # None, since only then can available_since not change the answer.
         rules = self.rules
@@ -720,8 +719,8 @@ class UpdateManagerCoordinator:
             ),
             # None when not HACS-identified (see community_verdict.py) or
             # not yet rated, never a placeholder/empty object. The panel
-            # renders no badge at all for either case, see FUTURE.md's own
-            # read-only-first scoping for this feature.
+            # renders no badge at all for either case, matching this
+            # feature's own read-only-first scope (see community_verdict.py).
             "community_verdict": community_verdict,
             # (verdict, matched usernames) from the configured trusted-
             # voters list (see const.py's CONF_TRUSTED_VOTERS), already

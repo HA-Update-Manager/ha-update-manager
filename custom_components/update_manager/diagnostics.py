@@ -2,8 +2,8 @@
 per-update status and the install log with a click in the UI (Settings ->
 Devices & Services -> Update Manager -> the three-dot menu -> Download
 diagnostics), instead of needing the browser console/websocket_api directly.
-Exactly the "bescheiden eerste versie" FUTURE.md describes for the install
-log before Phase 2's panel exists.
+A modest, low-effort way to inspect the install log that predates the
+panel's own History tab, still useful for support/debugging today.
 """
 from __future__ import annotations
 

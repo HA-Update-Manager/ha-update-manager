@@ -1,6 +1,6 @@
-"""Pure logic for auto-install's "announce, don't just install" behaviour
-(see FUTURE.md's "Auto-install (niveau 3): ontwerp"). No `homeassistant`
-imports, following the same pure-logic-first pattern as semver.py/staging.py
+"""Pure logic for auto-install's "announce, don't just install" behaviour.
+No `homeassistant` imports, following the same pure-logic-first pattern as
+semver.py/staging.py
 -- independently testable, and importable via the same importlib trick the
 existing tests use, bypassing pytest-homeassistant-custom-component.
 
@@ -93,18 +93,19 @@ def effective_auto_install_state(
     naming someone more trusted than your own rules is that their
     judgement can skip the wait, not just the toggle -- and it wins even
     when community_problematic_count is nonzero: direct user feedback,
-    2026-07-29 ("wat hebben we dan nog aan een trusted voter?") when asked
-    whether a stray untrusted problematic report should override a trusted
-    healthy vote. So this check comes first, unconditionally.
+    2026-07-29, when asked whether a stray untrusted problematic report
+    should override a trusted healthy vote -- a trusted voter's own
+    judgment should count for something, otherwise trusting them at all is
+    pointless. So this check comes first, unconditionally.
 
     Only once there's no trusted-healthy override in play does
     community_problematic_count matter: any problematic vote at all, from
     anyone, however small a minority, blocks eligibility outright -- no
-    quorum, no percentage, same asymmetric-safety reasoning FUTURE.md's own
-    "point 5" already worked out before trusted_voters existed (quorum only
-    ever mattered for trusting the crowd enough to force an install, a
-    feature that doesn't exist yet; blocking needs no quorum, since erring
-    towards caution is always the safe direction). This subsumes the old,
+    quorum, no percentage, the same asymmetric-safety reasoning already
+    applied elsewhere (quorum only ever mattered for trusting the crowd
+    enough to force an install, a feature that doesn't exist yet; blocking
+    needs no quorum, since erring towards caution is always the safe
+    direction). This subsumes the old,
     narrower "a trusted voter's own problematic vote blocks" rule: a
     trusted voter's problematic vote is itself already counted inside the
     aggregate community_problematic_count, so that case no longer needs its
@@ -148,7 +149,7 @@ def decide_action(
     - "remove": an announcement exists but no longer applies (rule turned
       off, update resolved itself/changed/disappeared, or the user
       cancelled this exact target version) -- clear it, no user action
-      needed (see FUTURE.md: only a real cancel needs a manual dismiss).
+      needed, only a real cancel needs a manual dismiss.
     - "none": nothing to do.
 
     Deliberately sequential, not overlapping: the announcement only starts

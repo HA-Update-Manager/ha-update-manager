@@ -70,7 +70,7 @@ export const TRANSLATIONS = {
     menu_show_not_installable_updates: "Show not installable updates",
     dash: "–",
     // Deliberately generic, not semver's own vocabulary (renamed
-    // 2026-07-16, see FUTURE.md): "Small/Medium/Large" is a scale any version
+    // 2026-07-16): "Small/Medium/Large" is a scale any version
     // scheme maps onto -- semver, calendar versioning, and git commit
     // hashes each have their own notion of "small" (see semver.py). The
     // _desc text is the settings screen's expandable-section *description*
@@ -107,9 +107,9 @@ export const TRANSLATIONS = {
     // auto-installing (status_pending_install below covers that case
     // specifically, with a matching download icon instead of the alert's
     // default one, see timerBadge). Orange is still waiting it out. Red is
-    // reserved for a future signal (e.g. a community verdict, see
-    // FUTURE.md's Fase 1/3) that actively discourages an update; nothing
-    // in today's local rules produces it (see the settings legend's note).
+    // for status_blocked ("Discouraged", e.g. a problematic community
+    // verdict) that actively discourages an update; nothing
+    // in today's local rules produces it on their own (see the settings legend's note).
     status_ready: "Ready to update",
     status_waiting_manual: (when) => `Ready to update ${when}`,
     status_waiting_soon: "Postponed (almost ready)",
@@ -163,9 +163,8 @@ export const TRANSLATIONS = {
     col_jump: "Jump",
     // Noun, not "Announced" -- deliberately different label for the
     // projected-but-not-yet-real case (see projectedAnnouncementTime's own
-    // comment), direct user feedback, 2026-08-01: "dan is het niet
-    // Announced maar Announcement, toch?" -- "Announced" asserts it already
-    // happened, which isn't true yet for a still-"waiting" update.
+    // comment), direct user feedback, 2026-08-01: "Announced" asserts it
+    // already happened, which isn't true yet for a still-"waiting" update.
     dialog_announcement_label: "Announcement",
     dialog_current_version: "Installed version",
     dialog_new_version: "Latest version",
@@ -198,8 +197,8 @@ export const TRANSLATIONS = {
     community_vote_submit: "Submit",
     // `updated` (see websocket_api.py's own is_vote_update): a repeat vote
     // on the same version now replaces your earlier one instead of being
-    // rejected, 2026-07-23, direct user feedback ("kan ik wel mijn stem
-    // wijzigen?") -- said plainly here instead of leaving the previous
+    // rejected, 2026-07-23, direct user feedback asking whether a vote
+    // could be changed -- said plainly here instead of leaving the previous
     // vote's confirmation text up as if this were the first time.
     // ownRepoHealthyVote (see websocket_api.py's own is_own_repo_healthy_vote):
     // mirrors community-votes' own "asymmetric weight for the repo owner"

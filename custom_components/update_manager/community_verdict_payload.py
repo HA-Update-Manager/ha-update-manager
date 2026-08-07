@@ -52,7 +52,7 @@ def trusted_vote_from_payload(
 ) -> tuple[str | None, list[str]]:
     """Every configured trusted username's own vote for my exact jump,
     aggregated the same asymmetric-safety way this project already resolves
-    the *aggregate* auto-install quorum (FUTURE.md's own point 5): any
+    the *aggregate* auto-install quorum: any
     "problematic" among them wins outright, even if others among them voted
     "healthy" -- only if none of them did, and at least one voted "healthy",
     does that apply instead. A purely synchronous lookup over an already-

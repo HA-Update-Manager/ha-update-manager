@@ -10,8 +10,8 @@ from __future__ import annotations
 import re
 from typing import Literal, NamedTuple
 
-# Deliberately generic, not semver's own vocabulary (renamed 2026-07-16, see
-# FUTURE.md): "small"/"medium"/"large" is a scale any version scheme's own
+# Deliberately generic, not semver's own vocabulary (renamed 2026-07-16):
+# "small"/"medium"/"large" is a scale any version scheme's own
 # classifier can map onto -- semver, HA Core's calendar versioning, and git
 # commit hashes each have their own notion of "small" below, and a future
 # scheme can add its own without needing new top-level categories. There's

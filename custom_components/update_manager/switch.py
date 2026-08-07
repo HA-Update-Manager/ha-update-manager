@@ -49,9 +49,9 @@ class UpdateManagerEnabledSwitch(SwitchEntity):
     _attr_unique_id = f"{DOMAIN}_enabled"
     # has_entity_name True + _attr_name None (not a translated name) --
     # this is now the device's own unnamed "main feature" entity (direct
-    # user feedback, 2026-08-07: "switch.update_manager_enabled zou gewoon
-    # switch.update_manager kunnen worden? ... 'Enabled' geeft een state
-    # aan, terwijl de state ook 'disabled' zou kunnen zijn"): its friendly
+    # user feedback, 2026-08-07, questioning why "Enabled" was even part of
+    # the entity_id at all, given the state itself could just as easily be
+    # "disabled"): its friendly
     # name is just the device's own name, "Update Manager", the on/off
     # state itself already says everything "Enabled"/"State" would have
     # tried to add on top. translation_key is kept (not removed) purely
@@ -64,8 +64,8 @@ class UpdateManagerEnabledSwitch(SwitchEntity):
     _attr_name = None
     _attr_translation_key = "enabled"
     # Deliberately no entity_category (was EntityCategory.CONFIG until
-    # direct user feedback, 2026-08-07: "de main switch zou ik verwachten
-    # onder 'Controls' ipv onder 'Configuration'"). Confirmed against
+    # direct user feedback, 2026-08-07, expecting the main switch under
+    # "Controls" rather than "Configuration"). Confirmed against
     # developers.home-assistant.io's own entity docs: CONFIG is for an
     # entity that changes a *secondary* aspect of a device (its own
     # example: a switch's background-illumination toggle), not the

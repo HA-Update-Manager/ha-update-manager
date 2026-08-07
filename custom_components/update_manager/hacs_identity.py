@@ -48,7 +48,7 @@ def extract_hacs_identity(release_url: str | None) -> tuple[str, str, str] | Non
 # matched extract_hacs_identity's fully generic regex just as readily as any
 # HACS-installed integration and was silently filed under votes/hacs/... --
 # the wrong category path, per community-votes' own reserved
-# votes/home-assistant/<core|supervisor|os>/... structure (see FUTURE.md).
+# votes/home-assistant/<core|supervisor|os>/... structure.
 # These three entity_ids are HA core's own fixed, well-known ones (confirmed
 # against real bug reports/service-call examples referencing them, not
 # guessed).

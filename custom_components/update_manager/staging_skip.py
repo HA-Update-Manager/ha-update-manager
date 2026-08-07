@@ -1,4 +1,4 @@
-"""Opt-in: while an update is still "waiting" (Fase 0's staging, not yet
+"""Opt-in: while an update is still "waiting" (staging.py's own status, not yet
 "ready"), mark it skipped via HA's own real `update.skip` service -- an
 update entity with skipped_version == latest_version reports state "off"
 (homeassistant/components/update/__init__.py's own state_attributes/state

@@ -90,7 +90,7 @@ class TestEffectiveAutoInstallState:
             community_problematic_count=1,
         ) == (True, False, None)
         # A single problematic vote is enough, same as a lopsided majority --
-        # no percentage/majority logic, matches FUTURE.md's own "point 5".
+        # no percentage/majority logic, deliberately asymmetric-safe.
         assert announcer.effective_auto_install_state(
             status="ready",
             size_enabled=True,
@@ -120,8 +120,7 @@ class TestEffectiveAutoInstallState:
         )
 
     def test_trusted_healthy_wins_over_a_nonzero_community_problematic_count(self):
-        # Direct user feedback, 2026-07-29 ("wat hebben we dan nog aan een
-        # trusted voter?"): a trusted healthy vote must still force install
+        # Direct user feedback, 2026-07-29: a trusted healthy vote must still force install
         # even when some other, untrusted voter reported a problem on the
         # same jump -- otherwise naming someone as trusted would be
         # pointless, any random negative report could override them anyway.

@@ -29,20 +29,20 @@ class StagingRules(NamedTuple):
     behalf. Being conservative about "large" is the *default* (see
     DEFAULT_RULES below), not a built-in floor a user can't turn off --
     same reasoning as Core/Supervisor/HAOS being a hard, non-configurable
-    exception in FUTURE.md, except here even the default is meant to be
-    overridable."""
+    exception elsewhere in this project, except here even the default is
+    meant to be overridable."""
 
     small_wait: timedelta | None
     medium_wait: timedelta | None
     large_wait: timedelta | None
 
 
-# A reasonable, conservative starting point; expected to become a
-# user-configurable choice (the "Behoudend/Gebalanceerd/Vrij" presets from
-# FUTURE.md) once there's a config/options flow for it, not a decision this
-# module should hardcode an opinion about beyond providing *a* sensible
-# default. large_wait defaults to None (always blocked) but, unlike the
-# previous design, a caller can set it to a real timedelta.
+# A reasonable, conservative starting point, not this module's own
+# hardcoded opinion beyond providing *a* sensible default -- the actual,
+# user-configurable choice lives in the Settings tab (see const.py's
+# DEFAULT_WAIT_DAYS and its own note on why there's no separate preset
+# picker anymore). large_wait defaults to None (always blocked) but,
+# unlike the previous design, a caller can set it to a real timedelta.
 DEFAULT_RULES = StagingRules(
     small_wait=timedelta(0),
     medium_wait=timedelta(days=7),

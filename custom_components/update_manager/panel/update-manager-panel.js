@@ -1,5 +1,5 @@
 /**
- * Update Manager: HA sidebar panel (Phase 2, see FUTURE.md)
+ * Update Manager: HA sidebar panel
  *
  * Registered by panel.py via panel_custom, served as a plain ES module --
  * no build step, same convention as this project family's Lovelace cards
@@ -12,12 +12,13 @@
  * and HACS's own panel use -- real per-tab URLs under this panel's own path,
  * not just in-memory tab state) and ha-form for the settings screen.
  *
- * Read-only Updates/Historie tabs, backed by websocket_api.py's
- * update_manager/updates + update_manager/install_log. Instellingen
- * replaces the interim options flow (update_manager/get_settings +
- * update_manager/save_settings) -- see FUTURE.md's "Tussenstap" note.
+ * Read-only Updates/History tabs, backed by websocket_api.py's
+ * update_manager/updates + update_manager/install_log. Settings
+ * replaces the interim config_flow options step (update_manager/get_settings +
+ * update_manager/save_settings), which was always meant as a temporary
+ * stand-in from before this panel existed.
  *
- * Auto-install (see FUTURE.md's "Auto-install (niveau 3): ontwerp") never
+ * Auto-install never
  * installs anything the instant it becomes eligible: install_manager.py
  * announces it first (a cancellable countdown), and this panel is where
  * that countdown and its cancel button actually live -- deliberately not a
@@ -96,8 +97,8 @@ function verdictIcon(isProblematic) {
 }
 
 // TRANSLATIONS itself now lives in its own file, translations.js (2026-08-07,
-// direct user feedback: "Ik wil alle copy, bij alle projecten, centraal
-// kunnen beheren per taal"), loaded dynamically below rather than via a
+// direct user feedback: wanting all copy, across every project, managed
+// centrally per language), loaded dynamically below rather than via a
 // plain static `import` -- see _loadTranslations' own comment for why a
 // static import would risk exactly the kind of stale-browser-cache bug
 // panel.py's own _panel_js_cache_key already exists to prevent for this
@@ -255,9 +256,8 @@ function compareUpdates(a, b, settings) {
   // Within "ready": an entity already counting down to a real scheduled
   // auto-install (pending_install) sorts soonest-execute_at-first among
   // others like it, ahead of "ready" entities with nothing scheduled yet --
-  // direct user feedback, 2026-07-27 ("in ready to update zou ik verwachten
-  // dat de geplande geautomatiseerde updates op volgorde gesorteerd staan
-  // van nu naar later"). Plain ready entities (no pending_install) keep the
+  // direct user feedback, 2026-07-27: within "ready to update", scheduled
+  // automatic updates were expected to sort soonest-first. Plain ready entities (no pending_install) keep the
   // existing oldest-available-first order below.
   if (a.status === "ready" && b.status === "ready") {
     const aScheduled = a.pending_install != null;
@@ -584,8 +584,9 @@ function buildKeyValueRows(pairs) {
 // per-entry one (appendReleaseNotesSection/ensureCommunitySection's own
 // sibling code), both of which now render this link as *part of* that
 // section instead of off on its own in the facts block, 2026-08-01, direct
-// user feedback: "als die notes ontbreken, dan staat die link bij de
-// details ipv onder het kopje 'Release notes'". null when there's no
+// user feedback: when there were no notes, the link ended up sitting
+// among the plain details instead of under its own "Release notes"
+// heading. null when there's no
 // releaseUrl at all -- callers skip inserting it entirely in that case.
 function buildReleaseUrlLinkRow(tr, releaseUrl) {
   if (!releaseUrl) return null;
@@ -727,7 +728,7 @@ function installMethodText(tr, entry) {
 //
 // Two categories pulled out of that ready/waiting/blocked bucketing
 // entirely, both shown last (direct user feedback: "Skipped" at the top
-// read as "heel vreemd" -- neither of these is something you act on via
+// read as quite odd -- neither of these is something you act on via
 // the usual ready/waiting flow, so both sink below it), in the same
 // relative order and with the same precedence rule as HA's own real
 // Updates page (ha-config-section-updates.ts, confirmed against its real
@@ -1146,8 +1147,8 @@ function _decorateReleaseNotes(notes, releaseUrl) {
 // releaseUrl) are excluded so a repo's own release notes linking back to
 // its own earlier release is never mistaken for "an upstream project".
 // null whenever no such link is found, or more than one *distinct* repo is
-// referenced -- direct user feedback: "misschien alleen doen als er 1 link
-// in zit en niet meer?", several dependency bumps mentioned at once is a
+// referenced -- direct user feedback, suggesting this only apply when
+// there's exactly one link: several dependency bumps mentioned at once is a
 // real, common shape too, and guessing which one is "the" upstream project
 // among several would be exactly the kind of unreliable guess this whole
 // feature otherwise avoids.
@@ -1346,9 +1347,8 @@ class UpdateManagerPanel extends HTMLElement {
     this._formData = null;
     this._loadError = null;
     // Release notes for an already-published version/entry don't change --
-    // direct user feedback, 2026-08-01: "als ik een dialog vaker achter
-    // elkaar open moet hij die content telkens opnieuw ophalen. overbodig
-    // toch?" Cleared only by a full page reload (no explicit eviction),
+    // direct user feedback, 2026-08-01: re-fetching the same content every
+    // single time a dialog reopens was unnecessary. Cleared only by a full page reload (no explicit eviction),
     // shared by _fetchGithubReleaseNotesFallback and
     // _fetchNativeReleaseNotes below (different key prefixes, one Map).
     // Deliberately NOT extended to the community verdict fetch
@@ -1713,14 +1713,14 @@ class UpdateManagerPanel extends HTMLElement {
       // coordinator already had cached. Every entity, not just the ones
       // this integration currently tracks as pending: a brand-new update
       // that just became available wouldn't be "pending" anywhere yet, the
-      // whole point of checking. Direct user feedback, 2026-08-01 ("kan die
-      // knop ook 'check for updates' doen? zoals ha zelf doet").
+      // whole point of checking. Direct user feedback, 2026-08-01, asking
+      // for this button to also do what HA's own "check for updates" does.
       //
       // Excludes anything already installing, unlike HA's own
       // checkForEntityUpdates (confirmed against its real source, it
       // doesn't make this exception either) -- direct user feedback,
-      // 2026-08-02: "als een update in progress is, ik op refresh druk en
-      // refreshen eerder klaar is dan de update, dan verdwijnt de spinner".
+      // 2026-08-02: when an update was in progress and a refresh finished
+      // before the update itself did, the spinner disappeared prematurely.
       // Forcing a fresh poll on an entity that's busy installing risks the
       // underlying integration reporting a momentarily inconsistent state
       // while it's occupied (integration-specific, outside anything we
@@ -1732,8 +1732,8 @@ class UpdateManagerPanel extends HTMLElement {
         (entityId) => entityId.startsWith("update.") && !updateIsInstalling(this._hass.states[entityId])
       );
       // Awaited before _loadAll(), not alongside it: direct user feedback,
-      // 2026-07-25 ("als ik op de refresh knop druk wil ik dat hij ook de
-      // meest recente info van de votes naar binnen haalt") -- community
+      // 2026-07-25, wanting the refresh button to also pull in the latest
+      // vote data -- community
       // verdicts otherwise stay cached for up to an hour
       // (community_verdict.py's own _REFRESH_INTERVAL), same as any other
       // background-refreshed fact. This forces a fresh fetch for every
@@ -2094,8 +2094,8 @@ class UpdateManagerPanel extends HTMLElement {
   // installingIndicatorNode/_buildListRow), and whether its
   // installed_version just changed. The latter is the one signal every
   // real install eventually produces, even for entities that never bother
-  // reporting in_progress at all -- found live ("het lijkt wel alsof de
-  // update manager nooit up to date is"): relying on the in_progress
+  // reporting in_progress at all -- found live, where Update Manager looked
+  // like it was never actually up to date: relying on the in_progress
   // transition alone (the dialog's own former approach) left both the
   // dialog and this list looking stuck on those entities, and the list
   // never refreshed at all unless the dialog happened to be open for that
@@ -2133,9 +2133,9 @@ class UpdateManagerPanel extends HTMLElement {
     if (dialogEntityVersionChanged) {
       // _afterDialogAction already does exactly loadAll + reopen-in-place
       // (if this._dialogEntityId still matches) + renderContent -- direct
-      // user feedback, 2026-07-27 ("na het installeren van een update
-      // vanuit een dialog verwacht je dat je het history-dialog te zien
-      // krijgt voor die entity"). The Install button itself is deliberately
+      // user feedback, 2026-07-27: after installing an update from a
+      // dialog, that entity's own History entry was expected to show up
+      // there. The Install button itself is deliberately
       // fire-and-forget (see its own click handler's comment: awaiting it
       // either closed the dialog too early or left it stuck spinning for a
       // slow install), so nothing previously told an already-open dialog
@@ -2148,7 +2148,7 @@ class UpdateManagerPanel extends HTMLElement {
       // Gated on the Updates tab, same as installingChanged right below --
       // found live, 2026-08-07, direct user feedback: typing in the
       // Settings tab's trusted-voters field (a free-text ha-form) could
-      // lose focus mid-word, "niet altijd, soms". Root cause: this branch
+      // lose focus mid-word, not every time but sometimes. Root cause: this branch
       // used to call _renderContent() unconditionally whenever *any*
       // tracked update entity's version changed anywhere in the system --
       // entirely unrelated to whatever tab is actually showing, and with
@@ -2652,8 +2652,8 @@ class UpdateManagerPanel extends HTMLElement {
   // A real ha-dialog (built once, see _ensureShell), repopulated per click
   // -- not HA's native more-info, which has no notion of Update Manager's
   // own staging status, pending-install countdown/cancel, or per-entity
-  // install history (direct user feedback/idea: "misschien zelfs een
-  // custom detailpagina of dialog per update entity"). A button at the
+  // install history (direct user feedback/idea: a custom detail page or
+  // dialog per update entity). A button at the
   // bottom still opens the real more-info, for the entity's raw attributes
   // and its own native controls.
   //
@@ -2737,8 +2737,8 @@ class UpdateManagerPanel extends HTMLElement {
     // skipped entirely whenever it would add nothing beyond the header's
     // own bare word -- direct user feedback, 2026-07-29, after "Skipped"
     // still showed twice even once the header/alert dedup only omitted
-    // the header: "die alert mag wel weg. want de status is al skipped en
-    // clear skipped staat in de footer" -- Unskip already lives in the
+    // the header: the alert itself could go too, since the status already
+    // says "skipped" and Unskip already lives in the
     // footer (see below), so a plain "Skipped"/"Ready to update"/
     // "Discouraged" alert with nothing else to say no longer has any
     // reason to exist at all, not just a reason to go quiet. Never
@@ -2821,7 +2821,7 @@ class UpdateManagerPanel extends HTMLElement {
     // specific History-tab row (historyEntry set) means the user wants
     // that one past install, not also the entity's unrelated current
     // pending update dragged in above it -- direct user feedback,
-    // 2026-07-27 ("je verwacht die bovenkant helemaal niet"). Same signal
+    // 2026-07-27: that top section wasn't expected there at all. Same signal
     // _openDetailDialog's own defaultExpandIndex already uses for the same
     // reasoning. The Updates-tab/rollout-queue entry points (both `u`
     // truthy, no historyEntry) are unaffected.
@@ -2852,9 +2852,9 @@ class UpdateManagerPanel extends HTMLElement {
       if (willShowStatusAlert) {
         // "info" (blue), not the status-driven default, whenever there's
         // an actual scheduled auto-install countdown (u.pending_install)
-        // to show -- direct user feedback, 2026-07-29: "zou het niet
-        // logischer zijn als de alert met 'will update automatically...'
-        // blauw is ipv groen? het is info en geen success toch?" A plain
+        // to show -- direct user feedback, 2026-07-29, questioning why the
+        // "will update automatically..." alert was green rather than blue:
+        // that's informational, not a success. A plain
         // "ready" with nothing scheduled yet is a genuinely positive
         // status worth "success" green; "will update automatically at X"
         // is a scheduled fact, not an accomplishment, regardless of which
@@ -2975,8 +2975,8 @@ class UpdateManagerPanel extends HTMLElement {
       // same fact History shows once installed), or "waiting" with at most
       // a *projected* one (projectedAnnouncementTime, only meaningful once
       // auto-install is actually enabled for its size) -- never both.
-      // Direct user feedback, 2026-08-01: "bij postponed zie je niet
-      // wanneer hij announced gaat worden en bij ready net zo goed" --
+      // Direct user feedback, 2026-08-01: neither "postponed" nor "ready"
+      // showed when auto-install would actually be announced --
       // History already shows this fact for a completed install, the live
       // dialog showed it nowhere at all.
       let announcementLabel = null;
@@ -3002,9 +3002,10 @@ class UpdateManagerPanel extends HTMLElement {
 
       // Not rendered here -- moved into the Release notes section below
       // (appendReleaseNotesSection), 2026-08-01, direct user feedback:
-      // "Read release announcement is soms een wat vreemde tekst als die
-      // notes er gewoon boven staan. En als die notes ontbreken, dan staat
-      // die link bij de details ipv onder het kopje 'Release notes'." Kept
+      // "Read release announcement" read oddly once the actual notes were
+      // sitting right above it, and when there were no notes, the link
+      // ended up among the plain details instead of under its own
+      // "Release notes" heading. Kept
       // here only as the plain attribute read.
       //
       // u.release_url (coordinator.py's own cache, via update_manager/updates),
@@ -3038,9 +3039,8 @@ class UpdateManagerPanel extends HTMLElement {
       // expose a plain release_summary attribute instead -- more-info-
       // update.ts falls back to exactly that same attribute when the
       // feature isn't supported, so we do too. Neither of those is
-      // guaranteed to actually have anything, though (direct user feedback,
-      // 2026-08-01, confirmed live -- "dus het is absoluut niet alleen
-      // hacs": HACS's own async_release_notes() returns None whenever
+      // guaranteed to actually have anything, though (confirmed live,
+      // 2026-08-01, and not just for HACS: HACS's own async_release_notes() returns None whenever
       // pending_restart is still true or the installed version isn't in its
       // own published_tags, and Home Assistant Supervisor's own update
       // entity doesn't support RELEASE_NOTES at all), so both paths below
@@ -3286,9 +3286,8 @@ class UpdateManagerPanel extends HTMLElement {
         // durable changelog) has no such problem and stays.
         // The release_url link now renders as *part of* this section (see
         // buildReleaseUrlLinkRow's own comment), not off on its own further
-        // down -- 2026-08-01, direct user feedback: "als die notes
-        // ontbreken, dan staat die link bij de details ipv onder het
-        // kopje 'Release notes'".
+        // down -- 2026-08-01: when there were no notes, the link ended up
+        // among the plain details instead of under its own "Release notes" heading.
         // entry.release_notes, when present, is normally trusted as-is --
         // except when it looks like HACS's own compile is anchored to
         // completely the wrong end, not just imprecisely scoped (which
@@ -3589,11 +3588,10 @@ class UpdateManagerPanel extends HTMLElement {
       // confirmed against ha-button's own real source: "filled" uses the
       // softer --wa-color-fill-normal, "accent" the bolder --wa-color-
       // fill-loud, exactly the "loud" variant meant for a page's one
-      // primary action. Direct user feedback, 2026-07-29, after seeing
-      // "filled" render as a pale, secondary-looking blue: "voelt
-      // secondair ipv primair." Only "accent" once this is actually ready
-      // -- "bij een update die ready is kan de open update knop wel
-      // gewoon primair zijn" -- while still waiting/skipped/blocked,
+      // primary action. Direct user feedback, 2026-07-29, after "filled"
+      // rendered as a pale, secondary-looking blue that felt secondary
+      // rather than primary. Only "accent" once this is actually ready,
+      // when the open-update button can just be primary -- while still waiting/skipped/blocked,
       // encouraging manual install with the loudest button in the dialog
       // would work against the whole point of staging in the first
       // place. Still the exact same button either way, just quieter
@@ -3641,16 +3639,16 @@ class UpdateManagerPanel extends HTMLElement {
     dialog.appendChild(actions);
 
     // A short, fixed delay before actually showing the dialog -- direct
-    // user feedback, 2026-08-01: "de dialogs lijken allemaal vlak na het
-    // openen te verspringen omdat er dan nieuwe data is geladen" (the
+    // user feedback, 2026-08-01: every dialog visibly shifted layout right
+    // after opening, since the
     // Community section and Release notes above are both still-pending
     // fetches at this exact point, each popping in and shifting layout
-    // once they land). Deliberately NOT tied to those actual fetches
+    // once they land. Deliberately NOT tied to those actual fetches
     // finishing (awaiting them would be the more correct fix, but a
-    // slower one to land) -- explicit user tradeoff: "een vaste vertraging
-    // die de meeste gevallen dekt is voldoende", and just as important,
-    // "het moet niet opvallen, je moet nog steeds het idee hebben dat de
-    // dialog direct opent". 150ms (bumped up from the original 100ms,
+    // slower one to land) -- explicit tradeoff: a fixed delay covering
+    // most cases is good enough, and just as important, it must stay
+    // unnoticeable -- the dialog still has to feel like it opens
+    // instantly. 150ms (bumped up from the original 100ms,
     // 2026-08-02, alongside the release-notes loader below) is still short
     // enough to stay under the generally-cited "feels instant" perception
     // threshold, long enough to let most of these fetches (a single small
@@ -3771,23 +3769,23 @@ class UpdateManagerPanel extends HTMLElement {
     wrap.appendChild(this._buildUpdateRulesCard(tr));
     // Always rendered now (changed 2026-07-23): used to only appear once
     // some size's own auto_install toggle was on, but the trusted-voter
-    // override living in this same card (see _buildAutoInstallCard) is
-    // reachable independent of any size toggle -- direct user feedback,
-    // "installeer altijd automatisch als [klaptafel] een update als healthy
-    // heeft beoordeeld, ongeacht mijn eigen rules" makes no sense to hide
+    // override living in this same card (see _buildAutoInstallCard) works
+    // independently of any size toggle -- always trusting a specific
+    // person's healthy verdict, regardless of your own size rules, makes
+    // no sense to hide
     // behind a size setting that isn't otherwise involved.
     wrap.appendChild(this._buildAutoInstallCard(tr));
     // No explicit Save button -- every field autosaves itself (debounced,
-    // see _scheduleAutosave), direct user feedback: "kunnen we niet direct
-    // saven bij elke edit ipv via een losse button?".
+    // see _scheduleAutosave), direct user feedback: a separate Save button
+    // added nothing over saving on every edit directly.
 
     wrap.appendChild(this._buildCommunityCard(tr));
 
     // Always last, below every card -- same "Slideshow Card vX.Y.Z" link
     // this project's own sibling Lovelace cards already put at the bottom
-    // of their editor, direct user feedback: "die GitHub link met versie
-    // die we in elke card editor in de footer hebben staan wil ik voor
-    // update manager helemaal onderop de settings pagina hebben".
+    // of their editor, direct user feedback: that same versioned GitHub
+    // link belongs at the very bottom of Update Manager's own Settings
+    // page too.
     wrap.appendChild(this._buildVersionLink());
 
     return wrap;
@@ -3804,11 +3802,12 @@ class UpdateManagerPanel extends HTMLElement {
     return link;
   }
 
-  // Account linking only (read-only slice, 2026-07-22): no voting UI yet,
-  // just "is a GitHub account linked or not". Device Flow, not the usual
+  // Account linking only: just "is a GitHub account linked or not", voting
+  // itself lives elsewhere (the update detail dialog's own vote buttons,
+  // see update_manager/vote below). Device Flow, not the usual
   // OAuth redirect: no client secret needed anywhere, matching this whole
-  // feature's own "no hosted server" principle (see FUTURE.md/
-  // github_auth.py). this._communityLinkPollTimer is cleared unconditionally
+  // feature's own "no hosted server" principle (see github_auth.py).
+  // this._communityLinkPollTimer is cleared unconditionally
   // up front, not just on success/failure: rebuilding this card (a tab
   // switch, any other settings re-render) must never leave a previous
   // card's poll loop running detached in the background.
@@ -4102,9 +4101,9 @@ class UpdateManagerPanel extends HTMLElement {
       }
 
       // Other jumps landing on this same destination version, if any --
-      // direct user feedback, 2026-07-24: "in de update dialog wil ik dan
-      // ook zien welke sprongen naar de gewenste nieuwe versie wel en niet
-      // als veilig zijn beoordeeld", with my own jump (verdictRow above)
+      // direct user feedback, 2026-07-24, wanting the dialog to also show
+      // which other jumps to this same target version were rated safe or
+      // not, with my own jump (verdictRow above)
       // always shown first/primary. Nothing rendered at all when there
       // simply aren't any yet (no empty-state message) -- this data is
       // inherently sparse early on, and a "nothing here" line would just
@@ -4127,8 +4126,9 @@ class UpdateManagerPanel extends HTMLElement {
 
       // Every *other* problematic voter's own reason for this exact jump
       // (your own, if any, is already handled above as my_reason) -- direct
-      // user feedback, 2026-07-29: "ik zie in de interface nergens de
-      // reden staan. Dat had ik wel verwacht." A vote's reason was
+      // user feedback, 2026-07-29: a problematic vote's own reason was
+      // nowhere to be found in the interface, even though it was expected
+      // to be there. A vote's reason was
       // collected on submission (see _buildVoteControls/_VOTE_REASON_LABEL_KEYS
       // below) but never read back anywhere until now; reusing that same
       // label map here so the vocabulary reads identically going in and
@@ -4335,12 +4335,11 @@ class UpdateManagerPanel extends HTMLElement {
     formContainer.appendChild(submitBtn);
   }
 
-  // "Update rules": plain and functional -- the earlier "Stoplicht"/
-  // traffic-light framing (and its emoji-dot legend) was dropped entirely
+  // "Update rules": plain and functional -- the earlier traffic-light
+  // framing (and its emoji-dot legend) was dropped entirely
   // (direct user feedback: the emoji looked bad throughout, and the
-  // metaphor wasn't pulling its weight). Once the community layer exists
-  // (Fase 1/3, see FUTURE.md) that becomes its own, separately-named card
-  // next to this one -- revisit both cards' naming together then, not now.
+  // metaphor wasn't pulling its weight). The community layer now has its
+  // own separate card (_buildCommunityCard below), not folded into this one.
   _buildUpdateRulesCard(tr) {
     const card = document.createElement("ha-card");
     card.outlined = true;
@@ -4514,9 +4513,10 @@ class UpdateManagerPanel extends HTMLElement {
     body.appendChild(entitiesForm);
 
     // Same manually-drawn label + hint pattern as excludedLabel/excludedHint
-    // above -- direct user feedback: "installeer altijd automatisch als
-    // [klaptafel] een update als healthy heeft beoordeeld, ongeacht mijn
-    // eigen rules", then "kan je meerdere mensen vertrouwen?" (yes, a list,
+    // above -- direct user feedback, wanting a specific person's healthy
+    // verdict to always trigger auto-install regardless of your own rules,
+    // then asking whether more than one person could be trusted at once
+    // (yes, a list,
     // see community_verdict.py's own aggregation: any trusted problematic
     // vote wins outright, else any trusted healthy vote does).
     const trustedLabel = document.createElement("p");
@@ -4534,7 +4534,7 @@ class UpdateManagerPanel extends HTMLElement {
     // frontend's real StringSelector type, stable tag 20260624.6, not
     // guessed), the same widget shape excluded_entities above uses for
     // entities. No validation against community-votes itself: purely a
-    // local, unverified username string, see FUTURE.md's own note on this.
+    // local, unverified username string (see const.py's own CONF_TRUSTED_VOTERS note).
     const trustedForm = document.createElement("ha-form");
     trustedForm.hass = this._hass;
     trustedForm.schema = [{ name: "trusted_voters", selector: { text: { multiple: true } } }];
@@ -4954,8 +4954,7 @@ class UpdateManagerPanel extends HTMLElement {
          heading, and the notes uniformly (2026-08-01, direct user
          feedback: hand-placed margin-top on each of these one at a time,
          every time a gap was found missing somewhere, kept producing a new
-         inconsistency each time -- "de witruimte rondom dividers en
-         kopjes is nog steeds inconsistent. fix dat. grondig." -- a single
+         inconsistency each time, wanted fixed properly this time -- a single
          gap on their shared, already-non-flex parent replaces all of that
          with one rule that can't drift out of sync with itself). */
       /* The chevron every history entry now has, expanding its own facts
@@ -4971,8 +4970,8 @@ class UpdateManagerPanel extends HTMLElement {
       /* Matches ha-list-item-button's own horizontal inset above it, so the
          expanded changelog's left/right edges line up with the row's own
          text instead of sitting flush against the card's true edges.
-         display: flex + gap (2026-08-01, direct user feedback, grondige
-         fix): every one of the facts block, the Community section, the
+         display: flex + gap (2026-08-01, direct user feedback, fixed
+         properly rather than patched again): every one of the facts block, the Community section, the
          release-notes divider, its heading, and its markdown content is a
          direct child of this element. It used to have no display/gap of
          its own at all, so each of those needed its own hand-placed

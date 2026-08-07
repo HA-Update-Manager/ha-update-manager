@@ -34,7 +34,7 @@ CONF_LARGE_AUTO_INSTALL = "large_auto_install"
 
 # Two independent settings per size (small/medium/large, see semver.py), not
 # three mutually exclusive choices: how long to wait (a traffic light, not
-# a judgment call, see FUTURE.md's 2026-07-16 note), and whether Update
+# a judgment call), and whether Update
 # Manager presses install itself once that wait elapses, or you do. An
 # earlier "always needs a manual look" third option, and a separate
 # "unknown version type" category, were both removed the same day: neither
@@ -47,7 +47,7 @@ DEFAULT_ANNOUNCE_HOURS = 24
 
 # User-picked, on top of coordinator.py's own hard, non-configurable
 # Core/Supervisor/HAOS exclusion -- entities here are still shown normally
-# in Updates/Historie (a real size/status, real history), install_manager.py
+# in Updates/History (a real size/status, real history), install_manager.py
 # just never auto-installs them, same as the hard exclusion. A plain list of
 # entity_ids, not part of any profile preset: this is a per-instance choice
 # about *which* entities, not a wait/auto-install tuning value.
@@ -77,9 +77,10 @@ CONF_HIDE_POSTPONED = "hide_postponed"
 CONF_SHOW_SKIPPED_UPDATES = "show_skipped_updates"
 CONF_SHOW_NOT_INSTALLABLE_UPDATES = "show_not_installable_updates"
 
-# A plain list of GitHub usernames, empty by default -- "I trust @someone's
-# judgement more than my own rules" (see FUTURE.md's "vertrouwenspersoon"
-# note), not part of any profile preset, same reasoning as
+# A plain list of GitHub usernames, empty by default: lets someone say they
+# trust a specific person's judgment more than their own general wait/
+# auto-install rules for a given jump, not part of any profile preset, same
+# reasoning as
 # CONF_EXCLUDED_ENTITIES: a per-instance choice about *who*, not a
 # wait/auto-install tuning value. Direct user feedback, 2026-07-23: a list,
 # not a single username -- more than one person's judgement can be trusted
@@ -94,14 +95,14 @@ CONF_TRUSTED_VOTERS = "trusted_voters"
 # removed from the panel a while back, leaving only this one set of numbers
 # actually read anywhere (rules_from_options' own fallback, and the
 # Settings tab's own pre-fill for a not-yet-saved field). Found live,
-# 2026-07-27, direct user feedback: "we hebben helemaal geen profiles meer"
-# -- the old conservative/free presets and the "profile" vocabulary around
-# them were dead code, not a real, current feature.
+# 2026-07-27, direct user feedback: there were no profiles left to preset
+# for -- the old conservative/free presets and the "profile" vocabulary
+# around them were dead code, not a real, current feature.
 #
 # auto_install defaults to False everywhere: auto-install is a large enough
 # step up in consequence (Update Manager actually calling update.install)
 # that it should never switch on silently; a user has to opt in per size
-# by hand (see FUTURE.md's auto-install design note, 2026-07-15).
+# by hand.
 DEFAULT_WAIT_DAYS: dict[str, int | bool] = {
     CONF_SMALL_WAIT_DAYS: 1,
     CONF_SMALL_AUTO_INSTALL: False,
