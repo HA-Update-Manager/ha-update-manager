@@ -2121,6 +2121,10 @@ class UpdateManagerPanel extends HTMLElement {
       // nothing short of closing and reopening it ever re-reading the truth.
       const latestVersion = state && state.attributes && state.attributes.latest_version;
       next.set(u.entity_id, { installing, installedVersion, latestVersion });
+      // Every push while installing, not gated on installingChanged below --
+      // see _patchListRowProgress's own comment for why this needs its own,
+      // more frequent hook.
+      if (installing) this._patchListRowProgress(u.entity_id, state);
       const prev = previous.get(u.entity_id);
       if (!prev) continue;
       if (prev.installing !== installing) installingChanged = true;
@@ -2165,6 +2169,36 @@ class UpdateManagerPanel extends HTMLElement {
       });
     } else if (installingChanged && this._tab === "updates") {
       this._renderContent();
+    }
+  }
+
+  // The Updates list row's own progress ring/spinner (installingIndicatorNode,
+  // _buildListRow) used to only ever get (re)built when installingChanged
+  // fired above, i.e. exactly once per install, right when it *starts* --
+  // direct user feedback, 2026-08-07: HA's own more-info dialog showed a
+  // correct, live-updating percentage for the same entity at the same time,
+  // while our own row's ring stayed frozen at whatever update_percentage
+  // happened to be at that first instant (often 0, or not yet reported at
+  // all). Not a bad percentage from the entity itself -- update_percentage
+  // is read the same way in both places, straight off hass.states, no
+  // caching -- purely that nothing here ever told this one row to redraw
+  // again while `installing` itself stayed true the whole time. This runs on
+  // every hass push for every currently-installing entity instead (see the
+  // call site above), a much cheaper live-patch of just this one node
+  // rather than a full _renderContent() on every single percentage tick.
+  _patchListRowProgress(entityId, state) {
+    if (this._tab !== "updates" || !this._contentEl) return;
+    const row = this._contentEl.querySelector(`[data-entity-id="${CSS.escape(entityId)}"]`);
+    const indicator = row && row.querySelector(".row-end > ha-progress-ring, .row-end > ha-spinner");
+    if (!indicator) return;
+    const percentage = state && state.attributes && state.attributes.update_percentage;
+    const isRing = indicator.tagName === "HA-PROGRESS-RING";
+    if (isRing !== (percentage != null)) {
+      // A percentage just appeared or disappeared -- the node itself needs
+      // to change shape (spinner <-> ring), not just a value tweak.
+      indicator.replaceWith(installingIndicatorNode(state, this._tr));
+    } else if (isRing && indicator.value !== percentage) {
+      indicator.value = percentage;
     }
   }
 
@@ -2340,6 +2374,9 @@ class UpdateManagerPanel extends HTMLElement {
   _buildListRow(entityId, supportingText, onClick, timerBadgeInfo, verdictBadgeInfo) {
     const row = document.createElement("ha-list-item-button");
     row.hasMeta = true;
+    // Lets _patchListRowProgress find this exact row again later without a
+    // full re-render, see that method's own comment for why.
+    row.dataset.entityId = entityId;
 
     const start = document.createElement("div");
     start.slot = "start";
