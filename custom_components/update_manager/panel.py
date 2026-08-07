@@ -120,6 +120,15 @@ async def async_register_update_manager_panel(hass: HomeAssistant) -> None:
                 "name": "update-manager-panel",
                 "embed_iframe": False,
                 "trust_external": False,
+                # Opts out of ha-panel-custom.ts's own default safe-area padding
+                # (added 2026-07-15, home-assistant/frontend#53127): this panel
+                # already handles it via hass-tabs-subpage, the same shared HA
+                # component every other panel/subpage uses, which already reads
+                # the safe-area insets itself. Without this, both paddings stack,
+                # pushing the whole panel down by roughly double the intended
+                # amount -- confirmed live on iOS once Home Assistant Core
+                # 2026.8 (which bundles this frontend change) shipped.
+                "handle_safe_area": True,
                 "module_url": f"{_STATIC_URL_PATH}/update-manager-panel.js?v={_panel_js_cache_key(panel_js_content, translations_js_content)}",
             },
             "integration_version": str(integration.version),
