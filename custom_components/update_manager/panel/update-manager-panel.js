@@ -914,8 +914,38 @@ function historySections(tr, entries) {
   return buckets.filter((bucket) => bucket.items.length);
 }
 
+// HACS's own update entities (custom_components/hacs/update.py's own
+// HacsRepositoryUpdateEntity.entity_picture, confirmed against its real
+// source) hardcode entity_picture to the legacy, central
+// brands.home-assistant.io CDN, never the newer local Brands Proxy API
+// (/api/brands/integration/<domain>/icon.png, HA 2026.3+) that actually
+// reads a custom integration's own bundled brand/icon.png -- direct user
+// feedback: several integrations' own icons (this project's own included)
+// genuinely exist but never showed up, in Update Manager's own lists *and*
+// HA's native more-info dialog alike, since both read this exact same
+// attribute. That central repo has stopped accepting new custom-integration
+// registrations, so anything registered before that closure (older,
+// established integrations) still resolves there, anything newer never
+// will, regardless of how correct its own local brand folder is. The proxy
+// is a strict superset of the legacy CDN (falls back to serving the same
+// central-repo asset itself whenever there's no local brand folder to
+// prefer), so rewriting to it here is safe even for a domain that was never
+// affected in the first place. ?placeholder=no (same query param HA core's
+// own SupervisorCoreUpdateEntity.entity_picture already uses for exactly
+// this reason) asks the proxy for a real 404 on a genuine miss instead of
+// its own generic placeholder graphic, so a domain with no brand icon at
+// all still falls back to state-badge's normal domain icon instead of a
+// wrong, generic one.
+const _HACS_BRANDS_ICON_RE = /^https:\/\/brands\.home-assistant\.io\/_\/([a-z0-9_]+)\/icon\.png$/;
 function entityState(hass, entityId) {
-  return hass && hass.states && hass.states[entityId];
+  const state = hass && hass.states && hass.states[entityId];
+  const picture = state && state.attributes && state.attributes.entity_picture;
+  const match = typeof picture === "string" && _HACS_BRANDS_ICON_RE.exec(picture);
+  if (!match) return state;
+  return {
+    ...state,
+    attributes: { ...state.attributes, entity_picture: `/api/brands/integration/${match[1]}/icon.png?placeholder=no` },
+  };
 }
 
 // Same three helpers more-info-update.ts itself exports from data/update.ts
@@ -1573,7 +1603,17 @@ class UpdateManagerPanel extends HTMLElement {
   // no match found) -- callers substitute it in place of their own
   // releaseUrl for the link specifically, see insertReleaseNotesSection's
   // own linkUrl parameter.
-  async _fetchGithubReleaseNotesFallback(releaseUrl, fromVersion, toVersion) {
+  // entityId lets the backend re-derive a fresh, correct release_url
+  // instead of trusting `releaseUrl` as given -- direct user feedback,
+  // 2026-08-08, found on a real History item for a jump landing on Core's
+  // own 2026.8.0: a History entry's own release_url is a frozen snapshot,
+  // captured once at install time (install_log.py), so one logged before
+  // this project's own corrected_release_url fix existed still carries
+  // Core's old, broken, non-version-specific native URL -- no heading, no
+  // intro, nothing, since that URL was never a real github.com one to begin
+  // with. See _handle_github_release_notes's own entity_id comment for why
+  // passing it is always safe, not just for Core.
+  async _fetchGithubReleaseNotesFallback(releaseUrl, fromVersion, toVersion, entityId) {
     if (!releaseUrl) return { notes: null, correctedUrl: null };
     const cacheKey = `github:${releaseUrl}:${fromVersion || ""}:${toVersion || ""}`;
     if (this._releaseNotesCache.has(cacheKey)) return this._releaseNotesCache.get(cacheKey);
@@ -1584,6 +1624,7 @@ class UpdateManagerPanel extends HTMLElement {
         release_url: releaseUrl,
         ...(fromVersion ? { from_version: fromVersion } : {}),
         ...(toVersion ? { to_version: toVersion } : {}),
+        ...(entityId ? { entity_id: entityId } : {}),
       });
     } catch {
       return { notes: null, correctedUrl: null };
@@ -3152,7 +3193,7 @@ class UpdateManagerPanel extends HTMLElement {
           let correctedUrl = null;
           if (!finalNotes) {
             ({ notes: finalNotes, correctedUrl } = await this._fetchGithubReleaseNotesFallback(
-              releaseUrl, u.installed_version, u.latest_version
+              releaseUrl, u.installed_version, u.latest_version, entityId
             ));
           }
           const { linkUrl } = await withCoreAnnouncement(correctedUrl);
@@ -3173,7 +3214,7 @@ class UpdateManagerPanel extends HTMLElement {
           // handles Core's release cadence correctly on its own, so this no
           // longer needs to special-case Core down to a single version.
           this._fetchGithubReleaseNotesFallback(
-            releaseUrl, u.installed_version, u.latest_version
+            releaseUrl, u.installed_version, u.latest_version, entityId
           ).then(async ({ notes, correctedUrl }) => {
             const { linkUrl } = await withCoreAnnouncement(correctedUrl);
             loader.remove();
@@ -3425,7 +3466,7 @@ class UpdateManagerPanel extends HTMLElement {
           // entity -- see the pending-update section's own comment above
           // this same call.
           this._fetchGithubReleaseNotesFallback(
-            entry.release_url, entry.from_version, entry.to_version
+            entry.release_url, entry.from_version, entry.to_version, entry.entity_id
           ).then(async ({ notes, correctedUrl }) => {
             // Core-only link override -- see _fetchCoreAnnouncement's own
             // comment. entry.to_version (the version this History entry

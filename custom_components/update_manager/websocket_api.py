@@ -64,7 +64,7 @@ from .core_blog_notes import (
 )
 from .device_identity import resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
-from .hacs_identity import ResolvedIdentity
+from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_manager import auto_install_rules_from_options
 from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
 from .semver import strip_version_prefix
@@ -350,6 +350,9 @@ async def _async_fetch_github_release_notes(
             ) as response:
                 if response.status == 200:
                     releases = await response.json()
+                    releases = await _async_ensure_releases_present(
+                        hass, headers, owner, repo, releases, [v for v in (from_version, to_version) if v]
+                    )
                     matched = find_release_by_version(releases, to_version) if to_version else None
                     corrected_url = matched.get("html_url") if matched is not None else None
                     if matched is not None:
@@ -395,6 +398,66 @@ async def _async_fetch_github_release_notes(
     return (owner, repo, notes, None)
 
 
+async def _async_ensure_releases_present(
+    hass: HomeAssistant, headers: dict[str, str], owner: str, repo: str, releases: list[dict[str, Any]], versions: list[str]
+) -> list[dict[str, Any]]:
+    """`releases` (GitHub's own newest-first /releases listing), with any of
+    `versions` spliced in at its own chronologically-correct position if
+    missing from that listing entirely -- found live, 2026-08-08, on a real
+    Home Assistant Core .0 release (2026.8.0): a genuine, published,
+    non-draft, non-prerelease release can be completely absent from GitHub's
+    own /releases *list* endpoint while still fetching fine, with real data,
+    directly by its own tag (`GET /releases/tags/{tag}`, confirmed live: a
+    real id, published_at, and body, sitting chronologically between
+    2026.8.0's own last beta and 2026.8.1) -- a GitHub-side listing quirk,
+    not anything wrong with the release itself. select_release_range's own
+    from_version/target_tag index lookups then silently treated it as
+    "doesn't exist", which (for the from_version case specifically) fell
+    through to its own documented "walk to the end of the fetched page"
+    recovery -- meant for a genuinely too-old installed version, not a
+    same-page release GitHub's list just happened to skip -- direct user
+    feedback: "Ik zie nu voor 2026.8.0 naar 2026.8.1 alle notes terug tot
+    2026.5.3", a multi-month wall of notes for what should have been a
+    single-version jump.
+
+    Splices by published_at (newest-first, same ordering compile_release_
+    range already assumes throughout) rather than appending at the end --
+    the missing release's real position in the list matters for both the
+    prerelease-skip window and the from_version stop condition.
+
+    Silently leaves `releases` unchanged for any version that also fails
+    this direct fetch (a genuinely non-existent tag, or a real network
+    failure, or -- for a non-Core entity whose real tags carry a prefix
+    (e.g. "v24.0.1") -- a plain, unprefixed `version` that was never a real
+    tag string to begin with) -- same graceful "best effort" treatment as
+    the rest of this module; select_release_range's own existing "not
+    found" fallback still applies in that case, unchanged."""
+    present = {strip_version_prefix(r.get("tag_name", "")) for r in releases}
+    missing = {v for v in versions if strip_version_prefix(v) not in present}
+    if not missing:
+        return releases
+    session = async_get_clientsession(hass)
+
+    async def _fetch(tag: str) -> dict[str, Any] | None:
+        try:
+            async with session.get(
+                f"https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}", headers=headers, timeout=10
+            ) as response:
+                return await response.json() if response.status == 200 else None
+        except Exception:
+            return None
+
+    fetched = await asyncio.gather(*(_fetch(version) for version in missing))
+    result = list(releases)
+    for release in fetched:
+        if release is None:
+            continue
+        published_at = release.get("published_at") or ""
+        index = next((i for i, r in enumerate(result) if (r.get("published_at") or "") <= published_at), len(result))
+        result.insert(index, release)
+    return result
+
+
 async def _async_core_aware_section(hass: HomeAssistant, is_core: bool, tag_name: str, body: str | None) -> str | None:
     """"## {tag_name}\n\n{body}", except for home-assistant/core's own .0
     releases (is_core and tag_name strips down to an "X.Y.0" version), where
@@ -423,6 +486,23 @@ async def _async_core_aware_section(hass: HomeAssistant, is_core: bool, tag_name
         vol.Required("release_url"): str,
         vol.Optional("from_version"): str,
         vol.Optional("to_version"): str,
+        # Optional: entity_id lets this re-derive a fresh, correct
+        # release_url instead of trusting the caller's own, straight
+        # through corrected_release_url (same function coordinator.py/
+        # install_log.py already use) -- direct user feedback, 2026-08-08,
+        # found on a real History item for a jump that landed on Core's own
+        # 2026.8.0: install_log.py's own entries carry a *frozen* snapshot
+        # of release_url, captured once at install time. An install logged
+        # before corrected_release_url existed at all (this project's own
+        # 0.8.0) still carries Core's old, broken, non-version-specific
+        # native release_url ("https://www.home-assistant.io/latest-
+        # release-notes/", never a real github.com URL) -- parse_release_url
+        # can't do anything with that, so the whole release-notes fetch
+        # silently came back empty, no heading, no intro, nothing. A no-op
+        # for every entity_id corrected_release_url doesn't special-case
+        # (everything except Core/Supervisor/OS), so passing this whenever
+        # it's known is always safe, not just for Core.
+        vol.Optional("entity_id"): str,
     }
 )
 async def _handle_github_release_notes(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
@@ -431,8 +511,13 @@ async def _handle_github_release_notes(hass: HomeAssistant, connection: websocke
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
     access_token = await data.github_auth_manager.async_get_valid_access_token()
+    release_url = msg["release_url"]
+    to_version = msg.get("to_version")
+    entity_id = msg.get("entity_id")
+    if entity_id and to_version:
+        release_url = corrected_release_url(entity_id, release_url, to_version) or release_url
     result = await _async_fetch_github_release_notes(
-        hass, msg["release_url"], access_token, msg.get("from_version"), msg.get("to_version")
+        hass, release_url, access_token, msg.get("from_version"), to_version
     )
     if result is None:
         connection.send_result(msg["id"], {"notes": None, "owner": None, "repo": None, "corrected_url": None})
