@@ -349,7 +349,16 @@ async def _async_fetch_github_release_notes(
                     # release a second time whenever from_version was absent,
                     # or its own compile attempt above found nothing usable.
                     if matched is not None:
-                        return (owner, repo, matched.get("body") or None, corrected_url)
+                        body = matched.get("body")
+                        # Same "## {tag_name}" heading compile_release_range's
+                        # own multi-release sections already carry -- direct
+                        # user feedback, 2026-08-08: without one here, a
+                        # single-release result (Core's own normal case, see
+                        # the frontend's own isCore comment) showed real
+                        # notes with no visible indication of which version
+                        # they were actually for.
+                        notes = f"## {matched.get('tag_name', tag)}\n\n{body}" if body else None
+                        return (owner, repo, notes, corrected_url)
         except Exception:
             pass
 
@@ -362,7 +371,12 @@ async def _async_fetch_github_release_notes(
             data = await response.json()
     except Exception:
         return (owner, repo, None, None)
-    return (owner, repo, data.get("body") or None, None)
+    body = data.get("body")
+    # Same "## {tag_name}" heading treatment as the matched-release path
+    # above, for the same reason -- this is reached whenever from_version/
+    # to_version were both absent, or the listing fetch above failed.
+    notes = f"## {data.get('tag_name', tag)}\n\n{body}" if body else None
+    return (owner, repo, notes, None)
 
 
 @websocket_api.require_admin
