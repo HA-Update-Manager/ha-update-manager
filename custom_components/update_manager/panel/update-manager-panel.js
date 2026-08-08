@@ -3155,7 +3155,19 @@ class UpdateManagerPanel extends HTMLElement {
         } else {
           const loader = buildReleaseNotesLoader();
           body.insertBefore(loader, releaseNotesAnchor);
-          this._fetchGithubReleaseNotesFallback(releaseUrl, u.installed_version, u.latest_version).then(async ({ notes, correctedUrl }) => {
+          // Core omits its own installed_version here (see this fetch's own
+          // fromVersion param) -- direct user feedback, 2026-08-08: Core
+          // releases far more often than a typical HACS integration, so
+          // compile_release_range's own multi-version walk (see
+          // github_release_notes.py) turned "skipped a few patches" into a
+          // wall of notes spanning months of releases, each with its own
+          // full PR-list block. Home Assistant's own release blog already
+          // covers what changed across skipped patches (that's exactly what
+          // the corrected "Open release announcement" link points at below),
+          // so Core only ever needs its one target version's own notes here.
+          this._fetchGithubReleaseNotesFallback(
+            releaseUrl, entityId === CORE_UPDATE_ENTITY_ID ? null : u.installed_version, u.latest_version
+          ).then(async ({ notes, correctedUrl }) => {
             const { linkUrl, intro } = await withCoreAnnouncement(correctedUrl);
             loader.remove();
             if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, linkUrl, intro);
@@ -3401,7 +3413,15 @@ class UpdateManagerPanel extends HTMLElement {
           // fetch itself can still take a moment after that click.
           const loader = buildReleaseNotesLoader();
           expandWrap.insertBefore(loader, changelogAnchor.nextSibling);
-          this._fetchGithubReleaseNotesFallback(entry.release_url, entry.from_version, entry.to_version).then(async ({ notes, correctedUrl }) => {
+          // Core omits entry.from_version here -- same reasoning as the
+          // pending-update section's own fetch above (see that call's own
+          // comment): compile_release_range's multi-version walk is
+          // appropriate for a HACS integration you skipped a few versions
+          // of, not for Core, which releases often enough that even a
+          // History entry's own from/to gap can span months of releases.
+          this._fetchGithubReleaseNotesFallback(
+            entry.release_url, entry.entity_id === CORE_UPDATE_ENTITY_ID ? null : entry.from_version, entry.to_version
+          ).then(async ({ notes, correctedUrl }) => {
             // Same Core-only override as the pending-update section's own
             // withCoreAnnouncement -- see _fetchCoreAnnouncement's own
             // comment. entry.to_version (the version this History entry
