@@ -52,6 +52,47 @@ def _find_release_index(releases: list[dict[str, Any]], version: str) -> int | N
     )
 
 
+def select_release_range(
+    releases: list[dict[str, Any]], from_version: str, target_tag: str
+) -> list[dict[str, Any]] | None:
+    """The raw release dicts compile_release_range below would compile,
+    from target_tag down to (not including) from_version, in the exact
+    order their bodies would be joined -- split out from
+    compile_release_range so a caller needing to inspect/transform each
+    release's own body before joining (websocket_api.py's own Core .0
+    handling, which swaps a .0 release's body for its blog announcement's
+    own short intro instead of GitHub's raw PR list, per-release, not
+    something this pure/sync module can do itself since that needs a live
+    fetch) doesn't have to reimplement this same selection/ordering/
+    prerelease-skip/downgrade logic a second time. See compile_release_range's
+    own docstring for the full reasoning behind every rule applied here --
+    unchanged, just returning the releases themselves instead of their
+    already-joined body text.
+
+    None if target_tag isn't found in releases at all, same as
+    compile_release_range. Unlike compile_release_range, still returns an
+    empty list (never None) once target_tag is found but nothing in the
+    selected window has a usable body -- the join-and-filter-empties step
+    is compile_release_range's own job, not this one's."""
+    start_index = _find_release_index(releases, target_tag)
+    if start_index is None:
+        return None
+    from_index = _find_release_index(releases, from_version)
+    if from_index is not None and from_index < start_index:
+        window = list(reversed(releases[from_index : start_index + 1]))
+        last = len(window) - 1
+        return [release for offset, release in enumerate(window) if not (0 < offset < last and release.get("prerelease"))]
+    normalized_from = strip_version_prefix(from_version)
+    selected = []
+    for offset, release in enumerate(releases[start_index:]):
+        if strip_version_prefix(release.get("tag_name", "")) == normalized_from:
+            break
+        if offset > 0 and release.get("prerelease"):
+            continue
+        selected.append(release)
+    return selected
+
+
 def compile_release_range(
     releases: list[dict[str, Any]], from_version: str, target_tag: str
 ) -> str | None:
@@ -126,31 +167,10 @@ def compile_release_range(
     upgrade below -- a real, deliberate jump to/from an exact beta/rc is
     never a skipped stepping stone; only releases strictly between the two
     endpoints are subject to the usual prerelease skip."""
-    normalized_from = strip_version_prefix(from_version)
-    start_index = _find_release_index(releases, target_tag)
-    if start_index is None:
+    selected = select_release_range(releases, from_version, target_tag)
+    if selected is None:
         return None
-    from_index = _find_release_index(releases, from_version)
-    if from_index is not None and from_index < start_index:
-        window = list(reversed(releases[from_index : start_index + 1]))
-        last = len(window) - 1
-        sections = []
-        for offset, release in enumerate(window):
-            if 0 < offset < last and release.get("prerelease"):
-                continue
-            body = release.get("body")
-            if body:
-                sections.append(f"## {release.get('tag_name')}\n\n{body}")
-        return "\n\n".join(sections) if sections else None
-    sections = []
-    for offset, release in enumerate(releases[start_index:]):
-        if strip_version_prefix(release.get("tag_name", "")) == normalized_from:
-            break
-        if offset > 0 and release.get("prerelease"):
-            continue
-        body = release.get("body")
-        if body:
-            sections.append(f"## {release.get('tag_name')}\n\n{body}")
+    sections = [f"## {release.get('tag_name')}\n\n{release.get('body')}" for release in selected if release.get("body")]
     return "\n\n".join(sections) if sections else None
 
 

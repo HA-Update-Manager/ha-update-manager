@@ -63,7 +63,7 @@ from .core_blog_notes import (
     slugify_heading,
 )
 from .device_identity import resolve_full_identity
-from .github_release_notes import compile_release_range, find_release_by_version, parse_release_url
+from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity
 from .install_manager import auto_install_rules_from_options
 from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
@@ -311,6 +311,20 @@ async def _async_fetch_github_release_notes(
     (heavier) list endpoint never loses the notes the single-release
     endpoint would have found on its own.
 
+    For home-assistant/core specifically, every .0 release's own body in the
+    result (compiled range or single release alike) is replaced outright
+    with that release's own blog announcement intro (_async_fetch_core_
+    announcement's own short, human-written frontmatter description), never
+    shown alongside GitHub's raw PR-list body -- direct user feedback,
+    2026-08-08: Core releases every month or so, so a real multi-version
+    jump (e.g. 2026.7.0 -> 2026.8.4) routinely spans a .0 boundary, and the
+    same "just the intro, not the technical PR list" rule already applied to
+    the *latest* .0 (see the frontend's old withCoreAnnouncement, now
+    removed in favor of doing this once here, for every .0 in range, not
+    just the last one) has to hold for every .0 release encountered in that
+    range, not only the newest. Every patch release in the same range keeps
+    its own raw GitHub body untouched, same as any other integration.
+
     Uses the linked GitHub account's own token when available (5000
     requests/hour) rather than requiring it -- an unauthenticated request
     still works for a public repo (60/hour), this is a nice-to-have
@@ -323,6 +337,7 @@ async def _async_fetch_github_release_notes(
     if parsed is None:
         return None
     owner, repo, tag = parsed
+    is_core = owner == "home-assistant" and repo == "core"
     headers = {"Accept": "application/vnd.github+json"}
     if access_token:
         headers["Authorization"] = f"Bearer {access_token}"
@@ -340,24 +355,25 @@ async def _async_fetch_github_release_notes(
                     if matched is not None:
                         tag = matched.get("tag_name", tag)
                     if from_version:
-                        compiled = compile_release_range(releases, from_version, tag)
-                        if compiled:
-                            return (owner, repo, compiled, corrected_url)
+                        selected = select_release_range(releases, from_version, tag)
+                        if selected:
+                            sections = await asyncio.gather(
+                                *(
+                                    _async_core_aware_section(hass, is_core, release.get("tag_name", ""), release.get("body"))
+                                    for release in selected
+                                )
+                            )
+                            compiled = "\n\n".join(s for s in sections if s)
+                            if compiled:
+                                return (owner, repo, compiled, corrected_url)
                     # matched already carries this exact release's own body --
                     # found by review, 2026-08-01: falling through to the
                     # single-tag fetch below used to re-request the very same
                     # release a second time whenever from_version was absent,
                     # or its own compile attempt above found nothing usable.
                     if matched is not None:
-                        body = matched.get("body")
-                        # Same "## {tag_name}" heading compile_release_range's
-                        # own multi-release sections already carry -- direct
-                        # user feedback, 2026-08-08: without one here, a
-                        # single-release result (Core's own normal case, see
-                        # the frontend's own isCore comment) showed real
-                        # notes with no visible indication of which version
-                        # they were actually for.
-                        notes = f"## {matched.get('tag_name', tag)}\n\n{body}" if body else None
+                        matched_tag = matched.get("tag_name", tag)
+                        notes = await _async_core_aware_section(hass, is_core, matched_tag, matched.get("body"))
                         return (owner, repo, notes, corrected_url)
         except Exception:
             pass
@@ -371,12 +387,32 @@ async def _async_fetch_github_release_notes(
             data = await response.json()
     except Exception:
         return (owner, repo, None, None)
-    body = data.get("body")
-    # Same "## {tag_name}" heading treatment as the matched-release path
-    # above, for the same reason -- this is reached whenever from_version/
-    # to_version were both absent, or the listing fetch above failed.
-    notes = f"## {data.get('tag_name', tag)}\n\n{body}" if body else None
+    # Same "## {tag_name}" heading (and Core .0 intro-substitution) treatment
+    # as the matched-release path above, for the same reason -- this is
+    # reached whenever from_version/to_version were both absent, or the
+    # listing fetch above failed.
+    notes = await _async_core_aware_section(hass, is_core, data.get("tag_name", tag), data.get("body"))
     return (owner, repo, notes, None)
+
+
+async def _async_core_aware_section(hass: HomeAssistant, is_core: bool, tag_name: str, body: str | None) -> str | None:
+    """"## {tag_name}\n\n{body}", except for home-assistant/core's own .0
+    releases (is_core and tag_name strips down to an "X.Y.0" version), where
+    body is replaced outright by that release's own blog announcement intro
+    (_async_fetch_core_announcement's own short frontmatter description) --
+    never GitHub's raw PR-list body for a .0 release, direct user feedback,
+    2026-08-08 ("bij core .0 enkel dat intro zinnetje"). Falls back to the
+    raw GitHub body when the announcement fetch itself finds nothing (a
+    changelog/blog-post parsing miss, or a network error) -- same graceful
+    "show what's real" treatment as the rest of this module, better an
+    unexpected PR list than an empty section. None (no heading either)
+    whenever there ends up nothing at all to show, so an empty section never
+    contributes a bare heading to the eventual join."""
+    if is_core and strip_version_prefix(tag_name).endswith(".0"):
+        announcement = await _async_fetch_core_announcement(hass, tag_name)
+        if announcement and announcement.get("intro"):
+            body = announcement["intro"]
+    return f"## {tag_name}\n\n{body}" if body else None
 
 
 @websocket_api.require_admin

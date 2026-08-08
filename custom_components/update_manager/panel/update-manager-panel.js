@@ -634,23 +634,11 @@ function buildReleaseUrlLinkRow(tr, releaseUrl) {
 // decoration (parsing owner/repo for #issue/@mention links) even when
 // linkUrl is given -- both describe the same repo, only the tag differs,
 // so there's nothing to correct there.
-//
-// intro, when given (only ever for a Core .0 release, see
-// _fetchCoreAnnouncement's own callers), is a short, human-written summary
-// shown right under the heading, above the technical notes -- read order:
-// heading, then "what this release is about" in plain language, then the
-// actual technical detail, then the link to read the full announcement.
-function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl, intro) {
+function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl) {
   container.insertBefore(document.createElement("hr"), before);
   const heading = document.createElement("h3");
   heading.textContent = tr.dialog_release_notes_heading;
   container.insertBefore(heading, before);
-  if (intro) {
-    const introEl = document.createElement("p");
-    introEl.className = "release-notes-intro";
-    introEl.textContent = intro;
-    container.insertBefore(introEl, before);
-  }
   if (notes) {
     const markdown = document.createElement("ha-markdown");
     markdown.content = _decorateReleaseNotes(_trimChangelogToVersion(notes, fromVersion, toVersion), releaseUrl);
@@ -1609,12 +1597,14 @@ class UpdateManagerPanel extends HTMLElement {
   // method's own "github"/"native" siblings -- see websocket_api.py's own
   // _async_fetch_core_announcement for what this actually fetches
   // (home-assistant.io's own release-notes blog, not GitHub). Only ever
-  // called for the one Core update entity (see CORE_UPDATE_ENTITY_ID),
-  // used to override that entity's own "Open release announcement" link
-  // (and, for a .0 release, add a short intro above the technical notes)
-  // -- see appendReleaseNotesSection's own two call sites. Cached by
-  // latest_version alone, not per-entity: every install of the same
-  // version resolves to the exact same blog post/intro, nothing
+  // called for the one Core update entity (see CORE_UPDATE_ENTITY_ID), used
+  // to override that entity's own "Open release announcement" link -- see
+  // withCoreAnnouncement's own comment. Only `url` is used here; the same
+  // backend function's own `intro` field is used server-side, embedded
+  // straight into a .0 release's own notes section instead (see
+  // websocket_api.py's own _async_core_aware_section), not read here at
+  // all. Cached by latest_version alone, not per-entity: every install of
+  // the same version resolves to the exact same blog post, nothing
   // instance-specific about it.
   async _fetchCoreAnnouncement(latestVersion) {
     const cacheKey = `core:${latestVersion}`;
@@ -1625,7 +1615,7 @@ class UpdateManagerPanel extends HTMLElement {
     } catch {
       result = null;
     }
-    const resolved = { url: (result && result.url) || null, intro: (result && result.intro) || null };
+    const resolved = { url: (result && result.url) || null };
     this._releaseNotesCache.set(cacheKey, resolved);
     return resolved;
   }
@@ -3117,20 +3107,28 @@ class UpdateManagerPanel extends HTMLElement {
       // enough to show the section, just with only the link in it (see
       // insertReleaseNotesSection's own comment). Never called at all when
       // both are empty, same "no empty section" treatment as before.
-      const appendReleaseNotesSection = (notes, linkUrl, intro) => {
-        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, intro);
+      const appendReleaseNotesSection = (notes, linkUrl) => {
+        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl);
         if (notes) this._appendUpstreamReleaseNotes(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version);
       };
       // entityId === CORE_UPDATE_ENTITY_ID only: also resolve the blog
-      // announcement (_fetchCoreAnnouncement's own comment), overriding
-      // just the *link* (never the notes -- those stay GitHub's own
-      // technical PR list either way) and adding the intro for a .0
-      // release. A no-op passthrough for every other entity, so both
-      // branches below can call this unconditionally.
+      // announcement's own link (_fetchCoreAnnouncement's own comment),
+      // overriding just the *link*. The intro for a .0 release is no
+      // longer added here -- websocket_api.py's own _async_core_aware_section
+      // now embeds it directly into `notes` itself, under that .0 release's
+      // own "## {version}" heading, for every .0 release in a compiled
+      // multi-version range, not just the newest one (direct user feedback,
+      // 2026-08-08: a jump like 2026.7.0 -> 2026.8.4 must show *every*
+      // skipped version, each headed on its own, patches with GitHub's raw
+      // PR list, .0 releases with just that short intro -- adding a second,
+      // separate top-of-section intro here on top of that would have shown
+      // the same text twice for a single-version .0 jump). A no-op
+      // passthrough for every other entity, so both branches below can call
+      // this unconditionally.
       const withCoreAnnouncement = async (correctedUrl) => {
-        if (entityId !== CORE_UPDATE_ENTITY_ID) return { linkUrl: correctedUrl, intro: null };
-        const { url, intro } = await this._fetchCoreAnnouncement(u.latest_version);
-        return { linkUrl: url || correctedUrl, intro };
+        if (entityId !== CORE_UPDATE_ENTITY_ID) return { linkUrl: correctedUrl };
+        const { url } = await this._fetchCoreAnnouncement(u.latest_version);
+        return { linkUrl: url || correctedUrl };
       };
       if (supportsReleaseNotes) {
         const loader = buildReleaseNotesLoader();
@@ -3157,9 +3155,9 @@ class UpdateManagerPanel extends HTMLElement {
               releaseUrl, u.installed_version, u.latest_version
             ));
           }
-          const { linkUrl, intro } = await withCoreAnnouncement(correctedUrl);
+          const { linkUrl } = await withCoreAnnouncement(correctedUrl);
           loader.remove();
-          if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, linkUrl, intro);
+          if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, linkUrl);
         });
       } else {
         const releaseSummary = state && state.attributes && state.attributes.release_summary;
@@ -3168,23 +3166,18 @@ class UpdateManagerPanel extends HTMLElement {
         } else {
           const loader = buildReleaseNotesLoader();
           body.insertBefore(loader, releaseNotesAnchor);
-          const isCore = entityId === CORE_UPDATE_ENTITY_ID;
-          // Core omits its own installed_version here (see this fetch's own
-          // fromVersion param) -- direct user feedback, 2026-08-08: Core
-          // releases far more often than a typical HACS integration, so
-          // compile_release_range's own multi-version walk (see
-          // github_release_notes.py) turned "skipped a few patches" into a
-          // wall of notes spanning months of releases, each with its own
-          // full PR-list block. Still shows that one target version's own
-          // notes body (direct user feedback: the bare PR-link list is
-          // exactly what's wanted here, just for the one version actually
-          // being installed, not every version skipped to get there).
+          // Same fromVersion/toVersion range for Core as for any other
+          // entity -- websocket_api.py's own compiled multi-version range
+          // (and, for Core specifically, its per-release .0 intro
+          // substitution, see _async_core_aware_section's own comment) now
+          // handles Core's release cadence correctly on its own, so this no
+          // longer needs to special-case Core down to a single version.
           this._fetchGithubReleaseNotesFallback(
-            releaseUrl, isCore ? null : u.installed_version, u.latest_version
+            releaseUrl, u.installed_version, u.latest_version
           ).then(async ({ notes, correctedUrl }) => {
-            const { linkUrl, intro } = await withCoreAnnouncement(correctedUrl);
+            const { linkUrl } = await withCoreAnnouncement(correctedUrl);
             loader.remove();
-            if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, linkUrl, intro);
+            if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, linkUrl);
           });
         }
       }
@@ -3428,27 +3421,24 @@ class UpdateManagerPanel extends HTMLElement {
           const loader = buildReleaseNotesLoader();
           expandWrap.insertBefore(loader, changelogAnchor.nextSibling);
           const isCore = entry.entity_id === CORE_UPDATE_ENTITY_ID;
-          // Core omits entry.from_version here -- same reasoning as the
-          // pending-update section's own fetch above (see that call's own
-          // comment): compile_release_range's multi-version walk is
-          // appropriate for a HACS integration you skipped a few versions
-          // of, not for Core, which releases often enough that even a
-          // History entry's own from/to gap can span months of releases.
+          // Same fromVersion/toVersion range for Core as for any other
+          // entity -- see the pending-update section's own comment above
+          // this same call.
           this._fetchGithubReleaseNotesFallback(
-            entry.release_url, isCore ? null : entry.from_version, entry.to_version
+            entry.release_url, entry.from_version, entry.to_version
           ).then(async ({ notes, correctedUrl }) => {
-            // Same Core-only override as the pending-update section's own
-            // withCoreAnnouncement -- see _fetchCoreAnnouncement's own
+            // Core-only link override -- see _fetchCoreAnnouncement's own
             // comment. entry.to_version (the version this History entry
-            // actually installed), not entry.from_version: the blog/intro
-            // describes what was *installed*, same as entry.release_url
-            // itself already does.
+            // actually installed), not entry.from_version: the announcement
+            // link describes what was *installed*, same as entry.release_url
+            // itself already does. No intro override here anymore -- a .0
+            // release anywhere in `notes` already carries its own intro,
+            // embedded server-side under its own heading (see
+            // websocket_api.py's own _async_core_aware_section).
             let linkUrl = correctedUrl;
-            let intro = null;
             if (isCore) {
               const announcement = await this._fetchCoreAnnouncement(entry.to_version);
               linkUrl = announcement.url || correctedUrl;
-              intro = announcement.intro;
             }
             loader.remove();
             if (isDialogStale()) return;
@@ -3465,7 +3455,7 @@ class UpdateManagerPanel extends HTMLElement {
             // find the wrong node (its own just-inserted <hr>, not the
             // original insertion point).
             const insertionPoint = changelogAnchor.nextSibling;
-            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl, intro);
+            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl);
             if (notes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version);
           });
         };
@@ -4787,11 +4777,6 @@ class UpdateManagerPanel extends HTMLElement {
          unit, not two separate blocks. */
       .field-label { font-size: var(--ha-font-size-m, 14px); color: var(--primary-text-color); margin: 0; }
       .field-label + .hint { margin-top: var(--ha-space-1, 4px); }
-      /* Core's own release-notes intro (insertReleaseNotesSection's own
-         intro param) -- normal body text, not muted like .hint above: this
-         is the actual human-written "what's new" summary, not a secondary
-         explanation of a nearby control. */
-      .release-notes-intro { margin: 0; line-height: 1.4; }
 
       /* One shared page grid for all three tabs (2026-07-21, direct user
          feedback: Updates, History and Settings each had their own
