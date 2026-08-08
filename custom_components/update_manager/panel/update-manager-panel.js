@@ -1070,12 +1070,25 @@ function _replaceGithubEmojiShortcodes(text) {
 // #1234 -- negative lookbehind on \w and # themselves, so this doesn't
 // match in the middle of a longer token (a version like "2026.7.4" has no
 // "#" in it so that's not a real risk, but a heading like "### 1234" or an
-// already-composed "##1234" would be, without the lookbehind).
-const _GITHUB_ISSUE_REF_RE = /(?<![\w#])#(\d+)\b/g;
+// already-composed "##1234" would be, without the lookbehind). Also "["
+// -- direct user feedback, 2026-08-08, a real Home Assistant Core release
+// (2026.8.1): its own notes are written entirely in GitHub's *reference*-style
+// link shape ("([@shtefko] - [#177201])", with the actual
+// "[#177201]: https://github.com/home-assistant/core/pull/177201" definition
+// further down), not the plain inline "#1234" prose this was built for.
+// Without excluding a preceding "[", the #1234 *inside* that reference
+// label got linkified too, turning "[#177201]: url" into
+// "[[#177201](.../issues/177201)]: url" -- no longer a link definition
+// ha-markdown's own renderer recognizes at all, so instead of staying
+// invisible (as a real reference definition does) the whole block of
+// them rendered as a wall of literal link text underneath the notes.
+const _GITHUB_ISSUE_REF_RE = /(?<![\w#[])#(\d+)\b/g;
 // @username -- GitHub handles are alphanumeric/hyphen, 1-39 chars, can't
 // start or end with a hyphen (not enforced here, a trailing-hyphen handle
 // simply doesn't exist to link to, low stakes). Negative lookbehind on
-// \w/@/. so this doesn't fire mid-email-address (e.g. "user@example.com").
+// \w/@/./[ so this doesn't fire mid-email-address (e.g. "user@example.com")
+// or inside an existing "[@username]" reference label, same reasoning as
+// _GITHUB_ISSUE_REF_RE's own "[" exclusion above.
 // Optional trailing "[bot]" captured separately -- found by review,
 // 2026-08-02, checking real popular repos for more edge cases: GitHub's
 // own auto-generated release notes ("bumped by @dependabot[bot] in #1234")
@@ -1085,7 +1098,7 @@ const _GITHUB_ISSUE_REF_RE = /(?<![\w#])#(\d+)\b/g;
 // github.com/{name} (that 404s for most bots) -- without this, the "[bot]"
 // suffix was also left dangling as plain text right after the link
 // instead of being part of it.
-const _GITHUB_MENTION_RE = /(?<![\w@.])@([a-zA-Z0-9][a-zA-Z0-9-]{0,38})(\[bot\])?/g;
+const _GITHUB_MENTION_RE = /(?<![\w@.[])@([a-zA-Z0-9][a-zA-Z0-9-]{0,38})(\[bot\])?/g;
 
 function _linkifyGithubReferences(text, owner, repo) {
   if (!owner || !repo) return text;
@@ -3162,24 +3175,16 @@ class UpdateManagerPanel extends HTMLElement {
           // compile_release_range's own multi-version walk (see
           // github_release_notes.py) turned "skipped a few patches" into a
           // wall of notes spanning months of releases, each with its own
-          // full PR-list block.
+          // full PR-list block. Still shows that one target version's own
+          // notes body (direct user feedback: the bare PR-link list is
+          // exactly what's wanted here, just for the one version actually
+          // being installed, not every version skipped to get there).
           this._fetchGithubReleaseNotesFallback(
             releaseUrl, isCore ? null : u.installed_version, u.latest_version
           ).then(async ({ notes, correctedUrl }) => {
             const { linkUrl, intro } = await withCoreAnnouncement(correctedUrl);
             loader.remove();
-            // Even scoped to just the one target version, Core's own
-            // release body is never real notes -- confirmed against a real
-            // one (home-assistant/core's own 2026.8.1): it's nothing but a
-            // bare bullet list of PR links and doc-page references, none of
-            // it prose a person would actually want to read inline. Home
-            // Assistant's own release blog already covers what changed, in
-            // real sentences, and that's exactly what the corrected "Open
-            // release announcement" link points at -- so Core drops the
-            // notes body entirely and keeps only the link (+ intro for a
-            // .0 release).
-            const finalNotes = isCore ? null : notes;
-            if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, linkUrl, intro);
+            if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, linkUrl, intro);
           });
         }
       }
@@ -3445,11 +3450,6 @@ class UpdateManagerPanel extends HTMLElement {
               linkUrl = announcement.url || correctedUrl;
               intro = announcement.intro;
             }
-            // Same reasoning as the pending-update section's own fetch above:
-            // Core's own release body is nothing but a bare PR-link list even
-            // scoped to one version, never real prose -- drop it, keep only
-            // the link (+ intro for a .0 release).
-            const finalNotes = isCore ? null : notes;
             loader.remove();
             if (isDialogStale()) return;
             // changelogAnchor.nextSibling evaluated fresh right here (not
@@ -3465,8 +3465,8 @@ class UpdateManagerPanel extends HTMLElement {
             // find the wrong node (its own just-inserted <hr>, not the
             // original insertion point).
             const insertionPoint = changelogAnchor.nextSibling;
-            insertReleaseNotesSection(expandWrap, insertionPoint, tr, finalNotes, entry.release_url, entry.from_version, entry.to_version, linkUrl, intro);
-            if (finalNotes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, finalNotes, entry.release_url, entry.from_version, entry.to_version);
+            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl, intro);
+            if (notes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version);
           });
         };
 
