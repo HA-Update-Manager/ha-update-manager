@@ -3,11 +3,11 @@
 
 # Update Manager: Home Assistant helper integration
 
-Update Manager helps you decide when to install an update, and can optionally install it
-for you automatically. Two independent safety nets back that decision: a waiting period per update size
-(giving a broken release time to be noticed and fixed before you commit to it), and a community verdict
-on the exact version jump you're taking (any reported problem holds auto-install back, regardless of the
-wait). See "How auto-install decides" below for exactly how the two combine.
+Updates pile up, and it's never quite obvious which ones are safe to just let happen. Update Manager
+watches them for you and decides when an update has actually earned your trust: it gives a fresh release
+time to prove itself, listens for anyone else who's already made the same jump and hit trouble, and
+installs everything in an order that won't leave Home Assistant restarting mid-update. Turn on
+auto-install and most of that becomes something you never have to think about again.
 
 ---
 
@@ -17,36 +17,23 @@ wait). See "How auto-install decides" below for exactly how the two combine.
 
 ---
 
-## Features
+## Why you'll like it
 
-* **Staging rules:** updates are grouped by how big a jump they are, each with its own configurable
-  waiting period before it counts as ready.
-* **Auto-install, opt-in:** announced first with a cancellable countdown before anything installs,
-  with an automatic backup when supported.
-* **Master pause switch:** pauses all of Update Manager's automatic behavior at once, also available
-  as a real switch entity for dashboards and automations.
-* **Hide postponed updates:** optionally keeps still-waiting updates out of Home Assistant's own
-  sidebar update count until they're actually ready.
-* **Zigbee rollout pacing:** Zigbee devices on the same network (ZHA or Zigbee2MQTT) update one at a time
-  instead of all at once, protecting mesh stability.
-* **Safe install order:** ordinary updates and device firmware (Zigbee radios, ESPHome, Shelly, and more)
-  install first, then a Raspberry Pi/Yellow's own board firmware, then Supervisor, then Home Assistant
-  Core, then the OS last, so a restart never interrupts something else mid-install. Applies whenever
-  Update all or auto-install triggers the install; see Known limitations for the one gap this doesn't
-  cover.
-* **Community verdict and voting:** link your GitHub account to see whether others found your specific
-  version *jump* healthy or problematic, and cast your own vote.
-* **Trusted voters and community block:** a trusted username's *healthy* verdict overrides your own rules
-  and any problem report; without one, any problematic vote blocks auto-install outright (see "How
-  auto-install decides" below).
-* **Sidebar panel:** Updates tab with live progress, History tab with a full per-entry audit trail, and
-  an autosaving Settings tab.
-* **Native HA look and feel:** built directly against Home Assistant's own components and patterns, so it
-  looks and behaves like part of Home Assistant itself, not a separate UI to learn.
-* **Real release notes:** falls back to fetching GitHub's own release notes directly whenever an entity
-  has nothing useful to show, correctly compiles every version covered by a multi-version or downgrade
-  jump, and surfaces a wrapped add-on's real upstream project notes (e.g. Zigbee2MQTT, Mealie,
-  Matterbridge) alongside its own short note.
+* **A waiting period sized to the risk.** A small integration bump and a major Core jump don't deserve the
+  same caution, so each gets its own configurable buffer before it counts as ready.
+* **A second opinion before you commit.** See whether others already made your exact version jump safely,
+  cast your own vote, and let one person you trust override your own rules the moment they vouch for a
+  release.
+* **Nothing installs in a risky order.** Core, Supervisor, OS, and device firmware queue up in the order
+  that keeps a restart from cutting off something else mid-install, and Zigbee devices on the same network
+  never reflash all at once.
+* **Auto-install that still asks first.** A cancellable countdown announces what's coming and when, with
+  an automatic backup when the update supports one, and a master switch to pause all of it in one click.
+* **Release notes worth reading.** Real GitHub notes, compiled across every version a jump skips over, plus
+  a wrapped add-on's own upstream notes (Zigbee2MQTT, Mealie, Matterbridge) alongside the short version.
+* **A panel that feels like it's always been there.** Live progress, a full History audit trail, and an
+  autosaving Settings tab, built from Home Assistant's own components so it looks and behaves like part of
+  the app, not a separate thing bolted on.
 
 ---
 
@@ -95,17 +82,6 @@ reported count; the Community section on that dialog shows each reported reason.
 
 Scoping note: a vote (and this block) applies to the *exact* version jump, not any known issue along the
 way. See Known limitations below.
-
-## Use cases
-
-* You've been burned by a buggy update before and want a buffer before anything installs itself, without
-  giving up automatic installs entirely.
-* You run a large instance and don't want a wall of individual `update.*` entities to review one by one.
-* You have Zigbee devices sharing the same firmware and don't want them all reflashing at once.
-* You want Core/Supervisor/OS updates and device firmware to never install in a risky order relative to
-  each other, without having to sequence "Update all" clicks by hand.
-* You want a second opinion from others who already made the same version jump, or one specific person's
-  judgment to be able to override your own rules automatically.
 
 ## Automating
 
