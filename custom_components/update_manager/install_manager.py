@@ -38,6 +38,7 @@ from .const import (
     DOMAIN,
     EVENT_ANNOUNCED,
     EVENT_INSTALL_FAILED,
+    localized_strings,
 )
 from .coordinator import UpdateManagerCoordinator
 from .rollout_manager import RolloutManager
@@ -111,13 +112,6 @@ def auto_install_rules_from_options(options: dict) -> AutoInstallRules:
 def _friendly_name(hass: HomeAssistant, entity_id: str) -> str:
     state = hass.states.get(entity_id)
     return state.name if state else entity_id
-
-
-def _localized_strings(hass: HomeAssistant, strings_by_language: dict[str, dict[str, str]]) -> dict[str, str]:
-    """hass.config.language, falling back to English, shared by both
-    notification-string lookups above instead of repeating the same
-    fallback at each call site."""
-    return strings_by_language.get(hass.config.language, strings_by_language["en"])
 
 
 class InstallManager:
@@ -199,6 +193,21 @@ class InstallManager:
 
     def pending_for(self, entity_id: str) -> PendingAnnouncement | None:
         return self._pending.get(entity_id)
+
+    def is_cancelled(self, entity_id: str, to_version: str) -> bool:
+        """Whether async_cancel was already called for this exact entity/
+        version pair -- read by websocket_api.py's own _handle_updates so
+        the panel can tell a genuinely cancelled "waiting" update apart
+        from an untouched one. async_cancel itself already prevents the
+        real announcement from ever starting (decide_action's own
+        cancelled_to_version check), but before this the panel had no way
+        to know that: projectedAutoInstallTime (the "will auto-install"
+        badge/Cancel button/sort order) only ever looked at status/
+        remaining_seconds/settings, never at this -- closing and reopening
+        the dialog right after clicking Cancel showed the exact same
+        projection and Cancel button back again, reading as if cancelling
+        had done nothing even though it silently already had."""
+        return self._cancelled.get(entity_id) == to_version
 
     @property
     def all_pending(self) -> list[PendingAnnouncement]:
@@ -313,6 +322,22 @@ class InstallManager:
                 await self._async_save()
 
     async def _async_evaluate_one(self, entity_id: str, now: datetime) -> None:
+        # A previous "Update failed" notification has no business lingering
+        # once the entity is genuinely installing again, however that retry
+        # was triggered -- direct user feedback, 2026-08-11: it wasn't going
+        # away on its own for a retry that didn't go through _async_execute
+        # below (the only other place this used to get cleared), e.g. a
+        # manual retry via Home Assistant's own native dialog, which this
+        # integration can't see or pace at all (see README's own Known
+        # limitations). Checked on every tick for every entity, ahead of the
+        # early-return guards below, so it isn't skipped for an entity this
+        # class itself currently has no opinion on (in_progress already
+        # confirms a real install is underway; the dismiss itself is a
+        # harmless no-op if there was nothing to clear).
+        state = self.hass.states.get(entity_id)
+        if state is not None and state.attributes.get("in_progress"):
+            persistent_notification.async_dismiss(self.hass, f"{_FAILURE_NOTIFICATION_ID_PREFIX}{entity_id}")
+
         if entity_id in self._recently_executed:
             # An install is still in flight for this entity (dispatched by
             # _async_execute, not yet resolved either way: cleared by
@@ -355,13 +380,14 @@ class InstallManager:
             cancelled_to_version = None
             self._dirty = True
 
-        # Core/Supervisor/HAOS: hard, non-configurable exception -- never
-        # auto-install these regardless of the size/setting, see
-        # coordinator.py's _is_hard_excluded_from_auto_install. The master
-        # pause switch is passed to decide_action as its own, separate
-        # master_enabled argument, not folded in here -- see that
-        # function's own docstring for why (pausing freezes an existing
-        # countdown in place instead of removing it).
+        # cached["auto_install_excluded"] (coordinator.py's own
+        # _is_excluded_from_auto_install) covers Core/Supervisor/HAOS too --
+        # pre-populated default members of the same excluded_entities list
+        # every other "always manual" entity lives in, not a separate
+        # exception. The master pause switch is passed to decide_action as
+        # its own, separate master_enabled argument, not folded in here --
+        # see that function's own docstring for why (pausing freezes an
+        # existing countdown in place instead of removing it).
         #
         # A trusted voter's own already-aggregated verdict for this exact
         # version (coordinator.py's own trusted_vote/trusted_voters_matched,
@@ -417,7 +443,7 @@ class InstallManager:
 
         name = _friendly_name(self.hass, entity_id)
         when = dt_util.as_local(announcement.execute_at).strftime("%d-%m-%Y %H:%M")
-        strings = _localized_strings(self.hass, _NOTIFICATION_STRINGS)
+        strings = localized_strings(self.hass, _NOTIFICATION_STRINGS)
         persistent_notification.async_create(
             self.hass,
             strings["body"].format(name=name, to_version=to_version, when=when, url=_PANEL_UPDATES_URL),
@@ -583,7 +609,7 @@ class InstallManager:
             del self._recently_executed[entity_id]
 
         name = _friendly_name(self.hass, entity_id)
-        strings = _localized_strings(self.hass, _FAILURE_NOTIFICATION_STRINGS)
+        strings = localized_strings(self.hass, _FAILURE_NOTIFICATION_STRINGS)
         persistent_notification.async_create(
             self.hass,
             strings["body"].format(name=name, to_version=to_version, url=_PANEL_UPDATES_URL),

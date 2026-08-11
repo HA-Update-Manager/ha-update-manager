@@ -55,6 +55,10 @@ export const TRANSLATIONS = {
     refresh: "Refresh",
     checking_updates_toast: "Checking for updates…",
     refreshed_toast: "Update Manager refreshed",
+    // "Update all" button's own click confirmation (see _updateAllInGroup)
+    // -- fired immediately, before the actual dispatch/reload work, direct
+    // user feedback: clicking it didn't show anything happening right away.
+    update_all_started_toast: (count) => (count === 1 ? "Installing 1 update…" : `Installing ${count} updates…`),
     // Updates tab's own overflow (⋮) menu, next to the refresh button --
     // same interaction/component as Home Assistant's own native
     // /config/system/updates page (ha-config-section-updates.ts), deliberately
@@ -288,6 +292,10 @@ export const TRANSLATIONS = {
     save: "Save",
     settings_saved_toast: "Settings saved",
     cancel_auto_install: "Cancel",
+    // The pending-update dialog's own "Ready now" button, next to Cancel --
+    // forces this one jump to evaluate as ready immediately, skipping the
+    // rest of its postponement period.
+    dialog_force_ready: "Ready",
     dialog_open_update: "Open update",
     dialog_skip: "Skip",
     dialog_unskip: "Clear skipped",
@@ -295,19 +303,53 @@ export const TRANSLATIONS = {
     group_waiting: "Postponed",
     group_blocked: "Discouraged",
     update_all: "Update all",
-    // Rollout-pacing queue cards (see rollout_manager.py): one Zigbee
-    // firmware install at a time per network, not several at once (real
-    // radio traffic that can destabilize the mesh). Only ever shown once a
-    // second device from the same network/model/version is asked to
-    // install while one is already in flight.
-    rollout_queue_title_zha: "ZHA update queue",
-    rollout_queue_title_z2m: "Zigbee2MQTT update queue",
-    rollout_queue_subtitle: "Installs one at a time to avoid overloading the Zigbee network.",
+    // The "Installing" section's own title (see _buildInstallingCard) --
+    // everything currently installing or held back (the tier gate or the
+    // Zigbee model gate, both server-side in rollout_manager.py), pulled
+    // out of "Ready to update" entirely rather than reordered there.
+    // Generalizes what used to be a per-Zigbee-group-only card.
+    installing_section_title: "Installing",
+    // Shown instead of the normal timer badge for an entity held back by
+    // install_tiers.py's own tier gate -- deliberately generic, not naming
+    // which specific update it's waiting for, unlike the Zigbee rollout
+    // queue's own single-file "waiting for X" below (always exactly one
+    // thing directly in front): the tier ahead here can be several
+    // entities at once (every "safe" update in the same batch), so
+    // there's no one name to point at.
+    tier_waiting_text: "Waiting for other updates to finish first",
+    // Shown once an entity crosses rollout_manager.py's own
+    // _STUCK_THRESHOLD (a Repair issue is raised at the same time, see
+    // that module's own _async_maybe_raise_stuck_issue) -- deliberately
+    // different text than tier_waiting_text above: this entity isn't
+    // waiting on anything, it IS the obstacle everything else is waiting
+    // behind.
+    stuck_waiting_text: (duration) => `Installing for ${duration}, longer than usual`,
+    duration_hours_minutes: (hours, minutes) => `${hours}h ${minutes}m`,
+    duration_minutes: (minutes) => `${minutes}m`,
+    // The detail dialog's own stuck alert (see the pending-update dialog's
+    // own stuckInfo block) -- states the plain fact, never a guessed
+    // cause; dialog_stuck_body_zigbee/_neutral below is where the real,
+    // per-entity explanation (or the honest absence of one) lives.
+    dialog_stuck_title: (duration) => `Taking longer than usual (${duration})`,
+    dialog_stuck_body_zigbee:
+      "Is this a battery-powered device? It may need to be woken up first (for example by pressing a button on the device) before the update can actually start.",
+    dialog_stuck_body_neutral: "This can still finish on its own. If you'd rather not wait, the rest of the queue can continue.",
+    // Deliberately not called "Skip" -- that already exists and means
+    // something else (stop suggesting this version). Doesn't cancel the
+    // install, which may still finish on its own, it only stops this
+    // entity from holding anything else back.
+    dialog_stop_waiting: "Stop waiting",
+    // Rollout-pacing (see rollout_manager.py): one Zigbee firmware install
+    // at a time per network, not several at once (real radio traffic that
+    // can destabilize the mesh). Only ever relevant once a second device
+    // on the same Zigbee network is asked to install while one is already
+    // in flight -- see _buildInstallingCard's own rolloutStatus handling.
     // Reused verbatim for the dialog's own Install button while an entity
     // is queued (not yet its turn): no override, direct user feedback,
     // the queue must stay authoritative, not something a hurried click can
-    // jump.
-    rollout_queue_waiting: (name) => `Waiting for ${name}`,
+    // jump. "...to finish" (not just the bare name) -- direct user
+    // feedback, 2026-08-09: read ambiguously on its own.
+    rollout_queue_waiting: (name) => `Waiting for ${name} to finish`,
     // Community-verdict fact rows (see _buildCommunitySection, and
     // aggregateVerdictText for how these four get picked), read-only slice
     // added 2026-07-22: https://github.com/HA-Update-Manager/community-votes.
@@ -349,6 +391,12 @@ export const TRANSLATIONS = {
     group_skipped: (count) => `${count} ${count === 1 ? "skipped update" : "skipped updates"}`,
     group_not_installable: (count) => `${count} ${count === 1 ? "not installable update" : "not installable updates"}`,
     updates_empty: "No updates need attention, everything is up to date.",
+    // Shown instead of updates_empty whenever there genuinely are updates
+    // but every one of them is currently hidden by the overflow (⋮) menu's
+    // own Show skipped/Show not installable toggles -- direct user
+    // feedback: with both switched off, the tab used to render nothing at
+    // all, no message, indistinguishable from an actual empty state.
+    updates_hidden_by_filter: "Every update is currently hidden. Open the ⋮ menu to show skipped or not installable updates.",
     history_empty: "No updates logged yet.",
     // History's own date sections (see historySections), relative rather
     // than a fixed calendar date range in the heading itself, same spirit
@@ -361,7 +409,12 @@ export const TRANSLATIONS = {
     history_section_this_month: "This month",
     history_section_earlier: "Earlier",
     loading: "Loading…",
-    load_error_prefix: "Couldn't load Update Manager: ",
+    load_error_title: "Couldn't load Update Manager",
+    // home-assistant-js-websocket's own ERR_CONNECTION_LOST case (see
+    // WS_ERR_CONNECTION_LOST's own comment) -- a dropped connection, not a
+    // genuine backend error, so this says so plainly and suggests the
+    // actual fix instead of showing the raw, meaningless numeric code.
+    load_error_connection_lost: "Connection to Home Assistant was lost. Reload the page once it's back.",
     units: [
       ["year", "years"],
       ["month", "months"],
@@ -387,6 +440,7 @@ export const TRANSLATIONS = {
     refresh: "Vernieuwen",
     checking_updates_toast: "Bezig met controleren op updates…",
     refreshed_toast: "Update Manager ververst",
+    update_all_started_toast: (count) => (count === 1 ? "1 update wordt geïnstalleerd…" : `${count} updates worden geïnstalleerd…`),
     menu_show_skipped_updates: "Overgeslagen updates tonen",
     menu_show_not_installable_updates: "Niet-installeerbare updates tonen",
     dash: "–",
@@ -395,7 +449,7 @@ export const TRANSLATIONS = {
       const { year, month } = currentCalendarVersion();
       return `Een patch-release (bijv. 1.0.0 → 1.0.1), of dezelfde kalendermaand (bijv. ${year}.${month}.0 → ${year}.${month}.1).`;
     },
-    size_medium_short: "Gemiddeld",
+    size_medium_short: "Middel",
     size_medium_desc: () => {
       const { year, month, nextYear, nextMonth } = currentCalendarVersion();
       return (
@@ -425,7 +479,7 @@ export const TRANSLATIONS = {
       "De uitstel-/auto-installatieregels hierboven gelden per grootte. Alles hieronder (aankondigingstermijn, altijd-handmatige entiteiten, vertrouwde stemmers) geldt sowieso, ongeacht grootte.",
     field_trusted_voters: "Vertrouwde stemmers",
     field_trusted_voters_helper:
-      "Een GitHub-gebruikersnaam die je meer vertrouwt dan je eigen regels. Hun gezonde stem overrult je eigen regels hierboven en installeert die sprong meteen automatisch, ook als iemand anders 'm als problematisch meldde.",
+      "Een GitHub-gebruikersnaam die je meer vertrouwt dan je eigen regels. Hun probleemloze stem overrult je eigen regels hierboven en installeert die sprong meteen automatisch, ook als iemand anders 'm als problematisch meldde.",
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper:
       "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
@@ -484,7 +538,7 @@ export const TRANSLATIONS = {
     dialog_history_method_trusted: (names) => `Automatisch, vertrouwde stem van ${names}`,
     dialog_history_backup_label: "Back-up",
     dialog_history_backup_yes: "Gemaakt voor het installeren",
-    dialog_history_backup_no: "Niet ondersteund door deze entity",
+    dialog_history_backup_no: "Niet ondersteund door deze entiteit",
     dialog_release_notes_heading: "Release notes",
     dialog_upstream_release_notes: (repo) => `Eigen release notes van ${repo}:`,
     dialog_community_heading: "Community",
@@ -522,6 +576,7 @@ export const TRANSLATIONS = {
     save: "Opslaan",
     settings_saved_toast: "Instellingen opgeslagen",
     cancel_auto_install: "Annuleren",
+    dialog_force_ready: "Klaar",
     dialog_open_update: "Update openen",
     dialog_skip: "Overslaan",
     dialog_unskip: "Overslaan ongedaan maken",
@@ -529,10 +584,17 @@ export const TRANSLATIONS = {
     group_waiting: "Uitgesteld",
     group_blocked: "Afgeraden",
     update_all: "Alles updaten",
-    rollout_queue_title_zha: "ZHA-wachtrij",
-    rollout_queue_title_z2m: "Zigbee2MQTT-wachtrij",
-    rollout_queue_subtitle: "Installeert één voor één om het Zigbee-netwerk niet te overbelasten.",
-    rollout_queue_waiting: (name) => `Wacht op ${name}`,
+    installing_section_title: "Bezig met installeren",
+    tier_waiting_text: "Wacht tot andere updates eerst klaar zijn",
+    stuck_waiting_text: (duration) => `Installeert al ${duration}, langer dan gebruikelijk`,
+    duration_hours_minutes: (hours, minutes) => `${hours}u ${minutes}m`,
+    duration_minutes: (minutes) => `${minutes}m`,
+    dialog_stuck_title: (duration) => `Duurt langer dan gebruikelijk (${duration})`,
+    dialog_stuck_body_zigbee:
+      "Is dit een batterij-gevoed apparaat? Dan moet het misschien eerst wakker gemaakt worden (bijvoorbeeld door op een knopje op het apparaat te drukken) voordat de update daadwerkelijk kan starten.",
+    dialog_stuck_body_neutral: "Dit kan nog gewoon goedkomen. Wil je niet langer wachten, dan gaat de rest van de wachtrij verder.",
+    dialog_stop_waiting: "Stop met wachten",
+    rollout_queue_waiting: (name) => `Wacht tot ${name} klaar is`,
     community_verdict_healthy: (count) =>
       `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als probleemloos.`,
     community_verdict_problematic: (count) =>
@@ -551,6 +613,7 @@ export const TRANSLATIONS = {
     group_not_installable: (count) =>
       `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
     updates_empty: "Geen updates die aandacht nodig hebben, alles is up-to-date.",
+    updates_hidden_by_filter: "Alle updates zijn nu verborgen. Open het ⋮-menu om overgeslagen of niet-installeerbare updates te tonen.",
     history_empty: "Nog geen updates gelogd.",
     history_section_today: "Vandaag",
     history_section_yesterday: "Gisteren",
@@ -558,7 +621,8 @@ export const TRANSLATIONS = {
     history_section_this_month: "Deze maand",
     history_section_earlier: "Eerder",
     loading: "Laden…",
-    load_error_prefix: "Kon Update Manager niet laden: ",
+    load_error_title: "Kon Update Manager niet laden",
+    load_error_connection_lost: "Verbinding met Home Assistant is verbroken. Herlaad de pagina zodra die terug is.",
     units: [
       ["jaar", "jaar"],
       ["maand", "maanden"],

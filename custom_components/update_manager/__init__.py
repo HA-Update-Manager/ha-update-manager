@@ -10,6 +10,7 @@ from homeassistant.loader import async_get_integration
 from .community_verdict import CommunityVerdictManager
 from .const import (
     CONF_ENABLED,
+    CONF_EXCLUDED_ENTITIES,
     CONF_HIDE_POSTPONED,
     CONF_LARGE_AUTO_INSTALL,
     CONF_LARGE_WAIT_DAYS,
@@ -113,8 +114,57 @@ def _migrate_large_size_option_keys(hass: HomeAssistant, entry: UpdateManagerCon
         hass.config_entries.async_update_entry(entry, options=options)
 
 
+# Home Assistant's own Core/Supervisor/OS update entities -- pre-populated
+# default members of excluded_entities (see coordinator.py's own
+# _is_excluded_from_auto_install), not a separate hard-coded exclusion
+# anymore (issue #6: users who want these eligible for auto-install too
+# can just remove them from this list, same as removing any other entity).
+_DEFAULT_EXCLUDED_ENTITIES = (
+    "update.home_assistant_core_update",
+    "update.home_assistant_supervisor_update",
+    "update.home_assistant_operating_system_update",
+)
+
+
+_EXCLUDED_ENTITIES_MIGRATED_FLAG = "default_excluded_entities_seeded"
+
+
+def _migrate_default_excluded_entities(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> None:
+    """One-time seed, covering both a genuinely fresh install (config_flow.py
+    itself sets no default for this option) and an existing install
+    upgrading from before this list existed at all.
+
+    Tracked via a private flag in entry.data, not by checking whether
+    CONF_EXCLUDED_ENTITIES is already present in entry.options -- found live,
+    2026-08-11: that key isn't a reliable "never configured" signal at all,
+    since websocket_api.py's own _handle_save_settings writes the *entire*
+    options dict from the Settings tab's current form data on every single
+    autosave, always including this field (vol.Required). Any install that
+    had ever saved settings before this feature existed already had
+    excluded_entities present (typically `[]`) long before this migration
+    got a chance to run, so the key-absence check found nothing to seed for
+    almost every real install -- the exact bug this flag replaces. entry.data
+    is never touched by that save handler (or anything else), so a flag
+    stored there survives indefinitely, and merges the three entity_ids into
+    whatever's already saved (instead of only seeding an empty list) so a
+    late-running migration doesn't clobber an unrelated exclusion someone
+    already added."""
+    if entry.data.get(_EXCLUDED_ENTITIES_MIGRATED_FLAG):
+        return
+    options = dict(entry.options)
+    excluded = list(options.get(CONF_EXCLUDED_ENTITIES) or [])
+    for entity_id in _DEFAULT_EXCLUDED_ENTITIES:
+        if entity_id not in excluded:
+            excluded.append(entity_id)
+    options[CONF_EXCLUDED_ENTITIES] = excluded
+    hass.config_entries.async_update_entry(
+        entry, options=options, data={**entry.data, _EXCLUDED_ENTITIES_MIGRATED_FLAG: True}
+    )
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry) -> bool:
     _migrate_large_size_option_keys(hass, entry)
+    _migrate_default_excluded_entities(hass, entry)
     options = dict(entry.options)
     rules = rules_from_options(options)
     # Constructed before the coordinator: it takes a reference to this (see

@@ -53,6 +53,30 @@ const CORE_UPDATE_ENTITY_ID = "update.home_assistant_core_update";
 // runtime. Copied verbatim from @mdi/js (mdiUpdate/mdiHistory/mdiCog) since
 // importing that package would need a build step, same reasoning as
 // avoiding Lit everywhere else in this project.
+// home-assistant-js-websocket's own Connection.sendMessagePromise (what
+// hass.callWS calls into) rejects with the bare number 3 (its own
+// ERR_CONNECTION_LOST constant, lib/errors.ts) instead of an Error object
+// when the connection itself drops while a command is still in flight --
+// its own real docs call this out as the one special-case rejection shape
+// reachable from an in-progress command (the other numbered error codes
+// there are all about the initial auth/connect handshake, never seen from
+// a live callWS failure). Found live, 2026-08-09:
+// _loadAll's own catch fell through to String(err) for this, surfacing as
+// the literal, meaningless "Couldn't load Update Manager: 3" -- see
+// LOAD_ERROR_CONNECTION_LOST below for how that's now told apart from a
+// real error message.
+const WS_ERR_CONNECTION_LOST = 3;
+// A distinct sentinel object, not a plain string -- _loadAll's own catch
+// can't look up the actual translated text yet (this._tr may still be
+// null at that point, before _translationsReady resolves; see get _tr's
+// own comment), so it stores this marker instead and _renderContent
+// resolves the real string once translations are guaranteed ready, the
+// same point every other piece of this method's own text already comes
+// from. A plain string marker (e.g. "connection_lost") risked (however
+// unlikely) colliding with a genuine err.message that happened to read
+// the same; an object reference never can.
+const LOAD_ERROR_CONNECTION_LOST = Symbol("connection_lost");
+
 const ICON_UPDATE =
   "M21,10.12H14.22L16.96,7.3C14.23,4.6 9.81,4.5 7.08,7.2C4.35,9.91 4.35,14.28 7.08,17C9.81,19.7 14.23,19.7 16.96,17C18.32,15.65 19,14.08 19,12.1H21C21,14.08 20.12,16.65 18.36,18.39C14.85,21.87 9.15,21.87 5.64,18.39C2.14,14.92 2.11,9.28 5.62,5.81C9.13,2.34 14.76,2.34 18.27,5.81L21,3V10.12M12.5,8V12.25L16,14.33L15.28,15.54L11,13V8H12.5Z";
 const ICON_HISTORY =
@@ -87,6 +111,47 @@ const ICON_CHEVRON_DOWN = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,
 const ICON_THUMB_UP =
   "M23 10a2 2 0 0 0-2-2h-6.32l.96-4.57c.02-.1.03-.21.03-.32c0-.41-.17-.79-.44-1.06L14.17 1L7.59 7.58C7.22 7.95 7 8.45 7 9v10a2 2 0 0 0 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73zM1 21h4V9H1z";
 const ICON_ALERT = "M13 14h-2V9h2m0 9h-2v-2h2M1 21h22L12 2z";
+// mdiWrench, verified against @mdi/js 7.4.47's own real source (not
+// guessed) -- the "stuck, needs your attention" trailing icon/Repair icon,
+// deliberately not ICON_ALERT above (that's specifically for a problematic
+// community verdict, a different meaning entirely) and deliberately not a
+// plain warning triangle either: nothing here is actually broken, it's
+// just taking unusually long and might need a nudge, which is exactly what
+// HA's own Repairs page already uses a wrench for.
+const ICON_WRENCH =
+  "M22.7,19L13.6,9.9C14.5,7.6 14,4.9 12.1,3C10.1,1 7.1,0.6 4.7,1.7L9,6L6,9L1.6,4.7C0.4,7.1 0.9,10.1 2.9,12.1C4.8,14 7.5,14.5 9.8,13.6L18.9,22.7C19.3,23.1 19.9,23.1 20.3,22.7L22.6,20.4C23.1,20 23.1,19.3 22.7,19Z";
+
+// How long a plain, un-gated entity must stay observed installing before
+// _buildUpdatesList promotes it into the "Installing" section -- direct
+// user feedback: a custom card update (no progress reporting, installs in
+// well under a second) would otherwise flash the whole section in and out
+// of existence for a fraction of a second, for no benefit to anyone. Not
+// polled on a timer: opportunistically re-checked on whichever hass push
+// happens to land next (see this._installingSince's own comment) -- an
+// install fast enough to never cross this delay at all is, by definition,
+// too fast to be worth showing here in the first place.
+const INSTALLING_PROMOTE_DELAY_MS = 1000;
+
+// How long an entity keeps counting as "installing" for display purposes
+// after the last time its own in_progress attribute was actually observed
+// true, even while it currently reads false -- found live, 2026-08-10: a
+// sleepy Zigbee end device's own in_progress genuinely toggles false
+// between wake cycles while the install is still ongoing (the exact same
+// phenomenon rollout_manager.py's own _FRONT_GRACE, whose value this
+// mirrors, already exists to tolerate server-side). Every check here used
+// to read in_progress instantaneously, with no memory of "was this true a
+// moment ago" -- a render landing during one of those gaps (most visible
+// right after a manual refresh, whose own reload skips the reactive
+// _updateInstallProgress path entirely and so has nothing to fall back on)
+// excluded the entity from the "Installing" section outright, with nothing
+// scheduled to look again until some unrelated later push happened to
+// catch it awake, which itself could take a while for a device that flips
+// true only briefly between longer sleep stretches. Not long enough to
+// bridge every real sleep gap (some battery devices sleep for minutes),
+// only to stop a single false reading -- however it was observed -- from
+// immediately hiding an entity that was, and very likely still is,
+// genuinely mid-install.
+const INSTALLING_FLICKER_GRACE_MS = 60000;
 
 // The one place "problematic -> alert icon, else thumb-up" gets decided --
 // found by code review, 2026-07-27: this exact ternary (or its count>0
@@ -328,8 +393,15 @@ function autoInstallEnabledFor(u, settings) {
 // string (same shape as pending_install.execute_at) so callers can reuse
 // relativeTime's formatting, or null when this can't/shouldn't be
 // projected (not waiting, or auto-install isn't actually enabled for it).
+// auto_install_cancelled (see install_manager.py's own is_cancelled) also
+// suppresses this -- cancelling auto-install for a
+// still-"waiting" update (before a real, formal announcement even exists)
+// already worked server-side, but this function had no way to know that,
+// so the dialog kept showing the exact same projection and Cancel button
+// right after clicking it, reading as "cancel doesn't do anything".
 function projectedAutoInstallTime(u, settings) {
   if (u.status !== "waiting" || u.remaining_seconds == null) return null;
+  if (u.auto_install_cancelled) return null;
   if (!autoInstallEnabledFor(u, settings) || settings.announce_hours == null) return null;
   const totalSeconds = u.remaining_seconds + settings.announce_hours * 3600;
   return new Date(Date.now() + totalSeconds * 1000).toISOString();
@@ -350,6 +422,11 @@ function projectedAutoInstallTime(u, settings) {
 // install either.
 function projectedAnnouncementTime(u, settings) {
   if (u.status !== "waiting" || u.remaining_seconds == null) return null;
+  // Same auto_install_cancelled guard as projectedAutoInstallTime above,
+  // and for the same reason: a cancelled version's announcement will never
+  // actually happen either (decide_action's own cancelled_to_version
+  // check), so projecting one here would be just as misleading.
+  if (u.auto_install_cancelled) return null;
   if (!autoInstallEnabledFor(u, settings)) return null;
   return new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
 }
@@ -963,19 +1040,116 @@ function updateIsInstalling(state) {
 }
 
 // The Updates list row's own trailing indicator while installing (see
-// _buildListRow) -- matches ha-config-updates.ts's own real
-// _renderUpdateProgress exactly: a percentage ring when the entity
-// supports it and reports one, a plain spinner otherwise. Replaces the
-// row's normal timer pill + chevron entirely while installing, same as
-// HA's own row replaces its trailing chevron with exactly this and
-// nothing else.
+// _buildListRow) -- a percentage ring once the entity reports one *and*
+// it's actually above zero, a plain spinner otherwise. Replaces the row's
+// normal timer pill + chevron entirely while installing, same as HA's own
+// row replaces its trailing chevron with exactly this and nothing else.
+// Deliberately NOT the same as ha-config-updates.ts's own real
+// _renderUpdateProgress (confirmed against its actual source): that shows
+// a ring the instant update_percentage is merely non-null, including a
+// literal 0 -- a ring frozen at 0% reads
+// as nothing happening at all, not as "just started". A plain spinner
+// until the percentage is genuinely > 0 (real download/flash progress)
+// reads honestly either way; shouldShowProgressRing below is the one
+// place this rule lives, shared with _patchListRowProgress so the two
+// can't drift apart.
+// A small, self-built SVG ring (track + indicator), not Home Assistant's
+// own ha-progress-ring -- found live, 2026-08-11, confirmed directly (not
+// guessed) via the browser console: `customElements.get('ha-progress-
+// ring')` returned undefined even after 100+ refreshes of a session that
+// only ever opened this panel. Confirmed against home-assistant/
+// frontend's own source: unlike ha-spinner (used by its own loading
+// screen and sidebar, so always loaded before any panel gets a chance to
+// render at all), ha-progress-ring is only ever loaded by a handful of
+// specific pages (Settings > Updates, a config flow's own progress step,
+// zwave_js's own dialogs) -- an external panel script has no import
+// relationship with any of those and no reliable way to force one of
+// them to load first. A ring this project builds and fully owns has no
+// such dependency at all, so it's simply always there.
+//
+// Every visual/behavioral detail below is taken directly from the real
+// source, not approximated: home-assistant/frontend's own
+// ha-progress-ring.ts (the "small" = 28px size mapping, --track-width:
+// 4px fixed regardless of size, --track-color/--indicator-color falling
+// back to --divider-color/--primary-color) layered on top of
+// @home-assistant/webawesome's own wa-progress-ring component (the actual
+// radius/circumference/offset math in its updated(), and its own
+// progress-ring.styles.js: round line cap only on the indicator, a 0.35s
+// stroke-dashoffset transition, the whole ring rotated -90deg so the
+// indicator starts at 12 o'clock) -- verified against the published
+// @home-assistant/webawesome npm package's own dist output directly, not
+// guessed from how a progress ring "usually" looks.
+const PROGRESS_RING_SIZE = 28;
+const PROGRESS_RING_STROKE = 4;
+const PROGRESS_RING_RADIUS = PROGRESS_RING_SIZE / 2 - PROGRESS_RING_STROKE / 2;
+const PROGRESS_RING_CIRCUMFERENCE = 2 * Math.PI * PROGRESS_RING_RADIUS;
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function _progressRingOffset(percentage) {
+  const clamped = Math.max(0, Math.min(100, percentage));
+  return PROGRESS_RING_CIRCUMFERENCE - (clamped / 100) * PROGRESS_RING_CIRCUMFERENCE;
+}
+
+function buildProgressRing(percentage, label) {
+  const center = PROGRESS_RING_SIZE / 2;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", PROGRESS_RING_SIZE);
+  svg.setAttribute("height", PROGRESS_RING_SIZE);
+  svg.setAttribute("viewBox", `0 0 ${PROGRESS_RING_SIZE} ${PROGRESS_RING_SIZE}`);
+  svg.classList.add("progress-ring");
+  svg.style.rotate = "-90deg";
+  svg.style.transformOrigin = "50% 50%";
+  svg.setAttribute("role", "progressbar");
+  svg.setAttribute("aria-label", label);
+  svg.setAttribute("aria-valuemin", "0");
+  svg.setAttribute("aria-valuemax", "100");
+  const track = document.createElementNS(SVG_NS, "circle");
+  track.setAttribute("cx", center);
+  track.setAttribute("cy", center);
+  track.setAttribute("r", PROGRESS_RING_RADIUS);
+  track.setAttribute("fill", "none");
+  track.setAttribute("stroke", "var(--divider-color)");
+  track.setAttribute("stroke-width", PROGRESS_RING_STROKE);
+  svg.appendChild(track);
+  const indicator = document.createElementNS(SVG_NS, "circle");
+  indicator.setAttribute("cx", center);
+  indicator.setAttribute("cy", center);
+  indicator.setAttribute("r", PROGRESS_RING_RADIUS);
+  indicator.setAttribute("fill", "none");
+  indicator.setAttribute("stroke", "var(--primary-color)");
+  indicator.setAttribute("stroke-width", PROGRESS_RING_STROKE);
+  indicator.setAttribute("stroke-linecap", "round");
+  indicator.setAttribute("stroke-dasharray", `${PROGRESS_RING_CIRCUMFERENCE} ${PROGRESS_RING_CIRCUMFERENCE}`);
+  indicator.style.transitionProperty = "stroke-dashoffset";
+  indicator.style.transitionDuration = "0.35s";
+  indicator.classList.add("progress-ring-indicator");
+  svg.appendChild(indicator);
+  svg.setAttribute("aria-valuenow", percentage);
+  indicator.setAttribute("stroke-dashoffset", _progressRingOffset(percentage));
+  return svg;
+}
+
+// Live value update for an already-built ring (see buildProgressRing) --
+// _patchListRowProgress's own cheaper alternative to tearing the whole
+// node down and rebuilding it on every single percentage tick, same
+// reasoning that method's own docstring already gives. The CSS transition
+// set up on the indicator itself (see buildProgressRing) is what actually
+// animates the change smoothly, this just sets the new target.
+function setProgressRingValue(svgEl, percentage) {
+  svgEl.setAttribute("aria-valuenow", percentage);
+  svgEl.querySelector(".progress-ring-indicator").setAttribute("stroke-dashoffset", _progressRingOffset(percentage));
+}
+
+function isProgressRingNode(node) {
+  return !!(node && node.classList && node.classList.contains("progress-ring"));
+}
+
+function shouldShowProgressRing(state) {
+  return !!(state && state.attributes.update_percentage > 0);
+}
 function installingIndicatorNode(state, tr) {
-  if (state && state.attributes.update_percentage != null) {
-    const ring = document.createElement("ha-progress-ring");
-    ring.size = "small";
-    ring.value = state.attributes.update_percentage;
-    ring.label = tr.status_installing;
-    return ring;
+  if (shouldShowProgressRing(state)) {
+    return buildProgressRing(state.attributes.update_percentage, tr.status_installing);
   }
   const spinner = document.createElement("ha-spinner");
   spinner.size = "small";
@@ -991,6 +1165,16 @@ function friendlyEntityName(hass, entityId) {
   const state = entityState(hass, entityId);
   const name = (state && state.attributes && state.attributes.friendly_name) || entityId;
   return name.replace(/\s+update$/i, "");
+}
+
+// Shared by the "Installing" section's own stuck row and the detail
+// dialog's own stuck alert -- "3h 40m" style, at least 1 minute (never
+// "0m", which would read as if nothing at all had happened yet).
+function formatStuckDuration(tr, since) {
+  const totalMinutes = Math.max(1, Math.round((Date.now() - since.getTime()) / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? tr.duration_hours_minutes(hours, minutes) : tr.duration_minutes(minutes);
 }
 
 // Matches ha-config-updates.ts's own real supporting-text line (confirmed
@@ -1366,10 +1550,28 @@ class UpdateManagerPanel extends HTMLElement {
     this._route = null;
     this._updates = null;
     this._rolloutGroups = [];
+    this._rolloutStatusByEntityId = new Map();
+    this._tierWaiting = new Set();
+    this._stuck = new Map();
+    // entityId -> Date.now() it was first observed installing=true, purely
+    // client-side (distinct from rollout_manager.py's own server-side
+    // per-entity tracking) -- feeds INSTALLING_PROMOTE_DELAY_MS's own
+    // debounce, see that constant's own comment.
+    this._installingSince = new Map();
+    // entityId -> Date.now() it was last observed installing=true, kept
+    // separately from _installingSince above (which resets on any false
+    // reading) -- feeds INSTALLING_FLICKER_GRACE_MS's own tolerance, see
+    // that constant's own comment and _isEffectivelyInstalling below.
+    this._installingLastTrueAt = new Map();
+    // Set of entityIds, from the server -- see _loadAll's own comment and
+    // _isEffectivelyInstalling below.
+    this._recentlyInstalling = new Set();
+    // entityId -> the last real (non-null) update_percentage seen -- feeds
+    // _stateWithRememberedPercentage below.
+    this._lastKnownPercentage = new Map();
     this._installLog = null;
     this._settings = null;
     this._defaults = null;
-    this._hardExcludedEntities = [];
     this._dialogEntityId = null;
     this._dialogLastState = null;
     this._dialogStatusTextNode = null;
@@ -1409,6 +1611,7 @@ class UpdateManagerPanel extends HTMLElement {
       this._updateShell();
       this._updateDialogProgress();
       this._updateInstallProgress();
+      this._checkForNewUpdateEntities();
     }
   }
 
@@ -1483,6 +1686,36 @@ class UpdateManagerPanel extends HTMLElement {
     // fresh object, see _updateShell's own comment) is a safe, late
     // catch-up regardless of what raced what earlier.
     this._updateShell();
+    // Seeds this._installingSince/this._installSnapshots for the first
+    // time -- found live, 2026-08-09: an entity
+    // already genuinely installing before this page even loaded rendered
+    // under "Ready to update" first, only jumping into the Installing
+    // section a few seconds later. Root cause: this._installingSince
+    // (INSTALLING_PROMOTE_DELAY_MS's own debounce) is normally seeded by
+    // _updateInstallProgress, but that's only ever called reactively (see
+    // set hass's own non-first branch) -- never on this very first load,
+    // so the very first render here had nothing to debounce from at all.
+    // Safe to call this early: on a first-ever call, this._installSnapshots
+    // is still empty, so every per-entity diff below short-circuits on its
+    // own `if (!prev) continue`, and none of its three trailing render/
+    // reload branches can fire -- it only seeds state here, the explicit
+    // _renderContent() right after remains the one real render.
+    //
+    // Backdated past INSTALLING_PROMOTE_DELAY_MS for anything already
+    // installing at this exact point, not left at Date.now() the way
+    // _updateInstallProgress would otherwise seed it -- that delay exists
+    // to avoid a flash-then-vanish for something installing near-instantly
+    // (see that constant's own comment), which plainly isn't what's
+    // happening for an entity that was already installing before this
+    // page even loaded. Set first, so the call below (only ever seeding a
+    // still-*unset* entry, see its own `if (!this._installingSince.has(...))`
+    // guard) leaves this backdated value alone instead of overwriting it.
+    for (const u of this._updates || []) {
+      if (this._isEffectivelyInstalling(u.entity_id)) {
+        this._installingSince.set(u.entity_id, Date.now() - INSTALLING_PROMOTE_DELAY_MS);
+      }
+    }
+    this._updateInstallProgress();
     this._renderContent();
   }
 
@@ -1496,10 +1729,45 @@ class UpdateManagerPanel extends HTMLElement {
       ]);
       this._updates = updatesResp.updates;
       this._rolloutGroups = updatesResp.rollout_groups || [];
+      // Built once per load, not re-derived on every _rolloutStatusFor
+      // call -- found by code review, 2026-08-10: that method used to
+      // linearly scan every group and .find() each group's own entity
+      // list on every single call, and it's called once per entity inside
+      // both _buildInstallingCard's and _buildUpdatesList's own per-render
+      // loops (O(updates * groups * entries) per render instead of
+      // O(updates + queued entries)).
+      this._rolloutStatusByEntityId = new Map();
+      for (const group of this._rolloutGroups) {
+        const frontEntityId = group.entities[0].entity_id;
+        for (const entry of group.entities) {
+          this._rolloutStatusByEntityId.set(entry.entity_id, { status: entry.status, frontEntityId });
+        }
+      }
+      // Tier-gate equivalent of _rolloutGroups above (see rollout_manager.py's
+      // own tier_blocked_entity_ids/stuck_entity_ids) -- entityId Sets, not
+      // arrays, since every use of these is a membership check.
+      this._tierWaiting = new Set(updatesResp.tier_waiting || []);
+      // entityIds rollout_manager.py's own periodic tracking has recently
+      // (see its own _RECENTLY_INSTALLING_GRACE) observed in_progress true
+      // -- consulted by _isEffectivelyInstalling as a source of truth that
+      // survives this exact reload/panel re-entry, unlike
+      // this._installingLastTrueAt's own client-side memory.
+      this._recentlyInstalling = new Set(updatesResp.recently_installing || []);
+      // entityId -> { since: Date, isZigbee } (see rollout_manager.py's own
+      // stuck_since_snapshot) -- since feeds the row/dialog's own real,
+      // live duration text ("Installing for 3h 40m"); isZigbee picks
+      // between the dialog's battery-wake-up tip and the neutral "kan nog
+      // gewoon goedkomen" text, resolved server-side (see that method's
+      // own comment for why, not duplicated here).
+      this._stuck = new Map(
+        Object.entries(updatesResp.stuck || {}).map(([id, info]) => [
+          id,
+          { since: new Date(info.since), isZigbee: !!info.is_zigbee },
+        ])
+      );
       this._installLog = logResp.entries.slice().reverse();
       this._settings = settingsResp.options;
       this._defaults = settingsResp.defaults;
-      this._hardExcludedEntities = settingsResp.hard_excluded_entities || [];
       if (!this._formData) {
         // const.py's own DEFAULT_WAIT_DAYS as the silent fallback for
         // anything not actually stored yet, not an empty object --
@@ -1526,7 +1794,73 @@ class UpdateManagerPanel extends HTMLElement {
       }
       this._loadError = null;
     } catch (err) {
-      this._loadError = (err && err.message) || String(err);
+      this._loadError = err === WS_ERR_CONNECTION_LOST ? LOAD_ERROR_CONNECTION_LOST : (err && err.message) || String(err);
+    }
+    // Snapshot of every update.* entity_id hass currently considers
+    // *available* (state !== "unavailable"/"unknown") -- not merely
+    // present, and not just the ones update_manager/updates actually
+    // returned (an excluded/hard-excluded entity legitimately never
+    // appears in this._updates, but still belongs in this snapshot -- see
+    // _checkForNewUpdateEntities's own comment for both distinctions).
+    // Taken even on a failed load (this._hass is still valid then) so a
+    // reconnect-triggered retry doesn't immediately look "new" again.
+    if (this._hass) {
+      this._knownAvailableUpdateEntityIds = new Set(
+        Object.entries(this._hass.states)
+          .filter(([id, s]) => id.startsWith("update.") && s.state !== "unavailable" && s.state !== "unknown")
+          .map(([id]) => id)
+      );
+    }
+  }
+
+  // Right after a Home Assistant restart, update.* entities (Zigbee2MQTT's
+  // own in particular) can take anywhere from seconds to minutes to report
+  // in, well after this panel's own first _loadAll() already ran -- direct
+  // user feedback: "het duurt ook even na het herstarten voor alle update
+  // entities beschikbaar komen... update manager toont die ook niet direct,
+  // pas na een refresh". Root cause: every other reactive check in this
+  // class (_updateInstallProgress in particular) only ever iterates
+  // this._updates, the *already-known* list from the last _loadAll() --
+  // an entity that didn't exist yet at that point is invisible to a loop
+  // that never looks past what it already has, so nothing here ever
+  // noticed a brand new one arriving. There's no server-pushed update
+  // channel to lean on instead (websocket_api.py's own commands are all
+  // plain request/response, no subscribe), so this fills that gap from the
+  // client side: every hass push (already firing constantly, see set hass)
+  // is compared against the snapshot _loadAll() itself maintains, and a
+  // full reload is triggered the moment a genuinely new *available*
+  // update.* id shows up.
+  //
+  // Checked by *availability*, not merely by entity_id presence -- found
+  // live, 2026-08-10, right after the entity_id-only
+  // version of this shipped, still missing MQTT-backed entities that took
+  // a while to actually report in:
+  // Home Assistant registers an MQTT-backed entity's own entity_id in
+  // hass.states well before Zigbee2MQTT actually reconnects and reports
+  // real data, sitting at state "unavailable" in the meantime -- so the
+  // entity_id itself was never actually "new" by the time this panel first
+  // loaded, only its *availability* was, and the plain key-presence check
+  // never once fired for it.
+  //
+  // Compared against *every available* update.* entity hass knows, not
+  // just this._updates's own ids -- an entity update_manager itself
+  // excludes (const.py's own excluded_entities/hard-excluded list) would
+  // otherwise never make it into this._updates at all, and so would look
+  // "new" again on literally every single push forever, reloading in an
+  // endless loop.
+  _checkForNewUpdateEntities() {
+    if (!this._hass || this._reloadingForNewEntities) return;
+    if (!this._knownAvailableUpdateEntityIds) return;
+    for (const id in this._hass.states) {
+      if (!id.startsWith("update.") || this._knownAvailableUpdateEntityIds.has(id)) continue;
+      const state = this._hass.states[id];
+      if (state.state === "unavailable" || state.state === "unknown") continue;
+      this._reloadingForNewEntities = true;
+      this._loadAll().then(() => {
+        this._reloadingForNewEntities = false;
+        if (this._tab === "updates") this._renderContent();
+      });
+      return;
     }
   }
 
@@ -1773,7 +2107,7 @@ class UpdateManagerPanel extends HTMLElement {
       // its spinner, down with it. There's no real reason to check for an
       // even newer version on something already mid-install anyway.
       const updateEntityIds = Object.keys(this._hass.states).filter(
-        (entityId) => entityId.startsWith("update.") && !updateIsInstalling(this._hass.states[entityId])
+        (entityId) => entityId.startsWith("update.") && !this._isEffectivelyInstalling(entityId)
       );
       // Awaited before _loadAll(), not alongside it: direct user feedback,
       // 2026-07-25, wanting the refresh button to also pull in the latest
@@ -2153,7 +2487,7 @@ class UpdateManagerPanel extends HTMLElement {
     let dialogEntityVersionChanged = false;
     for (const u of this._updates) {
       const state = entityState(this._hass, u.entity_id);
-      const installing = updateIsInstalling(state);
+      const installing = this._isEffectivelyInstalling(u.entity_id, state);
       const installedVersion = state && state.attributes && state.attributes.installed_version;
       // Direct user feedback, 2026-08-02: "als er op de achtergrond ontdekt
       // wordt dat er een nieuwe update beschikbaar voor is, dan ververst de
@@ -2169,6 +2503,29 @@ class UpdateManagerPanel extends HTMLElement {
       // see _patchListRowProgress's own comment for why this needs its own,
       // more frequent hook.
       if (installing) this._patchListRowProgress(u.entity_id, state);
+      // Feeds INSTALLING_PROMOTE_DELAY_MS's own debounce (see that
+      // constant's own comment) -- when this first flips true, not
+      // re-touched on every later push while it stays true.
+      if (installing) {
+        if (!this._installingSince.has(u.entity_id)) {
+          this._installingSince.set(u.entity_id, Date.now());
+          // Guarantees the promotion itself actually gets (re-)evaluated
+          // once the debounce window has genuinely passed, even if
+          // nothing else happens to trigger a render in the meantime --
+          // found live, 2026-08-09: nothing visibly happened at all,
+          // spinner included, until some unrelated event triggered a
+          // render. Below,
+          // installingChanged only fires a render once, right at this
+          // exact instant (elapsed = 0, too early to promote); nothing
+          // was otherwise scheduled to look again right as the delay
+          // itself elapsed.
+          setTimeout(() => {
+            if (this._tab === "updates") this._renderContent();
+          }, INSTALLING_PROMOTE_DELAY_MS);
+        }
+      } else {
+        this._installingSince.delete(u.entity_id);
+      }
       const prev = previous.get(u.entity_id);
       if (!prev) continue;
       if (prev.installing !== installing) installingChanged = true;
@@ -2192,27 +2549,27 @@ class UpdateManagerPanel extends HTMLElement {
       // this method rather than re-inlining its own loadAll/reopen/render
       // sequence a second time.
       this._afterDialogAction(this._dialogEntityId);
-    } else if (anyVersionChanged) {
-      // Gated on the Updates tab, same as installingChanged right below --
-      // found live, 2026-08-07, direct user feedback: typing in the
-      // Settings tab's trusted-voters field (a free-text ha-form) could
-      // lose focus mid-word, not every time but sometimes. Root cause: this branch
-      // used to call _renderContent() unconditionally whenever *any*
-      // tracked update entity's version changed anywhere in the system --
-      // entirely unrelated to whatever tab is actually showing, and with
-      // no regard for a field the user might be actively editing.
-      // _renderContent() wipes and rebuilds the current tab's whole DOM
-      // (innerHTML = ""), which replaces the <ha-form> element itself,
-      // not just its value -- the browser can't keep focus on a node that
-      // no longer exists. Settings' own content never depends on
-      // this._updates at all, so skipping the render there loses nothing:
-      // _loadAll() still refreshes the underlying data in the background,
-      // and switching to Updates/History later renders it fresh anyway.
+    } else if (anyVersionChanged || installingChanged) {
+      // A reload, not just a render of whatever this._updates/
+      // this._rolloutGroups/this._tierWaiting already happened to have --
+      // two independent reasons land here, found live on separate
+      // occasions: (1) 2026-08-07, a version changing anywhere in the
+      // system used to call _renderContent() unconditionally regardless of
+      // which tab was showing, and _renderContent()'s own innerHTML wipe
+      // could drop focus mid-word out of the Settings tab's trusted-voters
+      // field; (2) 2026-08-09, rollout_manager.py's own queue can advance
+      // past a stalled front and dispatch the next device entirely
+      // server-side, with nothing client-triggered involved -- a plain
+      // render off the still-stale, pre-advance this._rolloutGroups then
+      // showed the newly-dispatched device with no progress indicator at
+      // all. Gated on the Updates tab either way: the reload itself always
+      // happens (Settings' own content never depends on this._updates, so
+      // skipping its render there loses nothing, and switching to Updates/
+      // History later renders it fresh anyway), the render only when it'd
+      // actually be seen.
       this._loadAll().then(() => {
         if (this._tab === "updates") this._renderContent();
       });
-    } else if (installingChanged && this._tab === "updates") {
-      this._renderContent();
     }
   }
 
@@ -2230,19 +2587,27 @@ class UpdateManagerPanel extends HTMLElement {
   // every hass push for every currently-installing entity instead (see the
   // call site above), a much cheaper live-patch of just this one node
   // rather than a full _renderContent() on every single percentage tick.
-  _patchListRowProgress(entityId, state) {
+  _patchListRowProgress(entityId, rawState) {
     if (this._tab !== "updates" || !this._contentEl) return;
     const row = this._contentEl.querySelector(`[data-entity-id="${CSS.escape(entityId)}"]`);
-    const indicator = row && row.querySelector(".row-end > ha-progress-ring, .row-end > ha-spinner");
+    const indicator = row && row.querySelector(".row-end > .progress-ring, .row-end > ha-spinner");
     if (!indicator) return;
+    // See _stateWithRememberedPercentage's own comment: this push's own
+    // update_percentage can genuinely be absent even though the install
+    // itself is still very much ongoing, so this is never trusted directly
+    // -- falls back to the last real percentage this entity reported
+    // itself, if this still counts as installing at all.
+    const state = this._stateWithRememberedPercentage(entityId, rawState);
     const percentage = state && state.attributes && state.attributes.update_percentage;
-    const isRing = indicator.tagName === "HA-PROGRESS-RING";
-    if (isRing !== (percentage != null)) {
-      // A percentage just appeared or disappeared -- the node itself needs
-      // to change shape (spinner <-> ring), not just a value tweak.
+    const isRing = isProgressRingNode(indicator);
+    if (isRing !== shouldShowProgressRing(state)) {
+      // A percentage just crossed 0 (or dropped back to it/disappeared) --
+      // the node itself needs to change shape (spinner <-> ring), not just
+      // a value tweak. Same rule installingIndicatorNode's own initial
+      // build already uses (shouldShowProgressRing), not duplicated here.
       indicator.replaceWith(installingIndicatorNode(state, this._tr));
-    } else if (isRing && indicator.value !== percentage) {
-      indicator.value = percentage;
+    } else if (isRing) {
+      setProgressRingValue(indicator, percentage);
     }
   }
 
@@ -2258,19 +2623,81 @@ class UpdateManagerPanel extends HTMLElement {
   // loading state of its own, no per-entity clear-skip handling either,
   // since a "ready" entity is never skipped/postponed by our own grouping
   // to begin with.
+  //
+  // No client-side tiering here anymore -- the same disruption-order
+  // (safe/firmware/host_firmware/supervisor/core/os) is now enforced
+  // server-side, in rollout_manager.py's own tier gate (install_tiers.py),
+  // the exact same shared gate every dispatch path already goes through
+  // regardless of how it was triggered. This method is back to exactly
+  // what it always was before that existed: fire every entity concurrently,
+  // let the server decide per entity_id whether to actually dispatch now
+  // or hold it back -- see _buildUpdatesList's own "ready" row loop
+  // (this._tierWaiting/this._stuck) for how the panel shows that back.
   async _updateAllInGroup(group) {
     const entityIds = group.entities
-      .filter((u) => !updateIsInstalling(entityState(this._hass, u.entity_id)))
+      .filter((u) => !this._isEffectivelyInstalling(u.entity_id))
       .map((u) => u.entity_id);
     if (!entityIds.length) return;
-    // Dispatched concurrently, not one at a time: each entity's own
-    // dispatch-or-queue decision is fully independent (RolloutManager's own
-    // gate already provides correct ordering for anything Zigbee-paced, see
-    // rollout_manager.py), so serializing these on the client would only
-    // slow "Update all" down for no correctness benefit.
+    // Fired immediately, before any of the actual dispatch/reload work
+    // below -- clicking Update all otherwise showed nothing happening
+    // right away, even with the
+    // reload below in place (several WS round-trips, not instant). This
+    // confirms the click itself registered, independent of how long the
+    // real work ends up taking.
+    this._showToast(this._tr.update_all_started_toast(entityIds.length));
     const results = await Promise.allSettled(
       entityIds.map((entityId) => this._hass.callWS({ type: "update_manager/install", entity_id: entityId }))
     );
+    // Seeded here, optimistically, for every entity the server just
+    // genuinely dispatched (`queued: false`, see websocket_api.py's own
+    // _handle_install -- update.install itself is fired as a background
+    // task there, not awaited, so its own in_progress attribute hasn't
+    // necessarily flipped true yet by the time this response comes back)
+    // -- found live, 2026-08-10: dispatching two same-network
+    // Zigbee devices at once showed the *queued* one jump into Installing
+    // immediately ("Waiting for X"), while X itself briefly stayed under
+    // Ready to update until its own real state caught up a moment later,
+    // reading as broken even though both facts were individually true.
+    // Backdated past INSTALLING_PROMOTE_DELAY_MS,
+    // same as _initialLoad's own precedent for an entity already installing
+    // before the debounce would otherwise apply, so both entities of a
+    // pair like this promote into Installing together instead of visibly
+    // one after the other.
+    results.forEach((result, i) => {
+      if (result.status === "fulfilled" && result.value && result.value.queued === false) {
+        // _installingLastTrueAt too, not just _installingSince below --
+        // found live, 2026-08-11: seeding _installingSince alone stopped
+        // being enough once _isEffectivelyInstalling (gating entry into
+        // the Installing section at all, see its own comment) started
+        // reading _installingLastTrueAt as its own first check. A fresh
+        // dispatch's own in_progress genuinely might not have propagated
+        // yet by the time this render happens, so without this, this
+        // entity's own optimistically-backdated _installingSince below was
+        // simply never reached at all -- most visible for a Zigbee
+        // network's own new front entity specifically, since every entity
+        // actually queued behind it shows immediately regardless (a
+        // different, unconditional code path, see _buildUpdatesList's own
+        // force-include comment), leaving the front looking like the only
+        // one that "didn't start" even though it's exactly the one that
+        // did.
+        this._installingLastTrueAt.set(entityIds[i], Date.now());
+        this._installingSince.set(entityIds[i], Date.now() - INSTALLING_PROMOTE_DELAY_MS);
+      }
+    });
+    // Reloads this._rolloutGroups/this._tierWaiting (and this._updates)
+    // right after dispatching, then rebuilds -- found live, 2026-08-09:
+    // nothing visibly happened at all, no spinner either.
+    // Without this, an entity the server actually *queued*
+    // (a Zigbee-model sibling asked to install while one's already in
+    // flight, or a tier-blocked one) never showed up as queued at all --
+    // its own real HA state never changes while merely queued, so nothing
+    // reactive (_updateInstallProgress, driven by real state_changed
+    // pushes) ever had anything to react to for it. Fires regardless of
+    // whether any install actually succeeded: the tier/rollout picture can
+    // have shifted either way, and the panel should reflect the real,
+    // current one either way.
+    await this._loadAll();
+    this._renderContent();
     results.forEach((result, i) => {
       if (result.status !== "rejected") return;
       const entityId = entityIds[i];
@@ -2343,7 +2770,20 @@ class UpdateManagerPanel extends HTMLElement {
           : "content content--list";
 
     if (this._loadError) {
-      this._contentEl.innerHTML = `<div class="error">${escapeHtml(this._tr.load_error_prefix)}${escapeHtml(this._loadError)}</div>`;
+      // A real ha-alert, not bare colored text -- a load error used to
+      // show as plain, unstyled red text in the corner of the page.
+      // Matches how every other warning/error in this
+      // panel already looks (the paused banner, the stuck alert, the held-
+      // back alert), instead of a one-off, unstyled treatment nothing else
+      // here uses. this._tr guaranteed non-null here: _renderContent's own
+      // caller already waits on _translationsReady before ever reaching
+      // this point (see its own guard near the top of this method).
+      const errorAlert = document.createElement("ha-alert");
+      errorAlert.alertType = "error";
+      errorAlert.title = this._tr.load_error_title;
+      errorAlert.textContent =
+        this._loadError === LOAD_ERROR_CONNECTION_LOST ? this._tr.load_error_connection_lost : this._loadError;
+      this._contentEl.appendChild(errorAlert);
       return;
     }
     if (!hasData) {
@@ -2415,6 +2855,15 @@ class UpdateManagerPanel extends HTMLElement {
   // pill, left of timerBadgeInfo's own pill, so a row can show both a
   // community verdict and a timer countdown at once instead of one
   // replacing the other, read-only slice added 2026-07-22.
+  //
+  // timerBadgeInfo.statusIcon/statusText (see the "Installing" section's
+  // own _buildInstallingCard) is a third, mutually-exclusive shape --
+  // "Waiting for other updates to finish first"
+  // simply doesn't fit in a pill sized for a short countdown ("Tomorrow
+  // 14:00"). The trailing chevron is replaced entirely by statusIcon, same
+  // "no chevron while something else needs to say its piece" precedent as
+  // the installing spinner above; the second, wrapping subtitle line is
+  // where the actual explanation lives instead of squeezed into the pill.
   _buildListRow(entityId, supportingText, onClick, timerBadgeInfo, verdictBadgeInfo) {
     const row = document.createElement("ha-list-item-button");
     row.hasMeta = true;
@@ -2437,6 +2886,14 @@ class UpdateManagerPanel extends HTMLElement {
     const supporting = document.createElement("span");
     supporting.slot = "supporting-text";
     supporting.textContent = supportingText;
+    if (timerBadgeInfo && timerBadgeInfo.statusText) {
+      supporting.classList.add("wraps");
+      supporting.appendChild(document.createElement("br"));
+      const statusLine = document.createElement("span");
+      statusLine.className = timerBadgeInfo.statusAttention ? "status-line attn" : "status-line";
+      statusLine.textContent = timerBadgeInfo.statusText;
+      supporting.appendChild(statusLine);
+    }
     row.appendChild(supporting);
 
     const end = document.createElement("div");
@@ -2447,7 +2904,14 @@ class UpdateManagerPanel extends HTMLElement {
     // source): its trailing chevron is *replaced* by the spinner/ring
     // while installing, never shown alongside it.
     if (timerBadgeInfo && timerBadgeInfo.installing) {
-      end.appendChild(installingIndicatorNode(entityState(this._hass, entityId), this._tr));
+      end.appendChild(
+        installingIndicatorNode(this._stateWithRememberedPercentage(entityId, entityState(this._hass, entityId)), this._tr)
+      );
+    } else if (timerBadgeInfo && timerBadgeInfo.statusIcon) {
+      const statusIcon = document.createElement("ha-svg-icon");
+      statusIcon.path = timerBadgeInfo.statusIcon;
+      statusIcon.className = timerBadgeInfo.statusAttention ? "status-icon attn" : "status-icon";
+      end.appendChild(statusIcon);
     } else {
       if (verdictBadgeInfo) end.appendChild(this._buildTimerPill(verdictBadgeInfo));
       if (timerBadgeInfo) end.appendChild(this._buildTimerPill(timerBadgeInfo));
@@ -2460,8 +2924,8 @@ class UpdateManagerPanel extends HTMLElement {
   }
 
   // One card per active Zigbee rollout group (see rollout_manager.py's own
-  // docstring: only ever appears once a second same-model/-version device
-  // is asked to install while one is already in flight, reactive not
+  // docstring: only ever appears once a second device on the same Zigbee
+  // network is asked to install while one is already in flight, reactive not
   // proactive: an untouched sibling still sitting in "Ready to update"
   // shows no queue card at all). Same building blocks as the normal
   // ready/waiting/blocked cards below (_buildListRow, installingIndicatorNode),
@@ -2493,53 +2957,154 @@ class UpdateManagerPanel extends HTMLElement {
     return { card, content, header };
   }
 
-  _buildRolloutGroupCard(group) {
+  // One unified card for everything currently installing or held back
+  // behind something else -- generalizes what used to be a per-Zigbee-
+  // group-only card to also cover the tier gate (install_tiers.py) and
+  // plain, un-gated installs (a solo "safe" update, dispatched
+  // immediately, never gated by anything). A section named "Installing"
+  // that only shows one of the three kinds of in-progress install isn't
+  // self-explanatory -- the section name has to mean what it says.
+  // Pulled entirely out of "Ready to update" (see _buildUpdatesList's own
+  // _installingEntityIds), never reordered there, same principle the
+  // rollout-queue-only version already established.
+  //
+  // Zigbee waits keep their own, named "waiting for X" text (always
+  // exactly one specific device directly in front, a single-file queue);
+  // tier waits stay generic (tr.tier_waiting_text) -- the tier ahead can
+  // be several entities at once (every "safe" update in the same batch),
+  // so there's no one name to point at, same reasoning already settled
+  // for the tier gate's own badge text.
+  _buildInstallingCard(entityIds) {
     const tr = this._tr;
-    const { card, content } = this._buildCardShell(
-      group.network === "z2m" ? tr.rollout_queue_title_z2m : tr.rollout_queue_title_zha
-    );
-
-    const subtitle = document.createElement("p");
-    subtitle.className = "hint";
-    subtitle.textContent = tr.rollout_queue_subtitle;
-    content.appendChild(subtitle);
-
-    // Always the *front* (currently installing) entity's name, not each
-    // row's own immediate predecessor: once the front entity finishes,
-    // every remaining entry shifts up and only the new front one is
-    // actually blocking progress, so it's the one accurate "waiting for"
-    // target regardless of how far back in line a given row sits.
-    const frontName = friendlyEntityName(this._hass, group.entities[0].entity_id);
-
+    const { card, content } = this._buildCardShell(tr.installing_section_title);
     const list = document.createElement("ha-list-base");
-    group.entities.forEach((entry) => {
-      const installing = entry.status === "installing";
-      list.appendChild(
-        this._buildListRow(
-          entry.entity_id,
-          [deviceAreaName(this._hass, entry.entity_id), group.to_version].filter(Boolean).join(" ⋅ "),
-          () => this._openDetailDialog(entry.entity_id),
-          installing ? { installing: true } : { icon: ICON_CLOCK_OUTLINE, text: tr.rollout_queue_waiting(frontName) }
-        )
-      );
-    });
+
+    // Genuinely installing first, then stuck, then merely waiting/queued
+    // (never yet dispatched at all) -- found live, 2026-08-11: entityIds
+    // itself carries no ordering of its own (this._updates' own order,
+    // essentially arbitrary), so a device that's actually installing right
+    // now could land anywhere, including dead last, below several that
+    // aren't doing anything yet. A stable sort (JS's own Array.sort
+    // guarantee), so entities within the same group keep whatever order
+    // they already had.
+    const priority = (entityId) => {
+      if (this._stuck.get(entityId)) return 1;
+      if (this._isEffectivelyInstalling(entityId)) return 0;
+      return 2;
+    };
+    entityIds
+      .slice()
+      .sort((a, b) => priority(a) - priority(b))
+      .forEach((entityId) => {
+        const u = this._updates.find((x) => x.entity_id === entityId);
+        const supportingText = [deviceAreaName(this._hass, entityId), u ? u.latest_version : null]
+          .filter(Boolean)
+          .join(" ⋅ ");
+        let timerBadgeInfo;
+        const stuck = this._stuck.get(entityId);
+        if (stuck) {
+          timerBadgeInfo = {
+            statusIcon: ICON_WRENCH,
+            statusText: tr.stuck_waiting_text(formatStuckDuration(tr, stuck.since)),
+            statusAttention: true,
+          };
+        } else if (this._isEffectivelyInstalling(entityId)) {
+          timerBadgeInfo = { installing: true };
+        } else {
+          // this._rolloutStatusFor already walks this._rolloutGroups to
+          // answer "who's in front of me" for the dialog's own Install-button
+          // swap -- found by review: this used to be a second, independent
+          // walk of the same groups, built fresh here just to get the same
+          // front entity's name. Only ever a genuinely queued-behind-someone
+          // entity here (status !== "installing") -- _buildUpdatesList's own
+          // installingEntityIds no longer force-includes a queue's *front*
+          // entity just because rollout_groups still lists it as such (see
+          // that method's own comment), so there's no ambiguous "front but
+          // not really installing" case left to handle here at all.
+          const rolloutStatus = this._rolloutStatusFor(entityId);
+          if (rolloutStatus) {
+            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId)) };
+          } else {
+            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.tier_waiting_text };
+          }
+        }
+        list.appendChild(
+          this._buildListRow(entityId, supportingText, () => this._openDetailDialog(entityId), timerBadgeInfo)
+        );
+      });
     content.appendChild(list);
     return card;
   }
 
-  // Looks up entityId inside this._rolloutGroups (see rollout_manager.py's
-  // own rollout_groups_snapshot), null if it isn't part of any active
+  // The tolerant "does this entity still count as installing, for display
+  // purposes" check -- see INSTALLING_FLICKER_GRACE_MS's own comment for
+  // why a bare, instantaneous in_progress read (what a plain
+  // updateIsInstalling(entityState(...)) call gives) isn't enough on its
+  // own for every place that decides whether an entity belongs in the
+  // "Installing" section. Also true for anything rollout_manager.py's own
+  // recently_installing (this._recentlyInstalling, see _loadAll's own
+  // comment) still vouches for -- found live, 2026-08-10: leaving and
+  // re-entering the panel (or a plain refresh) creates a brand new
+  // instance of this class with nothing in this._installingLastTrueAt yet,
+  // so a render landing exactly when a sleepy device's own in_progress
+  // happened to read false had no history of its own to fall back on
+  // either -- unlike the server side, which doesn't reset just because the
+  // browser tab did. Updates this._installingLastTrueAt itself whenever it
+  // finds in_progress genuinely true (from either source), so every call
+  // site shares the exact same record of "when was this last actually
+  // seen installing" from here on, without needing to keep re-consulting
+  // the server. `state`, if the caller already has it, saves a redundant
+  // entityState() lookup.
+  _isEffectivelyInstalling(entityId, state = entityState(this._hass, entityId)) {
+    if (updateIsInstalling(state) || this._recentlyInstalling.has(entityId)) {
+      this._installingLastTrueAt.set(entityId, Date.now());
+      return true;
+    }
+    const lastTrue = this._installingLastTrueAt.get(entityId);
+    if (lastTrue != null && Date.now() - lastTrue < INSTALLING_FLICKER_GRACE_MS) return true;
+    this._installingLastTrueAt.delete(entityId);
+    return false;
+  }
+
+  // Fills in the last known real update_percentage when the live state
+  // doesn't currently have one, for an entity that still counts as
+  // installing (_isEffectivelyInstalling, same reasoning) -- shared by
+  // every place that decides spinner-vs-ring (installingIndicatorNode via
+  // _buildListRow, and _patchListRowProgress), so a fresh full rebuild
+  // (_refresh's own reload, leaving and re-entering the panel, any of the
+  // other renders that don't go through the reactive live-patch path)
+  // doesn't throw away real, recent progress just because this one
+  // particular push happens to be missing it -- found live, 2026-08-11,
+  // right after the live-patch-only version of this fix: percentage
+  // showed correctly only sometimes, and specifically reverted again after
+  // a refresh, because that path rebuilds the indicator from scratch with
+  // no memory of its own to fall back on.
+  _stateWithRememberedPercentage(entityId, state) {
+    const live = state && state.attributes && state.attributes.update_percentage;
+    if (live != null) {
+      this._lastKnownPercentage.set(entityId, live);
+      return state;
+    }
+    if (!this._isEffectivelyInstalling(entityId, state)) {
+      this._lastKnownPercentage.delete(entityId);
+      return state;
+    }
+    const remembered = this._lastKnownPercentage.get(entityId);
+    return remembered == null
+      ? state
+      : { ...state, attributes: { ...state.attributes, update_percentage: remembered } };
+  }
+
+  // O(1) lookup into this._rolloutStatusByEntityId (built once per
+  // _loadAll() from this._rolloutGroups, see rollout_manager.py's own
+  // rollout_groups_snapshot), null if entityId isn't part of any active
   // queue right now. Used both to exclude a queued/installing entity from
   // its normal ready/waiting/blocked group (see _buildUpdatesList) and to
   // swap the dialog's Install button for the same "waiting for X" state
   // (no-override decision, see rollout_manager.py's own docstring: a
   // queued device can't jump the line from here either).
   _rolloutStatusFor(entityId) {
-    for (const group of this._rolloutGroups) {
-      const entry = group.entities.find((e) => e.entity_id === entityId);
-      if (entry) return { status: entry.status, frontEntityId: group.entities[0].entity_id };
-    }
-    return null;
+    return this._rolloutStatusByEntityId.get(entityId) || null;
   }
 
   // Default sort: safest first (green, then orange, then red), see
@@ -2581,17 +3146,65 @@ class UpdateManagerPanel extends HTMLElement {
       return outer;
     }
 
-    // Active rollout-queue cards go above the normal ready/waiting/blocked
-    // groups (see _buildRolloutGroupCard): any entity shown there is
-    // excluded from its normal group in the same pass below, no duplicate
-    // row for the same entity in two places at once.
-    const queuedEntityIds = new Set();
-    this._rolloutGroups.forEach((group) => {
-      outer.appendChild(this._buildRolloutGroupCard(group));
-      group.entities.forEach((e) => queuedEntityIds.add(e.entity_id));
+    // Everything currently installing or held back (tier gate or Zigbee
+    // model gate) goes into one "Installing" card above the normal
+    // ready/waiting/blocked groups (see _buildInstallingCard); any entity
+    // shown there is excluded from its normal group in the same pass
+    // below, no duplicate row for the same entity in two places at once.
+    // A plain, un-gated install only joins after INSTALLING_PROMOTE_DELAY_MS
+    // (see this._installingSince's own comment) -- queued entries (already
+    // committed to a real, multi-item wait) show immediately, no debounce.
+    const installingEntityIds = [];
+    const now = Date.now();
+    this._updates.forEach((u) => {
+      const entityId = u.entity_id;
+      // Only a genuinely queued-behind-someone entity (or a tier-waiting
+      // one) is included unconditionally here -- a Zigbee queue's own
+      // *front* entity is deliberately NOT force-included just because
+      // rollout_groups still lists it as such: found live, 2026-08-09,
+      // expected it to revert back to the "ready" group instead --
+      // a front entity that's stopped actually
+      // installing (about to be advanced past server-side, see
+      // rollout_manager.py's own _async_advance_past_stalled_front) has
+      // no business still looking like it's installing here just because
+      // this._rolloutGroups hasn't caught up to that yet. Falling through
+      // to the plain updateIsInstalling check below instead means: still
+      // genuinely installing -> shown normally (debounced); not -> not
+      // shown here at all, reverting to wherever its own real status
+      // (still "ready" from before it was dispatched) already puts it.
+      const rolloutStatus = this._rolloutStatusFor(entityId);
+      if (this._tierWaiting.has(entityId) || (rolloutStatus && rolloutStatus.status !== "installing")) {
+        installingEntityIds.push(entityId);
+        return;
+      }
+      if (!this._isEffectivelyInstalling(entityId)) return;
+      // Seeded here too, not only reactively by _updateInstallProgress --
+      // found live: the progress spinner still didn't always show on an
+      // installing update item. A render triggered by a
+      // path that never goes through _updateInstallProgress first (e.g.
+      // _afterDialogAction's own _loadAll()+_renderContent(), right after
+      // a server-side Zigbee queue advance dispatches the next device on
+      // its own) could reach here for a genuinely, already-installing
+      // entity this._installingSince had simply never seeded yet -- since
+      // stayed null forever, so this entity never promoted into the
+      // Installing section at all, spinner or otherwise, until some
+      // unrelated later event happened to also flip its own in_progress
+      // (re-triggering _updateInstallProgress's own seeding instead).
+      // Same seed-then-schedule-a-followup-render pattern as that method's
+      // own, so the debounce window still gets a guaranteed second look.
+      if (!this._installingSince.has(entityId)) {
+        this._installingSince.set(entityId, Date.now());
+        setTimeout(() => {
+          if (this._tab === "updates") this._renderContent();
+        }, INSTALLING_PROMOTE_DELAY_MS);
+      }
+      const since = this._installingSince.get(entityId);
+      if (since != null && now - since >= INSTALLING_PROMOTE_DELAY_MS) installingEntityIds.push(entityId);
     });
+    if (installingEntityIds.length) outer.appendChild(this._buildInstallingCard(installingEntityIds));
 
-    const remainingUpdates = this._updates.filter((u) => !queuedEntityIds.has(u.entity_id));
+    const installingSet = new Set(installingEntityIds);
+    const remainingUpdates = this._updates.filter((u) => !installingSet.has(u.entity_id));
     if (!remainingUpdates.length) return outer;
 
     const groups = groupUpdates(
@@ -2600,6 +3213,18 @@ class UpdateManagerPanel extends HTMLElement {
       this._formData.show_skipped_updates,
       this._formData.show_not_installable_updates
     );
+
+    // remainingUpdates is non-empty (checked above) but groups came back
+    // empty -- every one of them is skipped/not-installable and both of
+    // the overflow menu's own toggles happen to be off right now. Direct
+    // user feedback: without this, the tab silently rendered nothing at
+    // all here, indistinguishable from updates_empty's own genuine
+    // "nothing to do" case above, which said something completely
+    // different (and wrong) about the actual state.
+    if (!groups.length) {
+      outer.appendChild(buildEmptyStateCard(tr.updates_hidden_by_filter));
+      return outer;
+    }
 
     const wrap = document.createElement("div");
     wrap.className = "update-groups";
@@ -2745,7 +3370,20 @@ class UpdateManagerPanel extends HTMLElement {
   // ha-more-info-state-header.ts's layout), status uses ha-alert (real
   // color/left-border treatment, not a plain paragraph), and version facts
   // use the same key/value ".row" pattern more-info-update.ts itself uses.
-  _openDetailDialog(entityId, historyEntry = null) {
+  // communityOverride ({ problematic_count, trusted_vote, trusted_voters_matched }),
+  // when given, replaces u.community_verdict/u.trusted_vote/u.trusted_voters_matched
+  // (the coordinator's own cache, up to an hour old) for this one build --
+  // see the pendingCommunitySection call below, which re-invokes this whole
+  // method with the Community section's own live verdict_for_version fetch
+  // once it disagrees with what's currently shown. Found by review,
+  // 2026-08-08: heldBackByCommunity (and the Cancel button/"will update
+  // automatically" alert it gates) used to be computed once, purely from
+  // that stale cache, and never revisited -- casting a vote in this same
+  // dialog session (or just opening it while the cache and the live
+  // aggregate already disagreed, no voting needed) left a contradictory
+  // alert/Cancel button in place until the dialog was closed and reopened
+  // by hand.
+  _openDetailDialog(entityId, historyEntry = null, communityOverride = null) {
     // While an update is actually installing, HA's own more-info dialog
     // already has the real thing (a live progress bar, a real percentage)
     // -- direct user feedback, 2026-08-01: "als hij installing is wil ik
@@ -2793,6 +3431,31 @@ class UpdateManagerPanel extends HTMLElement {
     // the entity's unrelated current pending update dragged in above it.
     const showPendingUpdate = u && !historyEntry;
 
+    // Hoisted here, 2026-08-10, so a queued entity's own dialog explains
+    // what it's waiting for and offers a way to leave the queue, going
+    // back to ready, instead of just a plain, uninformative status alert
+    // (see below). A queued entity's own staging status is
+    // already "ready" (rollout_manager.py's own pacing is a completely
+    // separate gate, see _buildUpdatesList's own force-include comment) --
+    // statusText/timerBadge below have no rollout awareness of their own
+    // (correct for the list row/pill, which already gets this from
+    // _buildInstallingCard's own separate handling), so without this the
+    // dialog fell straight through to a plain "Ready to update" alert, no
+    // explanation of what it's actually waiting for and no way to leave
+    // the queue.
+    const rolloutStatus = showPendingUpdate ? this._rolloutStatusFor(entityId) : null;
+    const isQueuedInRollout = !!(rolloutStatus && rolloutStatus.status === "queued");
+    // Same underlying question as isQueuedInRollout above, same "same
+    // scalable principle" answer -- see this._tierWaiting's own comment
+    // (install_tiers.py's disruption-order gate, entirely separate from
+    // the Zigbee-network one): this entity's own staging status is
+    // "ready" here too, so it needs the exact same dialog treatment
+    // (explains what it's waiting for, "Open update" stays clickable as a
+    // deliberate override, see that button's own comment) -- just no
+    // Cancel equivalent, since tier-blocking is a live, continuously
+    // re-evaluated gate, not a queue position to leave.
+    const isTierWaiting = !!(showPendingUpdate && this._tierWaiting.has(entityId));
+
     // Hoisted above the header, direct user feedback 2026-07-29: the
     // header's own brief .state value always shows the plain status
     // (ready/waiting/skipped/blocked) regardless of what the alert below
@@ -2808,11 +3471,31 @@ class UpdateManagerPanel extends HTMLElement {
     // negative vote showed both "will update automatically" *and* "held
     // back" side by side, and a Cancel button for an install that was
     // never actually going to run).
+    // communityOverride, once the Community section's own live fetch is in
+    // (see this method's own doc comment above), replaces the coordinator's
+    // stale cache values below -- effectiveTrustedVote only matters for the
+    // heldBackAlert's own text further down (a trusted voter's problematic
+    // vote gets named specifically), the count is what actually drives
+    // heldBackByCommunity itself. Guarded by showPendingUpdate the same way
+    // communityProblematicCount below already is, not just `u.trusted_vote`
+    // directly -- found live, 2026-08-09: `u` is undefined for the
+    // overwhelmingly common History-entry case (an already-installed
+    // entity with no *current* pending update to match in this._updates),
+    // and this line threw synchronously for every one of them, before
+    // dialog.open was ever reached -- no History dialog could open at all.
+    const effectiveTrustedVote = communityOverride ? communityOverride.trusted_vote : showPendingUpdate ? u.trusted_vote : undefined;
+    const effectiveTrustedVotersMatched = communityOverride ? communityOverride.trusted_voters_matched : showPendingUpdate ? u.trusted_voters_matched : undefined;
     const communityProblematicCount = showPendingUpdate
-      ? (u.community_verdict && u.community_verdict.problematic_count) || 0
+      ? communityOverride
+        ? communityOverride.problematic_count
+        : (u.community_verdict && u.community_verdict.problematic_count) || 0
       : 0;
     const heldBackByCommunity =
-      showPendingUpdate && communityBlocksAutoInstall(u) && !u.auto_install_excluded && u.status !== "skipped";
+      showPendingUpdate &&
+      effectiveTrustedVote !== "healthy" &&
+      communityProblematicCount > 0 &&
+      !u.auto_install_excluded &&
+      u.status !== "skipped";
     // Hoisted so both the header (always uses it) and this check (compares
     // against it) share one computation. The status alert itself is now
     // skipped entirely whenever it would add nothing beyond the header's
@@ -2834,7 +3517,19 @@ class UpdateManagerPanel extends HTMLElement {
     // Computed once here (rather than again down at the alert's own text
     // node below) since both need the exact same value: this comparison,
     // and, if it turns out to differ, the alert's initial text itself.
-    const dialogStatusText = showPendingUpdate ? statusText(tr, u, this._settings, this._hass) : null;
+    // isQueuedInRollout/isTierWaiting override statusText's own result --
+    // see those variables' own comments: statusText has no rollout/tier
+    // awareness at all (this entity's real staging status is plain
+    // "ready"), so without this override the dialog showed the same bare
+    // "Ready to update" text as the header, and willShowStatusAlert below
+    // stayed false.
+    const dialogStatusText = showPendingUpdate
+      ? isQueuedInRollout
+        ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId))
+        : isTierWaiting
+          ? tr.tier_waiting_text
+          : statusText(tr, u, this._settings, this._hass)
+      : null;
     const willShowStatusAlert = showPendingUpdate && !heldBackByCommunity && headerStateText !== dialogStatusText;
 
     // state-info + a right-aligned ".state" value, in a
@@ -2941,7 +3636,7 @@ class UpdateManagerPanel extends HTMLElement {
         // is a scheduled fact, not an accomplishment, regardless of which
         // underlying status (most often "ready", but not exclusively)
         // happens to have that schedule attached to it.
-        const statusAlertType = u.pending_install
+        const statusAlertType = u.pending_install || isQueuedInRollout || isTierWaiting
           ? "info"
           : STATUS_ALERT_TYPE[u.status] || STATUS_ALERT_TYPE[_FALLBACK_STATUS];
         const statusAlert = document.createElement("ha-alert");
@@ -2953,11 +3648,16 @@ class UpdateManagerPanel extends HTMLElement {
         // its real source), the text itself already explains what's
         // happening (statusText), the icon just ties it visually to the
         // same download/clock icon used elsewhere for "when".
-        const dialogBadge = timerBadge(tr, u, this._settings, this._hass);
-        if (dialogBadge) {
+        // timerBadge, like statusText, has no rollout/tier awareness of
+        // its own -- ICON_CLOCK_OUTLINE directly, same icon
+        // _buildInstallingCard's own rollout-queue/tier-wait badges
+        // already use for this exact situation.
+        const dialogBadgeIcon =
+          isQueuedInRollout || isTierWaiting ? ICON_CLOCK_OUTLINE : (timerBadge(tr, u, this._settings, this._hass) || {}).icon;
+        if (dialogBadgeIcon) {
           const customIcon = document.createElement("ha-svg-icon");
           customIcon.slot = "icon";
-          customIcon.path = dialogBadge.icon;
+          customIcon.path = dialogBadgeIcon;
           statusAlert.appendChild(customIcon);
         }
         // Kept as its own text node reference, not a one-shot string --
@@ -3023,6 +3723,63 @@ class UpdateManagerPanel extends HTMLElement {
           statusAlert.appendChild(cancelBtn);
           this._dialogActionButtons.push(cancelBtn);
         }
+        // Lets someone skip the remaining postponement wait itself, not
+        // just cancel an already-scheduled auto-install. Gated on u.status
+        // directly, not on cancelToVersion above (a different question --
+        // "is an auto-install actually scheduled") -- this must also help
+        // someone with auto-install
+        // disabled for this size who just wants to manually install
+        // without waiting out the postponement period. Never reachable
+        // while heldBackByCommunity is true, same reasoning as the Cancel
+        // button's own comment above (this whole block is gated on
+        // willShowStatusAlert).
+        if (u.status === "waiting") {
+          const readyBtn = document.createElement("ha-progress-button");
+          readyBtn.slot = "action";
+          readyBtn.style.setProperty("--wa-color-on-normal", "var(--primary-text-color)");
+          readyBtn.appearance = "plain";
+          readyBtn.label = tr.dialog_force_ready;
+          readyBtn.disabled = updateIsInstalling(this._dialogLastState);
+          readyBtn.addEventListener("click", () =>
+            _runProgressAction(readyBtn, async () => {
+              await this._hass.callWS({
+                type: "update_manager/force_ready",
+                entity_id: entityId,
+                to_version: u.latest_version,
+              });
+              await this._afterDialogAction(entityId);
+            })
+          );
+          statusAlert.appendChild(readyBtn);
+          this._dialogActionButtons.push(readyBtn);
+        }
+        // Lets someone leave a genuinely not-yet-dispatched wait and go back
+        // to a normal, standalone ready update -- whichever of the two ways
+        // that can currently happen: a Zigbee rollout queue entry, or a
+        // tier-blocked one (held back purely by the disruption-order gate).
+        // Never the front of a Zigbee queue, which is already actively
+        // installing -- a different operation entirely, not exposed here.
+        // Either way the entity's own staging status was already "ready"
+        // the whole time, so no further state change is needed beyond
+        // leaving the wait for it to show as a normal, standalone ready
+        // update again -- same backend call handles both, see
+        // rollout_manager.py's own async_cancel_queued docstring.
+        if (isQueuedInRollout || isTierWaiting) {
+          const cancelQueuedBtn = document.createElement("ha-progress-button");
+          cancelQueuedBtn.slot = "action";
+          cancelQueuedBtn.style.setProperty("--wa-color-on-normal", "var(--primary-text-color)");
+          cancelQueuedBtn.appearance = "plain";
+          cancelQueuedBtn.label = tr.cancel_auto_install;
+          cancelQueuedBtn.disabled = updateIsInstalling(this._dialogLastState);
+          cancelQueuedBtn.addEventListener("click", () =>
+            _runProgressAction(cancelQueuedBtn, async () => {
+              await this._hass.callWS({ type: "update_manager/cancel_queued", entity_id: entityId });
+              await this._afterDialogAction(entityId);
+            })
+          );
+          statusAlert.appendChild(cancelQueuedBtn);
+          this._dialogActionButtons.push(cancelQueuedBtn);
+        }
         body.appendChild(statusAlert);
       }
 
@@ -3045,8 +3802,8 @@ class UpdateManagerPanel extends HTMLElement {
         const heldBackAlert = document.createElement("ha-alert");
         heldBackAlert.alertType = "warning";
         heldBackAlert.textContent =
-          u.trusted_vote === "problematic"
-            ? tr.dialog_auto_install_held_back(joinUsernames(tr, u.trusted_voters_matched || []))
+          effectiveTrustedVote === "problematic"
+            ? tr.dialog_auto_install_held_back(joinUsernames(tr, effectiveTrustedVotersMatched || []))
             : tr.dialog_auto_install_held_back_community(communityProblematicCount);
         body.appendChild(heldBackAlert);
       }
@@ -3081,6 +3838,45 @@ class UpdateManagerPanel extends HTMLElement {
         ])
       );
 
+      // Shown once this entity has crossed rollout_manager.py's own
+      // _STUCK_THRESHOLD (see this._stuck's own comment) -- direct user
+      // feedback: "We zijn de update manager, dat betekent dat we de
+      // gebruiker moeten helpen". Icon is the same wrench the row/Repairs
+      // already use, via ha-alert's own real icon slot (not a hack --
+      // ha-alert's own source has <slot name="icon"> for exactly this).
+      // Action lives in the alert itself (ha-alert's own action slot too),
+      // not the footer among Skip/Cancel/Close -- that disconnected the
+      // action from its own explanation. Deliberately
+      // not called "Skip" -- that already exists and means something else
+      // (stop suggesting this version); this doesn't cancel the install,
+      // which may still finish on its own, it only stops this entity from
+      // holding anything else back (see RolloutManager.async_stop_waiting_for's
+      // own docstring).
+      const stuckInfo = this._stuck.get(entityId);
+      if (stuckInfo) {
+        const alert = document.createElement("ha-alert");
+        alert.alertType = "warning";
+        alert.title = tr.dialog_stuck_title(formatStuckDuration(tr, stuckInfo.since));
+        const alertIcon = document.createElement("ha-svg-icon");
+        alertIcon.slot = "icon";
+        alertIcon.path = ICON_WRENCH;
+        alert.appendChild(alertIcon);
+        const alertBody = document.createElement("span");
+        alertBody.textContent = stuckInfo.isZigbee ? tr.dialog_stuck_body_zigbee : tr.dialog_stuck_body_neutral;
+        alert.appendChild(alertBody);
+        const stopWaitingBtn = document.createElement("ha-button");
+        stopWaitingBtn.slot = "action";
+        stopWaitingBtn.appearance = "plain";
+        stopWaitingBtn.textContent = tr.dialog_stop_waiting;
+        stopWaitingBtn.addEventListener("click", async () => {
+          stopWaitingBtn.disabled = true;
+          await this._hass.callWS({ type: "update_manager/stop_waiting", entity_id: entityId });
+          if (!isDialogStale()) await this._afterDialogAction(entityId);
+        });
+        alert.appendChild(stopWaitingBtn);
+        body.appendChild(alert);
+      }
+
       // Not rendered here -- moved into the Release notes section below
       // (appendReleaseNotesSection), 2026-08-01, direct user feedback:
       // "Read release announcement" read oddly once the actual notes were
@@ -3106,7 +3902,18 @@ class UpdateManagerPanel extends HTMLElement {
       // which could let a not-yet-installed version get voted "healthy" if
       // a historyEntry also happened to be passed).
       const pendingCommunitySection = this._buildCommunitySection(
-        tr, entityId, u.installed_version, u.latest_version, false, isDialogStale
+        tr, entityId, u.installed_version, u.latest_version, false, isDialogStale,
+        // Corrects heldBackByCommunity/the alert above and the "Open
+        // update" button's own accent styling in place, but only once the
+        // Community section's own live fetch (or a fresh vote within it)
+        // actually disagrees with what this exact dialog was built with --
+        // avoids rebuilding on every routine open where the two already
+        // agree. See this method's own doc comment for the bug this fixes.
+        (live) => {
+          if (isDialogStale()) return;
+          if (live.problematic_count === communityProblematicCount && live.trusted_vote === effectiveTrustedVote) return;
+          this._openDetailDialog(entityId, historyEntry, live);
+        }
       );
       if (pendingCommunitySection) body.appendChild(pendingCommunitySection);
 
@@ -3679,14 +4486,6 @@ class UpdateManagerPanel extends HTMLElement {
     const canOpenUpdate = !!(showPendingUpdate && u.installable);
     const openBtn = document.createElement("ha-progress-button");
     if (canOpenUpdate) {
-      // A queued (not yet dispatched) Zigbee rollout entry can't jump the
-      // line from here either (no-override decision, see
-      // rollout_manager.py's own docstring): same "waiting for X" text
-      // the queue card itself shows, button disabled instead of opening
-      // HA's own dialog -- opening it would let someone install directly
-      // there, bypassing the whole point of pacing.
-      const rolloutStatus = this._rolloutStatusFor(entityId);
-      const isQueued = !!(rolloutStatus && rolloutStatus.status === "queued");
       // "accent" (not "filled") for the genuinely strong/primary look --
       // confirmed against ha-button's own real source: "filled" uses the
       // softer --wa-color-fill-normal, "accent" the bolder --wa-color-
@@ -3704,34 +4503,54 @@ class UpdateManagerPanel extends HTMLElement {
       // its loudest button inviting exactly the manual install the
       // warning right above it is discouraging.
       openBtn.appearance = u.status === "ready" && !heldBackByCommunity ? "accent" : "plain";
-      openBtn.label = isQueued
-        ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId))
-        : tr.dialog_open_update;
-      openBtn.disabled = isQueued || updateButtonIsDisabled(this._dialogLastState);
+      // Kept as the plain, standard "Open update" label even while queued/
+      // tier-waiting -- the "waiting for X" fact is already shown in the
+      // status alert right above this button, so repeating it as the
+      // button's own label was redundant, just longer. Left clickable
+      // either way, deliberately: this entity's own staging status is
+      // already "ready" regardless of queue/tier position (see
+      // rollout_manager.py's own docstring), and clicking through to HA's
+      // own dialog from here (see this button's own click handler below,
+      // reached for a tier-waiting entity too, since it never had a
+      // rolloutStatus-based safe path to begin with) is a real, explicit
+      // choice to install ahead of its own turn, not an accident --
+      // someone doing that on purpose is accepting whatever disruption/
+      // mesh-instability risk that carries themselves.
+      openBtn.label = tr.dialog_open_update;
+      openBtn.disabled = updateButtonIsDisabled(this._dialogLastState);
     } else {
       openBtn.appearance = "plain";
       openBtn.label = tr.dialog_more_info;
     }
     openBtn.addEventListener("click", () => {
-      // A rollout-group member (any status, not just "queued") installs
-      // via update_manager/install directly instead of opening HA's own
-      // dialog -- found by code review, 2026-07-29: rollout_manager.py's
-      // own pacing is only ever consulted through that websocket command
-      // (see websocket_api.py's own _handle_install); HA's real dialog
-      // calls update.install directly, completely invisible to it. Two
-      // identical Zigbee devices could otherwise both install at once by
-      // going through HA's own dialog one after the other, exactly the
-      // mesh-instability scenario this whole feature exists to prevent --
-      // isQueued alone (disabling the button while waiting your turn)
-      // wasn't enough, since a *not yet queued* member handing off to
-      // HA's dialog was just as capable of racing a sibling that starts
-      // installing microseconds later.
+      // A rollout-group member not yet queued (about to become the front,
+      // or racing to become one) installs via update_manager/install
+      // directly instead of opening HA's own dialog -- found by code
+      // review, 2026-07-29: rollout_manager.py's own pacing is only ever
+      // consulted through that websocket command (see websocket_api.py's
+      // own _handle_install); HA's real dialog calls update.install
+      // directly, completely invisible to it. Two Zigbee devices on the
+      // same network could otherwise both install at once by going through
+      // HA's own dialog one after the other, exactly the mesh-instability
+      // scenario this whole feature exists to prevent. A genuinely queued
+      // entry falls through to HA's own dialog below on purpose, unlike
+      // this case: clicking through from here while queued is the explicit
+      // "install ahead of my own turn anyway" override the button's own
+      // disabled state above deliberately allows now.
       const rolloutStatus = canOpenUpdate ? this._rolloutStatusFor(entityId) : null;
       if (canOpenUpdate && rolloutStatus && rolloutStatus.status !== "queued") {
         _runProgressAction(openBtn, async () => {
           const msg = { type: "update_manager/install", entity_id: entityId };
           if (state && (state.attributes.supported_features || 0) & 8) msg.backup = true;
           await this._hass.callWS(msg);
+          // Same reasoning as _updateAllInGroup's own reload -- this
+          // dispatch might have landed this entity (or, more likely, a
+          // sibling it's now sharing a queue with) in a tier/rollout-queue
+          // wait with no state_changed of its own to react to yet. Same
+          // established pattern the Cancel button right above already
+          // uses (await callWS, then _afterDialogAction) for exactly this
+          // "reflect what the server actually decided" reason.
+          await this._afterDialogAction(entityId);
         });
         return;
       }
@@ -4046,7 +4865,11 @@ class UpdateManagerPanel extends HTMLElement {
   // direct user feedback, 2026-07-22: the section read as cluttered, and a
   // sentence that's the same for every single vote didn't need to always
   // cost its own line.
-  _buildCommunitySection(tr, entityId, fromVersion, toVersion, allowHealthy, isDialogStale) {
+  // onLiveVerdict, when given, is called with { problematic_count,
+  // trusted_vote, trusted_voters_matched } once this section's own live
+  // verdict_for_version fetch resolves, and again after every vote cast in
+  // it -- see _openDetailDialog's own doc comment for what this is for.
+  _buildCommunitySection(tr, entityId, fromVersion, toVersion, allowHealthy, isDialogStale, onLiveVerdict) {
     if (!toVersion || !fromVersion) return null;
 
     const section = document.createElement("div");
@@ -4118,6 +4941,11 @@ class UpdateManagerPanel extends HTMLElement {
       // aggregate row below covers it on its own ("N people reported...").
       // No votes at all, anywhere: this row states that plainly.
       const counts = result.verdict || { healthy_count: 0, problematic_count: 0 };
+      onLiveVerdict?.({
+        problematic_count: counts.problematic_count,
+        trusted_vote: result.trusted_vote,
+        trusted_voters_matched: result.trusted_voters_matched,
+      });
       const myVerdict = result.my_verdict;
       if (myVerdict) {
         applyMyVerdictRow(verdictRow, verdictText, tr, myVerdict);
@@ -4265,6 +5093,22 @@ class UpdateManagerPanel extends HTMLElement {
       this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, myVerdict, (verdict) => {
         applyMyVerdictRow(verdictRow, verdictText, tr, verdict);
         updateAggregateRow(verdict);
+        // counts itself stays frozen at the original fetch (see
+        // updateAggregateRow's own comment); a vote cast just now in this
+        // session isn't reflected in it yet, so its own contribution is
+        // added/removed here the same optimistic way updateAggregateRow
+        // already does, relative to that same original myVerdict baseline
+        // -- correct regardless of how many times you re-vote in one
+        // session, since it's always compared against that one fixed point.
+        const optimisticProblematic = Math.max(
+          0,
+          counts.problematic_count - (myVerdict === "problematic" ? 1 : 0) + (verdict === "problematic" ? 1 : 0)
+        );
+        onLiveVerdict?.({
+          problematic_count: optimisticProblematic,
+          trusted_vote: result.trusted_vote,
+          trusted_voters_matched: result.trusted_voters_matched,
+        });
       });
     })();
 
@@ -4579,38 +5423,33 @@ class UpdateManagerPanel extends HTMLElement {
     excludedHint.textContent = tr.field_excluded_entities_helper;
     body.appendChild(excludedHint);
 
-    // Home Assistant Core/Supervisor/OS's own update entities are always
-    // excluded from auto-install, regardless of this list (see
-    // coordinator.py's hard_excluded_entity_ids). Shown here as if
-    // already part of it, not as a separate "these are also always
-    // excluded" note underneath that direct user feedback said nobody
-    // actually read in practice. this._mergedExcludedEntities() adds them
-    // to the *displayed* value only; the value-changed handler below
-    // filters them back out before they ever reach this._formData or a
-    // save, so removing one of these chips is a harmless no-op (still
-    // excluded either way, just via the hard rule instead of this list)
-    // rather than a real, persisted choice.
+    // Home Assistant Core/Supervisor/OS's own update entities start out as
+    // ordinary, pre-populated members of this same list (see __init__.py's
+    // own _migrate_default_excluded_entities), not a separate hard-coded
+    // exclusion -- removing one of these chips is a real, persisted
+    // choice, same as removing anything else from it.
     const entitiesForm = document.createElement("ha-form");
     entitiesForm.hass = this._hass;
     entitiesForm.schema = [
       { name: "excluded_entities", selector: { entity: { multiple: true, filter: { domain: "update" } } } },
     ];
-    entitiesForm.data = { ...this._formData, excluded_entities: this._mergedExcludedEntities() };
+    entitiesForm.data = this._formData;
     // Label drawn manually above (excludedLabel), not here: see this
     // section's own comment.
     entitiesForm.computeLabel = () => "";
     entitiesForm.computeHelper = () => "";
     entitiesForm.addEventListener("value-changed", (e) => {
-      // `|| []`, not a bare e.detail.value.excluded_entities -- .filter
-      // below would throw immediately on the null ha-form's own
-      // multiple:true selector emits once the last chip is removed (found
-      // live, 2026-07-27). pickKnownSettings has its own LIST_SETTINGS_FIELDS
-      // coercion too (for save_settings' own schema, which also rejects a
-      // null list outright), but that runs later, at save time -- doesn't
-      // help here, where the crash would already have happened.
-      const chosen = (e.detail.value.excluded_entities || []).filter((id) => !this._hardExcludedEntities.includes(id));
+      // `|| []`, not a bare e.detail.value.excluded_entities -- ha-form's
+      // own multiple:true selector emits null once the last chip is
+      // removed (found live, 2026-07-27), and this would otherwise save
+      // that literal null. pickKnownSettings has its own
+      // LIST_SETTINGS_FIELDS coercion too (for save_settings' own schema,
+      // which also rejects a null list outright), but that runs later, at
+      // save time -- doesn't help here, where the crash would already
+      // have happened.
+      const chosen = e.detail.value.excluded_entities || [];
       this._formData = { ...this._formData, excluded_entities: chosen };
-      entitiesForm.data = { ...this._formData, excluded_entities: this._mergedExcludedEntities() };
+      entitiesForm.data = this._formData;
       this._scheduleAutosave();
     });
     body.appendChild(entitiesForm);
@@ -4657,16 +5496,6 @@ class UpdateManagerPanel extends HTMLElement {
 
     card.appendChild(body);
     return card;
-  }
-
-  // The picker's displayed value: the user's own saved excluded_entities
-  // plus the hard-excluded entities (deduplicated), so the latter show up
-  // as ordinary chips instead of a separate explanatory note (see
-  // _buildAutoInstallCard). Never what actually gets saved: that stays
-  // this._formData.excluded_entities on its own, with the hard-excluded
-  // ones filtered back out on every change.
-  _mergedExcludedEntities() {
-    return Array.from(new Set([...(this._formData.excluded_entities || []), ...this._hardExcludedEntities]));
   }
 
   _styles() {
@@ -4734,20 +5563,31 @@ class UpdateManagerPanel extends HTMLElement {
       }
       /* Every tab shares one padded/centered container (.content--groups/
          --form/--list below all resolve to the same rule). Without this,
-         a loading/error message shown there stacked its own vertical
-         padding on top of the container's, landing at a different (larger)
-         amount than the rest of the page. */
-      .content--groups .loading, .content--groups .error,
-      .content--form .loading, .content--form .error,
-      .content--list .loading, .content--list .error { padding: 0; }
-      .error { color: var(--error-color); padding: 16px 0; font-size: var(--ha-font-size-m, 14px); }
+         a loading message shown there stacked its own vertical padding on
+         top of the container's, landing at a different (larger) amount
+         than the rest of the page. The load-error state used to need this
+         too, back when it was a bare, unstyled <div class="error"> -- now
+         a real ha-alert (see _renderContent's own comment), it needs no
+         special-casing here at all. */
+      .content--groups .loading, .content--form .loading, .content--list .loading { padding: 0; }
       ha-list-base { display: block; }
       /* Confirmed against ha-config-updates.ts's real static styles: without
          this, the "start" slot's own layout box doesn't actually match
          state-badge's real, hardcoded 40x40px size (see state-badge.ts),
          so the icon rendered inside it wasn't vertically centered. */
       ha-list-item-button { --md-list-item-leading-icon-size: 40px; }
-      div[slot="start"] { position: relative; }
+      /* Found live, 2026-08-11, direct user feedback: even with the fix
+         above, this slot's own box (md-list-item's internal layout stretches
+         it to the row's full height, 46px, not just the 40px icon-size
+         variable) still didn't match state-badge's fixed 40x40 -- e.g. a
+         genuine entity picture/logo, not just an mdi icon, sat pinned to
+         the top of that taller box instead of centered in it. HA's own
+         reference CSS (ha-config-updates.ts) has this exact same gap, just
+         apparently unnoticed there. Pinning the height to match
+         state-badge's own real size directly, rather than centering within
+         the extra 6px, removes the mismatch outright instead of working
+         around it. */
+      div[slot="start"] { position: relative; height: 40px; }
       .row-end { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       .timer-pill {
         display: inline-flex; align-items: center; gap: var(--ha-space-1, 4px);
@@ -4757,6 +5597,20 @@ class UpdateManagerPanel extends HTMLElement {
         font-size: var(--ha-font-size-xs, 11px); white-space: nowrap;
       }
       .timer-pill ha-svg-icon { --mdc-icon-size: 14px; }
+      /* _buildListRow's own statusIcon/statusText trailing state (see that
+         method's own comment) -- a full replacement for the pill+chevron,
+         not a variant of .timer-pill: that pill is sized for a short
+         countdown, not a full sentence like "Waiting for other updates to
+         finish first". */
+      .status-icon { color: var(--secondary-text-color); --mdc-icon-size: 20px; }
+      .status-icon.attn { color: var(--warning-color); }
+      /* supporting-text is single-line/ellipsized by default (md3 list
+         item's own styling) -- only overridden for a row that actually has
+         a second, wrapping status line, so every other row keeps its
+         normal one-line truncation untouched. */
+      span[slot="supporting-text"].wraps { white-space: normal; overflow: visible; text-overflow: initial; }
+      .status-line { display: block; color: var(--secondary-text-color); }
+      .status-line.attn { color: var(--warning-color); }
 
       ha-form { display: block; }
       /* margin-bottom, not padding-bottom on .content--form: every content--*
@@ -4844,7 +5698,7 @@ class UpdateManagerPanel extends HTMLElement {
          not a separate copy per DOM depth -- found by review: the rollout-
          queue-card fix (below) originally added its own third literal copy
          of this exact declaration next to two that already existed. The
-         rollout-queue cards (_buildRolloutGroupCard) and the empty-state
+         Installing card (_buildInstallingCard) and the empty-state
          card are appended directly to .update-groups-outer, not
          .update-groups -- found live, 2026-07-27, direct user feedback
          ("hij staat meer naar rechts"): a selector scoped to only
@@ -4859,22 +5713,45 @@ class UpdateManagerPanel extends HTMLElement {
          early return) is appended directly to .content--list, a sibling
          level this list didn't cover either, so it rendered at the full
          page width instead of matching every other card on that same tab
-         (.history-section-items > ha-card, further below). */
+         (.history-section-items > ha-card, further below). Missed again
+         (found live, 2026-08-11, direct user feedback "houdt geen rekening
+         met het grid"): the load-error alert (_renderContent's own
+         this._loadError branch) is appended directly to .content--groups/
+         .content--form/.content--list itself -- whichever tab happened to
+         be active when the load failed -- a level shallower still, since
+         it's shown before any of those tabs' own inner containers exist
+         yet. */
       .update-groups-outer > ha-alert,
       .update-groups-outer > ha-card,
       .content--list > ha-card,
+      .content--groups > ha-alert,
+      .content--form > ha-alert,
+      .content--list > ha-alert,
       .update-groups ha-card {
         display: block; max-width: 600px; margin: 0 auto var(--ha-space-6, 24px);
       }
       .update-groups { display: block; }
-      .update-groups .card-content { padding: 0; display: block; }
-      .update-groups .card-header {
+      /* .update-groups-outer, not .update-groups -- same reasoning as the
+         width-cap/centering rule above (found live, 2026-07-27, then again
+         2026-08-03 for History's own empty state): the Installing card
+         (_buildInstallingCard) is also appended directly to
+         .update-groups-outer, not nested inside .update-groups, so a
+         selector scoped to only .update-groups fell through for it too --
+         found live, 2026-08-09: the Installing section's own title/
+         padding looked visibly different from every other card. Both card
+         types share _buildCardShell, so they need to share this styling
+         too; .update-groups-outer (a descendant selector, not just a
+         direct-child one) still matches everything nested under
+         .update-groups exactly as before, this only adds coverage for a
+         card sitting one level shallower. */
+      .update-groups-outer .card-content { padding: 0; display: block; }
+      .update-groups-outer .card-header {
         display: flex; align-items: center; justify-content: space-between;
         gap: var(--ha-space-2, 8px);
         padding: var(--ha-space-4, 16px) var(--ha-space-2, 8px) 0 var(--ha-space-4, 16px);
       }
-      .update-groups .title { font-size: var(--ha-font-size-l, 18px); }
-      .update-groups ha-list-base { margin-bottom: var(--ha-space-2, 8px); }
+      .update-groups-outer .title { font-size: var(--ha-font-size-l, 18px); }
+      .update-groups-outer ha-list-base { margin-bottom: var(--ha-space-2, 8px); }
       /* Not scoped to .update-groups: the History tab's own empty state
          (see _buildHistoryList) reuses this same class/markup shape, not
          just the Updates tab's. */

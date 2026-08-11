@@ -35,7 +35,7 @@ from .const import (
 )
 from .hacs_identity import corrected_release_url
 from .semver import classify_version_size
-from .staging import StagingRules, evaluate_staging, wait_for_size
+from .staging import StagingRules, StagingResult, evaluate_staging, wait_for_size
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,9 +45,39 @@ _AVAILABLE_SINCE_STORAGE_KEY = f"{DOMAIN}_available_since"
 _LAST_INSTALLED_STORAGE_VERSION = 1
 _LAST_INSTALLED_STORAGE_KEY = f"{DOMAIN}_last_installed_version"
 
+_FORCE_READY_STORAGE_VERSION = 1
+_FORCE_READY_STORAGE_KEY = f"{DOMAIN}_force_ready"
+
+# Several Zigbee2MQTT-backed update entities briefly report this literal
+# string as their own installed_version right after a restart, before the
+# device's real firmware version has synced back over MQTT -- confirmed
+# live, 2026-08-09, via diagnostics showing install_log entries with
+# "from_version": "-1". Excluded everywhere installed_version feeds this
+# module's own restart-recovery baseline (both the write side and the
+# comparison side, see each call site's own comment), a shared constant
+# rather than the same literal repeated at both -- found by code review,
+# 2026-08-10.
+_PLACEHOLDER_INSTALLED_VERSION = "-1"
+
 # Same lookback window previous-state-tracker's config_flow.py already uses
 # for its own best-effort recorder history lookup.
 _HISTORY_LOOKBACK = timedelta(days=30)
+
+# How long a pending entity can sit genuinely unavailable before
+# _async_refresh_one evicts it from self.cache outright, rather than on the
+# very first unavailable state_changed event -- same phenomenon, same 2
+# minutes, as rollout_manager.py's own _UNAVAILABLE_GRACE (a Zigbee device
+# going briefly unavailable mid-OTA, an MQTT reconnect blip, is common and
+# usually resolves itself). Found live, 2026-08-10: a genuinely still-
+# installing entity briefly reporting unavailable got dropped from
+# self.cache entirely on the spot, disappearing from update_manager/updates'
+# own response -- and so from the panel's Installing section -- until some
+# unrelated later trigger happened to reload it. The panel's own
+# _checkForNewUpdateEntities only ever re-discovers an entity_id it hasn't
+# seen *available* before; an already-known one vanishing from this.cache
+# and reappearing doesn't trip that check at all, so nothing client-side
+# was going to recover this on its own.
+_CACHE_UNAVAILABLE_GRACE = timedelta(minutes=2)
 
 # Home Assistant Core/Supervisor/OS's own update entities, identified by
 # their unique_id (verified against homeassistant/components/hassio/
@@ -56,86 +86,64 @@ _HISTORY_LOOKBACK = timedelta(days=30)
 # ATTR_VERSION_LATEST = "version_latest" per hassio/const.py). Matched by
 # unique_id rather than by platform == "hassio": that platform also
 # provides regular add-ons' update entities, which are a different,
-# per-entity configurable category, not this hard exception.
-_HARD_EXCLUDED_UNIQUE_IDS = frozenset(
-    {
-        "home_assistant_core_version_latest",
-        "home_assistant_supervisor_version_latest",
-        "home_assistant_os_version_latest",
-    }
-)
+# per-entity configurable category, not this one. Also which
+# specific one (core/supervisor/os), for callers that need to tell them
+# apart, not just identify all three (see home_assistant_component_for_entity
+# below, shared with install_tiers.py's own tier_for_entity).
+_HOME_ASSISTANT_COMPONENT_BY_UNIQUE_ID = {
+    "home_assistant_core_version_latest": "core",
+    "home_assistant_supervisor_version_latest": "supervisor",
+    "home_assistant_os_version_latest": "os",
+}
 
 # A registry entry's unique_id is whatever it was when first created, not
 # whatever today's hassio/entity.py would generate -- it doesn't get
 # migrated just because the integration's own code changed since. Found
 # live: a real instance's Core/Supervisor/OS update entities didn't match
-# _HARD_EXCLUDED_UNIQUE_IDS at all, despite that matching current source.
-# These conventional entity_ids are the fallback for exactly that drift --
-# not the primary check (entity_id can, in the abstract, be renamed, unique_id
-# can't), but nobody actually renames these three in practice, so it's a
-# safe net for whatever unique_id scheme a given instance's registry
-# happens to still be carrying.
-_HARD_EXCLUDED_ENTITY_IDS = frozenset(
-    {
-        "update.home_assistant_core_update",
-        "update.home_assistant_supervisor_update",
-        "update.home_assistant_operating_system_update",
-    }
-)
+# _HOME_ASSISTANT_COMPONENT_BY_UNIQUE_ID at all, despite that matching
+# current source. These conventional entity_ids are the fallback for
+# exactly that drift -- not the primary check (entity_id can, in the
+# abstract, be renamed, unique_id can't), but nobody actually renames
+# these three in practice, so it's a safe net for whatever unique_id
+# scheme a given instance's registry happens to still be carrying.
+_HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID = {
+    "update.home_assistant_core_update": "core",
+    "update.home_assistant_supervisor_update": "supervisor",
+    "update.home_assistant_operating_system_update": "os",
+}
 
 
-def _matches_hard_exclusion(entity_id: str, unique_id: str | None) -> bool:
-    return entity_id in _HARD_EXCLUDED_ENTITY_IDS or unique_id in _HARD_EXCLUDED_UNIQUE_IDS
+def home_assistant_component_for_entity(
+    hass: HomeAssistant, entity_id: str, *, entry: er.RegistryEntry | None = None
+) -> str | None:
+    """"core"/"supervisor"/"os" if entity_id is one of Home Assistant's own
+    three update entities (unique_id-first, entity_id-fallback, see
+    _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID's own drift comment above), else
+    None. Shared with install_tiers.py's own tier_for_entity, which needs
+    this same identification for its own, unrelated reason (the tier gate)
+    -- found by review: that module had grown its own second, weaker copy
+    (entity_id only, no unique_id fallback) of these three entities.
+
+    entry: pass an already-fetched registry entry when the caller needs one
+    for its own further checks too (tier_for_entity's own translation_key
+    check right after this) -- avoids a second, redundant entity-registry
+    lookup for the same entity_id, found by code review, 2026-08-10.
+    Fetched fresh here when omitted."""
+    if entry is None:
+        entry = er.async_get(hass).async_get(entity_id)
+    if entry is not None and entry.unique_id in _HOME_ASSISTANT_COMPONENT_BY_UNIQUE_ID:
+        return _HOME_ASSISTANT_COMPONENT_BY_UNIQUE_ID[entry.unique_id]
+    return _HOME_ASSISTANT_COMPONENT_BY_ENTITY_ID.get(entity_id)
 
 
-def _is_hard_excluded_from_auto_install(hass: HomeAssistant, entity_id: str) -> bool:
-    """Core/Supervisor/HAOS always stay manual, never auto-install,
-    regardless of any setting -- decided 2026-07-15: the
-    impact of getting this wrong is the whole HA instance, not one
-    integration/add-on/device. Still shown normally otherwise (real size classification,
-    a real ready/waiting/blocked status) -- this only ever gates
-    install_manager.py's auto-install, never the informational display."""
-    entry = er.async_get(hass).async_get(entity_id)
-    return _matches_hard_exclusion(entity_id, entry.unique_id if entry else None)
-
-
-def hard_excluded_entity_ids(hass: HomeAssistant) -> list[str]:
-    """The real entity_ids (if these entities exist on this instance at all)
-    behind _HARD_EXCLUDED_UNIQUE_IDS -- exposed via websocket_api.py's
-    get_settings so the panel's excluded-entities picker can show *which*
-    entities are always excluded regardless of what's selected there
-    (direct user feedback: the helper text said so, but nothing in the
-    picker itself showed them, and they can't be added/removed from that
-    list anyway since this exclusion doesn't come from it).
-
-    Called on every settings-tab load/save, so this tries the 3 known
-    conventional entity_ids directly (O(1) each via the registry's own
-    index) rather than scanning every entity on the instance; only the
-    rare drift case (see _HARD_EXCLUDED_ENTITY_IDS's own comment -- a
-    conventional entity_id not actually present under that exact id) falls
-    back to a full scan, and only for whatever wasn't already found."""
-    registry = er.async_get(hass)
-    found: set[str] = set()
-    remaining_unique_ids = set(_HARD_EXCLUDED_UNIQUE_IDS)
-    for entity_id in _HARD_EXCLUDED_ENTITY_IDS:
-        entry = registry.async_get(entity_id)
-        if entry is not None:
-            found.add(entity_id)
-            remaining_unique_ids.discard(entry.unique_id)
-    if remaining_unique_ids:
-        for entry in registry.entities.values():
-            if entry.unique_id in remaining_unique_ids:
-                found.add(entry.entity_id)
-    return sorted(found)
-
-
-def _is_excluded_from_auto_install(hass: HomeAssistant, entity_id: str, excluded_entities: frozenset[str]) -> bool:
-    """The hard Core/Supervisor/HAOS exclusion, plus whatever the user
-    picked themselves on the settings screen (direct user feedback: expected
-    a way to add their own entities to the same always-manual behaviour, not
-    just the 3 hardcoded ones). Same rule either way: still shown normally
-    in Updates/History, install_manager.py just never auto-installs it."""
-    return _is_hard_excluded_from_auto_install(hass, entity_id) or entity_id in excluded_entities
+def _is_excluded_from_auto_install(entity_id: str, excluded_entities: frozenset[str]) -> bool:
+    """Whatever the user picked on the settings screen (Core/Supervisor/OS
+    included -- they're pre-populated default members of this same list,
+    see __init__.py's own _migrate_default_excluded_entities, not a second,
+    separate hard-coded exclusion anymore). Still shown normally in
+    Updates/History either way, install_manager.py just never
+    auto-installs it."""
+    return entity_id in excluded_entities
 
 
 def excluded_entities_from_options(options: dict) -> frozenset[str]:
@@ -285,6 +293,20 @@ class UpdateManagerCoordinator:
         self._last_installed_store: Store[dict[str, str]] = Store(
             hass, _LAST_INSTALLED_STORAGE_VERSION, _LAST_INSTALLED_STORAGE_KEY
         )
+        # entity_id -> the exact latest_version the panel's own "Ready now"
+        # button forced ready for, overriding the normal wait-days countdown
+        # for that one jump -- lets someone skip the rest of a postponement
+        # period they've decided isn't needed for this specific update.
+        # Self-clears the moment latest_version
+        # moves past the forced version: only ever consulted when it still
+        # matches the entity's *current* latest (see _async_cache_active/
+        # _recompute_all), so a version bump silently orphans the old
+        # record, no explicit cleanup needed here, same reasoning
+        # staging_skip.py's own self._skipped already relies on for itself.
+        self._force_ready: dict[str, str] = {}
+        self._force_ready_store: Store[dict[str, str]] = Store(
+            hass, _FORCE_READY_STORAGE_VERSION, _FORCE_READY_STORAGE_KEY
+        )
         self._listeners: list[Callable[[], None]] = []
         self._install_listeners: list[InstallListener] = []
         self._unsub_state_changed: Callable[[], None] | None = None
@@ -339,13 +361,16 @@ class UpdateManagerCoordinator:
         self._is_own_skip = checker
 
     async def async_start(self) -> None:
-        # Gathered, not two sequential awaits -- these are two fully
-        # independent Store reads, found by code review, 2026-07-27.
-        available_since, last_installed_version = await asyncio.gather(
-            self._available_since_store.async_load(), self._last_installed_store.async_load()
+        # Gathered, not sequential awaits -- fully independent Store reads,
+        # found by code review, 2026-07-27.
+        available_since, last_installed_version, force_ready = await asyncio.gather(
+            self._available_since_store.async_load(),
+            self._last_installed_store.async_load(),
+            self._force_ready_store.async_load(),
         )
         self._available_since = available_since or {}
         self._last_installed_version = last_installed_version or {}
+        self._force_ready = force_ready or {}
 
         # Subscribe *before* the initial bulk scan, not after -- found via
         # live testing on a real instance (some pending updates never
@@ -403,7 +428,14 @@ class UpdateManagerCoordinator:
         if state is None:
             return
         new_installed = state.attributes.get("installed_version")
-        if not new_installed:
+        # _PLACEHOLDER_INSTALLED_VERSION excluded the same way
+        # _async_refresh_one's own baseline-advance does (see that
+        # constant's own comment for the confirmed Zigbee2MQTT restart
+        # quirk this guards against) -- without it, a device that hasn't
+        # synced its real firmware version back yet would fire a bogus
+        # "install" event claiming the device regressed from its real
+        # previous version down to the placeholder.
+        if not new_installed or new_installed == _PLACEHOLDER_INSTALLED_VERSION:
             return
         old_installed = self._last_installed_version.get(entity_id)
         if old_installed is not None and old_installed != new_installed:
@@ -465,18 +497,38 @@ class UpdateManagerCoordinator:
         stuck that way forever, since its own state never changes again).
         This check heals that on the very next recompute instead of
         requiring a restart."""
+        # Catches an entity _async_refresh_one's own _CACHE_UNAVAILABLE_GRACE
+        # left alone on its one state_changed event, but that then never
+        # actually recovered and also never fired another such event to be
+        # re-checked by (a plain, no-op-attribute unavailable state usually
+        # doesn't keep firing state_changed on its own) -- this periodic
+        # pass is the safety net that still gets to it eventually, same
+        # "eventually consistent" role _async_recheck_stuck_installs already
+        # plays for rollout_manager.py's own equivalent grace period.
+        stale = [
+            entity_id
+            for entity_id in self.cache
+            if (state := self.hass.states.get(entity_id)) is not None
+            and state.state == "unavailable"
+            and now - state.last_changed >= _CACHE_UNAVAILABLE_GRACE
+        ]
+        for entity_id in stale:
+            del self.cache[entity_id]
+
         for entity_id, cached in self.cache.items():
             if cached["status"] == "skipped":
                 if not self._is_own_skip(entity_id, cached["latest_version"]):
                     continue
             available_since = dt_util.parse_datetime(cached["available_since"])
-            result = evaluate_staging(cached["version_size"], available_since, now, self.rules)
+            result = self._staging_result(
+                entity_id, cached["latest_version"], cached["version_size"], available_since, now, self.rules
+            )
             cached["status"] = result.status
             cached["remaining_seconds"] = (
                 round(result.remaining.total_seconds()) if result.remaining is not None else None
             )
             cached["auto_install_excluded"] = _is_excluded_from_auto_install(
-                self.hass, entity_id, self.excluded_entities
+                entity_id, self.excluded_entities
             )
 
     @callback
@@ -543,6 +595,18 @@ class UpdateManagerCoordinator:
         its own."""
         await self._async_handle_changed(entity_id)
 
+    async def async_force_ready(self, entity_id: str, to_version: str) -> None:
+        """The panel's own "Ready now" button (see self._force_ready's own
+        comment) -- records the override, persists it, then reuses
+        async_refresh_one above to recompute this one entity's cache entry
+        right away, the same way skip/unskip already do: setting an
+        override doesn't itself produce a real state_changed event the way
+        a genuine update.skip call does, so nothing else would otherwise
+        tell this coordinator to look again."""
+        self._force_ready[entity_id] = to_version
+        await self._force_ready_store.async_save(self._force_ready)
+        await self.async_refresh_one(entity_id)
+
     async def _async_refresh_one(self, entity_id: str) -> None:
         state = self.hass.states.get(entity_id)
         if state is None:
@@ -563,7 +627,19 @@ class UpdateManagerCoordinator:
         # window, not a wrong user-visible decision (same risk already
         # accepted for community_verdict.py's own cache).
         live_installed = state.attributes.get("installed_version")
-        if live_installed and self._last_installed_version.get(entity_id) != live_installed:
+        # _PLACEHOLDER_INSTALLED_VERSION excluded explicitly, not just
+        # falsy-checked (see that constant's own comment) -- a plain
+        # `if live_installed:` treats that non-empty string as a real
+        # version, permanently poisoning this restart-recovery baseline
+        # with it; the next restart then sees a real version where this
+        # persisted placeholder was expected, concludes an install
+        # silently completed while HA was down, and fires a bogus
+        # install-log entry for it.
+        if (
+            live_installed
+            and live_installed != _PLACEHOLDER_INSTALLED_VERSION
+            and self._last_installed_version.get(entity_id) != live_installed
+        ):
             self._last_installed_version[entity_id] = live_installed
             self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
 
@@ -573,6 +649,15 @@ class UpdateManagerCoordinator:
         # components/update/__init__.py's own state logic: latest_version
         # == skipped_version reports "off" too, confirmed against source).
         if state.state != "on":
+            if (
+                state.state == "unavailable"
+                and entity_id in self.cache
+                and dt_util.utcnow() - state.last_changed < _CACHE_UNAVAILABLE_GRACE
+            ):
+                # See _CACHE_UNAVAILABLE_GRACE's own comment -- leave
+                # whatever's already cached alone rather than evicting it on
+                # what's likely just a transient blip.
+                return
             current = state.attributes.get("installed_version")
             latest = state.attributes.get("latest_version")
             skipped_version = state.attributes.get("skipped_version")
@@ -605,6 +690,25 @@ class UpdateManagerCoordinator:
         current = state.attributes.get("installed_version")
         latest = state.attributes.get("latest_version")
         if not current or not latest:
+            if entity_id in self.cache:
+                # state.state == "on" already confirms this is a genuine,
+                # still-pending update -- installed_version/latest_version
+                # going momentarily missing here isn't evidence it stopped
+                # being one, only that this one state_changed event's own
+                # attributes happened to be incomplete (found live,
+                # 2026-08-10: a Zigbee2MQTT device's own update entity, mid
+                # firmware flash, briefly reported this way while dozens of
+                # other entities were being force-polled at once by the
+                # panel's own refresh button -- plausibly enough MQTT
+                # traffic at once to coalesce/truncate this one device's own
+                # payload). Unlike the state.state != "on" branches above,
+                # there's no unavailable-style grace *period* to apply here
+                # (last_changed wouldn't even move, state.state itself never
+                # changed) -- simply keep whatever's already cached instead
+                # of evicting it on a single incomplete reading; a later,
+                # complete state_changed event naturally corrects it via a
+                # normal _async_cache_active call.
+                return
             self.cache.pop(entity_id, None)
             return
         await self._async_cache_active(entity_id, state, current, latest)
@@ -631,6 +735,18 @@ class UpdateManagerCoordinator:
         await self._available_since_store.async_save(self._available_since)
         return available_since
 
+    def _staging_result(
+        self, entity_id: str, latest: str, size: str, available_since: datetime, now: datetime, rules: StagingRules
+    ) -> StagingResult:
+        """The panel's own "Ready now" button (see self._force_ready's own
+        comment) overrides the normal wait-days verdict for this one
+        entity/version pair -- shared by _recompute_all and
+        _async_cache_active, found by code review, 2026-08-10 (both used
+        to inline the exact same three-line branch independently)."""
+        if self._force_ready.get(entity_id) == latest:
+            return StagingResult("ready", None)
+        return evaluate_staging(size, available_since, now, rules)
+
     async def _async_cache_active(self, entity_id: str, state: State, current: str, latest: str) -> None:
         size = classify_version_size(current, latest)
         now = dt_util.utcnow()
@@ -645,7 +761,10 @@ class UpdateManagerCoordinator:
             available_since = now
         else:
             available_since = await self._async_get_available_since(entity_id, latest)
-        result = evaluate_staging(size, available_since, now, rules)
+        # available_since is still computed normally above either way, it's
+        # a real fact used elsewhere (History); only the derived status/
+        # remaining is overridden, see _staging_result's own comment.
+        result = self._staging_result(entity_id, latest, size, available_since, now, rules)
         # Some update entities (e.g. firmware that must be flashed manually)
         # only ever report that a newer version exists, with no install
         # action at all -- ready/waiting/blocked is still meaningful for
@@ -705,7 +824,7 @@ class UpdateManagerCoordinator:
             # always manual, regardless of the size/auto-install settings --
             # install_manager.py checks this before ever auto-installing.
             # Doesn't change size/status here, those stay informational.
-            "auto_install_excluded": _is_excluded_from_auto_install(self.hass, entity_id, self.excluded_entities),
+            "auto_install_excluded": _is_excluded_from_auto_install(entity_id, self.excluded_entities),
             # True only for a "waiting" entity that's *also* currently
             # hidden from HA's own update count via staging_skip.py's own
             # auto-skip (direct user feedback, 2026-07-17: the distinction
@@ -833,7 +952,7 @@ class UpdateManagerCoordinator:
             # the same shape (see this method's own comment further down).
             "release_url": corrected_release_url(entity_id, state.attributes.get("release_url"), latest),
             "available_since": available_since,
-            "auto_install_excluded": _is_excluded_from_auto_install(self.hass, entity_id, self.excluded_entities),
+            "auto_install_excluded": _is_excluded_from_auto_install(entity_id, self.excluded_entities),
             # Always False here -- reaching _cache_skipped at all already
             # means the caller's own is_own_skip check said this isn't
             # ours (see _async_refresh_one). See _async_cache_active's own

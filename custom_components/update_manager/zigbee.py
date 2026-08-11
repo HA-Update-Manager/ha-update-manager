@@ -53,3 +53,15 @@ def zigbee_network_id(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None
         if entry and entry.domain == "zha":
             return f"zha:{entry_id}"
     return None
+
+
+def is_zigbee_entity(hass: HomeAssistant, entity_id: str) -> bool:
+    """entity_id's own device is on a Zigbee network at all (ZHA or
+    Zigbee2MQTT), regardless of *which* one -- rollout_manager.py's own
+    stuck-issue text uses this to decide whether the "battery-powered
+    devices often need waking up" tip applies at all. Direct user
+    feedback: that tip is specifically a Zigbee end-device thing, showing
+    it for anything else (Raspberry Pi's own board firmware, Supervisor,
+    an ordinary WiFi device like WLED) would just be wrong."""
+    device = device_for_entity(hass, entity_id)
+    return device is not None and zigbee_network_id(hass, device) is not None

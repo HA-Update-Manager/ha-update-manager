@@ -39,6 +39,28 @@
         "github_link_expired": {
             "title": "Update Manager's GitHub-koppeling is verlopen",
             "description": "Je gekoppelde GitHub-account, gebruikt om community-stemmen op updates in te dienen, is niet meer geldig (ingetrokken, of langer dan 6 maanden niet gebruikt). Open de tab Instellingen van het Update Manager-paneel en koppel je GitHub-account opnieuw om te kunnen blijven stemmen.\n\nDit heeft geen invloed op het uitstellen of automatisch installeren van updates, alleen op community-stemmen."
+        },
+        "install_stuck": {
+            "title": "Een update lijkt vast te zitten",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Stop met wachten op {entity_id}?",
+                        "description": "{entity_id} is al meer dan {minutes} minuten aan het installeren zonder klaar te zijn. Dit annuleert de installatie zelf niet, die kan nog steeds vanzelf voltooien. Het laat alleen andere updates die hierop wachtten weer verdergaan.\n\nDoe dit alleen als je er redelijk zeker van bent dat het echt vastzit, niet gewoon traag is."
+                    }
+                }
+            }
+        },
+        "install_stuck_zigbee": {
+            "title": "Een update lijkt vast te zitten",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Stop met wachten op {entity_id}?",
+                        "description": "{entity_id} is al meer dan {minutes} minuten aan het installeren zonder klaar te zijn. Batterij-gevoede Zigbee-apparaten moeten vaak eerst wakker gemaakt worden (bijvoorbeeld door op een knopje op het apparaat te drukken) voordat de update daadwerkelijk kan starten. Probeer dat eerst als je dat nog niet hebt gedaan.\n\nDit annuleert de installatie zelf niet, die kan nog steeds vanzelf voltooien. Het laat alleen andere updates die hierop wachtten weer verdergaan."
+                    }
+                }
+            }
         }
     }
 }

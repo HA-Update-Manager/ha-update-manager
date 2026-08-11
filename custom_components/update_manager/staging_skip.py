@@ -24,6 +24,7 @@ import asyncio
 import logging
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
@@ -49,6 +50,11 @@ class StagingSkipManager:
         # entity_id -> the to_version *we* skipped it for -- never anyone
         # else's skip, see this module's own docstring.
         self._skipped: dict[str, str] = {}
+        # entity_id -> the version _async_evaluate_one suspects (but hasn't
+        # yet confirmed) got un-skipped by something other than this module
+        # -- see that method's own comment on why a single observed
+        # mismatch isn't trusted immediately.
+        self._pending_clears: dict[str, str] = {}
         self._enabled = False
         self._unsub_listener = None
         # Serializes every pass that reads/writes self._skipped against
@@ -78,6 +84,20 @@ class StagingSkipManager:
 
     async def async_load(self) -> None:
         self._skipped = await self._store.async_load() or {}
+        # id(self)/id(self._skipped): a second StagingSkipManager instance
+        # (e.g. a duplicate/leftover config entry) racing this one against
+        # the same real entities and the same on-disk store would otherwise
+        # be indistinguishable from a single-instance bug from this log
+        # alone -- kept at DEBUG (invisible by default, enable per-user if
+        # this class of postponed/skipped-misclassification bug ever
+        # recurs) rather than removed outright.
+        _LOGGER.debug(
+            "Update Manager: [instance %s, dict %s] loaded %d own-skip record(s): %r",
+            id(self),
+            id(self._skipped),
+            len(self._skipped),
+            self._skipped,
+        )
 
     @property
     def _active(self) -> bool:
@@ -113,7 +133,24 @@ class StagingSkipManager:
         feedback: our own skip should read exactly like "postponed" in
         the panel, not as its own distinct "skipped" fact the user never
         actually chose."""
-        return self._skipped.get(entity_id) == version
+        recorded = self._skipped.get(entity_id)
+        result = recorded == version
+        if not result:
+            # A genuine skip (skipped_version really set) not being
+            # recognized as our own means this entity shows as Skipped
+            # instead of Postponed -- kept at DEBUG for the same reasoning
+            # async_load's own comment gives.
+            _LOGGER.debug(
+                "Update Manager: [instance %s, dict %s] %s has skipped_version == %s but no matching record "
+                "(recorded=%r, current full dict=%r) -- showing as Skipped instead of Postponed",
+                id(self),
+                id(self._skipped),
+                entity_id,
+                version,
+                recorded,
+                self._skipped,
+            )
+        return result
 
     async def async_forget(self, entity_id: str) -> None:
         """Relinquishes any record this module holds for entity_id --
@@ -128,6 +165,7 @@ class StagingSkipManager:
         claiming the entity as "ours", so it stayed classified as
         "waiting"/postponed instead of becoming a real, visible "Skipped"
         the user could actually see reflected."""
+        self._pending_clears.pop(entity_id, None)
         if self._skipped.pop(entity_id, None) is not None:
             await self._store.async_save(self._skipped)
 
@@ -230,10 +268,44 @@ class StagingSkipManager:
         recorded = self._skipped.get(entity_id)
 
         if cached is None:
-            # No longer tracked at all -- nothing left to evaluate against,
-            # just drop our own record if we had one.
-            if recorded is not None:
+            # Found live, 2026-08-10, via targeted diagnostic logging: right
+            # after a restart, an MQTT-backed entity (Zigbee2MQTT's own
+            # update entities in particular) can take
+            # anywhere from seconds to minutes to report back in, well after
+            # this module's own first evaluate_all pass already runs (see
+            # async_start's own comment -- it fires right away, precisely so
+            # a "waiting" update already skipped before the restart doesn't
+            # sit unnecessarily visible in the meantime). Every entity_id
+            # this module already has a record for is included in this same
+            # pass's own entity_ids (see _async_evaluate_all), regardless of
+            # whether the coordinator has it cached yet -- an entity that
+            # simply hasn't reported in yet has no cache entry either, and
+            # used to look identical to one genuinely gone for good, both
+            # landing right here. Confirmed against a real diagnostics
+            # session: several real, still-valid records for entities that
+            # were merely slow to reconnect got deleted within seconds of
+            # being loaded, this exact branch the only place that could.
+            # Only truly gone warrants dropping the record -- checked
+            # against the *entity registry*, not hass.states (found live,
+            # 2026-08-10, right after shipping the hass.states version of
+            # this same guard: two Zigbee2MQTT lamps that took noticeably
+            # longer than their siblings to reconnect still lost their
+            # record even though they were still genuinely reconnecting,
+            # not gone. hass.states.get(entity_id) is None
+            # both for an entity genuinely removed from Home Assistant *and*
+            # for one that's registered but hasn't reported any state at all
+            # yet -- indistinguishable from each other by that check alone,
+            # and the latter is exactly the case this whole branch exists to
+            # not misdiagnose. The entity registry entry itself, by
+            # contrast, is created once and persists independently of
+            # whether the entity's own integration is currently connected
+            # or has reported in yet -- gone from *that* means genuinely
+            # removed (integration uninstalled, entity deleted), which is
+            # the only case this should ever act on.
+            registry = er.async_get(self.hass)
+            if recorded is not None and registry.async_get(entity_id) is None:
                 del self._skipped[entity_id]
+                self._pending_clears.pop(entity_id, None)
                 return True
             return False
 
@@ -248,12 +320,39 @@ class StagingSkipManager:
         if cached["status"] == "waiting" or self._rollout_manager.is_queued(entity_id):
             if recorded == latest_version:
                 if skipped_version == latest_version:
-                    return False  # still exactly as we left it
-                # Cleared by something other than us since we skipped it
-                # (the user un-skipping it themselves, most likely) --
-                # respect that, don't re-skip it out from under them.
-                del self._skipped[entity_id]
-                return True
+                    # Still exactly as we left it -- and no longer a
+                    # suspected external clear either, see the mismatch
+                    # branch below for why this needs clearing here too.
+                    self._pending_clears.pop(entity_id, None)
+                    return False
+                # Found live, 2026-08-10, via the same entity-id-labelled
+                # instance/dict-identity logging used to chase this bug
+                # elsewhere in this file: a coordinator cache entry existing
+                # with status "waiting" does *not* mean this entity has
+                # finished restoring *all* of its own state after a restart
+                # -- confirmed on real Alarmo/Zonneplan/Zigbee2MQTT entities,
+                # latest_version/installed_version can already be populated
+                # (enough for a "waiting" cache entry to exist at all) while
+                # skipped_version specifically still lags behind, arriving
+                # moments later over its own, slower path. A single mismatch
+                # here used to be trusted immediately as "the user cleared
+                # this themselves" and deleted our own, still-correct record
+                # on the spot -- confirmed via that same logging: the record
+                # was gone within 3 seconds of being loaded, for entities
+                # that were both still present and still genuinely skipped
+                # in real Home Assistant state moments later. Only acted on
+                # once the *same* mismatch is still there on a *later* pass
+                # (this module's own evaluate_all reruns on every coordinator
+                # recompute, so a real, deliberate external clear is still
+                # caught within moments, just not on the very first read) --
+                # a transient restore-in-progress state naturally self-heals
+                # before that second look ever happens.
+                if self._pending_clears.get(entity_id) == latest_version:
+                    del self._pending_clears[entity_id]
+                    del self._skipped[entity_id]
+                    return True
+                self._pending_clears[entity_id] = latest_version
+                return False
             if skipped_version == latest_version:
                 # Already skipped, but not by us (no matching record) --
                 # someone else's skip, not ours to manage either way.
@@ -267,6 +366,19 @@ class StagingSkipManager:
         # safe to (see its own return value) -- a failed clear_skipped call
         # must not lose track of an update that's still actually hidden.
         if recorded is not None:
+            # An own-skip whose staging wait period elapses
+            # (cached["status"] leaves "waiting") lands here and gets
+            # actively un-skipped -- if that real clear_skipped call
+            # doesn't stick for some entities (or its own resulting
+            # state_changed doesn't propagate), the record still gets
+            # dropped below regardless. Kept at DEBUG for the same
+            # reasoning async_load's own comment gives.
+            _LOGGER.debug(
+                "Update Manager: %s no longer 'waiting' (status=%r, recorded=%r) -- un-skipping",
+                entity_id,
+                cached["status"],
+                recorded,
+            )
             if await self._async_unskip(entity_id, recorded):
                 del self._skipped[entity_id]
                 return True
@@ -286,13 +398,52 @@ class StagingSkipManager:
         # record yet at the exact moment it mattered, and misclassified our
         # own automatic skip as a genuine user-initiated one (surfaced
         # under "Skipped" instead of staying "Postponed"). Rolled back
-        # below if the service call itself actually fails.
+        # below if the service call itself actually fails -- but only if
+        # it actually didn't take effect.
         self._skipped[entity_id] = to_version
         try:
             await self.hass.services.async_call("update", "skip", {"entity_id": entity_id}, blocking=True)
         except Exception:
             _LOGGER.exception("Update Manager couldn't skip %s", entity_id)
-            del self._skipped[entity_id]
+            # Found by review: an exception here doesn't necessarily mean
+            # nothing happened -- an integration's own async_skip() can
+            # legitimately write skipped_version and *then* raise on some
+            # later step in that same call. Blindly deleting the record
+            # regardless left a genuinely-skipped entity with no record at
+            # all, so the very next state_changed/recheck saw
+            # skipped_version already matching but is_own_skip() now
+            # returning False -- misclassified as a real, user-initiated
+            # skip (surfaced as "Skipped" instead of staying "Postponed")
+            # for something Update Manager itself just skipped. Same
+            # "check the real state before deciding" fix _async_unskip
+            # below already needed once for its own, symmetric version of
+            # this exact mistake.
+            state = self.hass.states.get(entity_id)
+            if not (state is not None and state.attributes.get("skipped_version") == to_version):
+                del self._skipped[entity_id]
+        # Saved here, immediately, not left to _async_evaluate_all's own
+        # batched "if dirty" save at the end of the whole concurrent pass
+        # -- found live, 2026-08-10: every postponed
+        # update showed as "Skipped" after a restart, with nothing in the
+        # logs. Root cause: the real skip above had already genuinely
+        # taken effect in HA's own (reliably persisted) entity state, but
+        # this module's own ownership record for it lived only in memory
+        # until the *whole batch* finished and got saved -- a restart
+        # landing anywhere in that window (this session alone restarted
+        # HA many times while testing) lost the record entirely, even
+        # though the real skip survived fine. Cheap enough to do per call:
+        # this only ever runs for a genuine skip/unskip action, not a hot
+        # path, and correctness here is worth far more than batching a
+        # handful of writes into one.
+        await self._store.async_save(self._skipped)
+        # Kept at DEBUG for the same reasoning async_load's own comment gives.
+        _LOGGER.debug(
+            "Update Manager: [instance %s] skipped %s for %s, record now %r, saved",
+            id(self),
+            entity_id,
+            to_version,
+            self._skipped.get(entity_id),
+        )
 
     async def _async_unskip(self, entity_id: str, to_version: str) -> bool:
         """Returns whether our own record for this entity/version can now
@@ -315,4 +466,35 @@ class StagingSkipManager:
         except Exception:
             _LOGGER.exception("Update Manager couldn't un-skip %s", entity_id)
             return False
-        return True
+        # Found live, 2026-08-10, via targeted diagnostic logging on this
+        # exact spot: `blocking=True` only waits for the service handler's
+        # own coroutine to finish, not for skipped_version to actually
+        # change -- for an MQTT-backed entity (confirmed on real Zigbee2MQTT
+        # devices) that attribute can genuinely update a moment later, once
+        # a round-trip to the bridge completes, rather than synchronously
+        # inside the handler the way most integrations' own skip/unskip
+        # does. The old code trusted a successful call as proof the record
+        # was safe to drop -- concretely traced to several real "Postponed"
+        # updates silently losing their own ownership record and
+        # reappearing as "Skipped" days later, with no matching is_own_skip
+        # warning anywhere near the moment it actually happened, because the
+        # drop occurred right here, straight after a "successful" call whose
+        # effect just hadn't landed yet. Only ever report success once the
+        # real state confirms it -- same "verify, don't trust" fix this
+        # method's own docstring already describes once for the symmetric
+        # failure case. A false negative here (this fires right as the
+        # delayed update is about to land) just keeps the record one
+        # evaluate_all pass longer than strictly needed, no worse than that.
+        after = self.hass.states.get(entity_id)
+        cleared = after is None or after.attributes.get("skipped_version") != to_version
+        if not cleared:
+            # Kept at DEBUG for the same reasoning async_load's own comment
+            # gives -- this is the propagation-lag case that comment's own
+            # docstring already expects, not itself evidence of a bug.
+            _LOGGER.debug(
+                "Update Manager: clear_skipped(%s) returned but skipped_version is still %r -- "
+                "keeping our own record instead of trusting the call",
+                entity_id,
+                to_version,
+            )
+        return cleared

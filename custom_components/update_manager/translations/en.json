@@ -39,6 +39,28 @@
         "github_link_expired": {
             "title": "Update Manager's GitHub link has expired",
             "description": "Your linked GitHub account, used to submit community votes on updates, is no longer valid (it was either revoked or hasn't been used in over 6 months). Open the Update Manager panel's Settings tab and re-link your GitHub account to keep voting.\n\nThis doesn't affect update staging or auto-install, only community voting."
+        },
+        "install_stuck": {
+            "title": "An update seems stuck",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Stop waiting for {entity_id}?",
+                        "description": "{entity_id} has been installing for over {minutes} minutes without finishing. This won't cancel the install itself, which may still finish on its own. It only lets other updates that were waiting behind it continue.\n\nDon't do this unless you're fairly sure it's actually stuck, not just slow."
+                    }
+                }
+            }
+        },
+        "install_stuck_zigbee": {
+            "title": "An update seems stuck",
+            "fix_flow": {
+                "step": {
+                    "confirm": {
+                        "title": "Stop waiting for {entity_id}?",
+                        "description": "{entity_id} has been installing for over {minutes} minutes without finishing. Battery-powered Zigbee devices often need to be woken up (for example by pressing a button on the device) before the update can actually start. Try that first if you haven't already.\n\nThis won't cancel the install itself, which may still finish on its own. It only lets other updates that were waiting behind it continue."
+                    }
+                }
+            }
         }
     }
 }

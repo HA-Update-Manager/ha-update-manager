@@ -1,4 +1,18 @@
+from homeassistant.core import HomeAssistant
+
 DOMAIN = "update_manager"
+
+
+def localized_strings(hass: HomeAssistant, strings_by_language: dict[str, dict[str, str]]) -> dict[str, str]:
+    """hass.config.language, falling back to English -- shared by every
+    module with its own per-language notification-string dict
+    (install_manager.py, rollout_manager.py) instead of each keeping an
+    identical private copy. Lives here (a plain, dependency-free module)
+    rather than in either of those two directly: install_manager.py
+    imports RolloutManager from rollout_manager.py, so rollout_manager.py
+    importing this pure helper back from install_manager.py would be a
+    circular import -- found by code review, 2026-08-10."""
+    return strings_by_language.get(hass.config.language, strings_by_language["en"])
 
 # Fired on hass.bus, domain-prefixed event_types (same convention as
 # ha-parcel-integrations' own event contract, checked directly against

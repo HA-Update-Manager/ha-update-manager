@@ -23,6 +23,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_ANNOUNCE_HOURS,
@@ -50,7 +51,6 @@ from .community_verdict import (
 from .community_vote import async_submit_vote
 from .coordinator import (
     excluded_entities_from_options,
-    hard_excluded_entity_ids,
     rules_from_options,
     trusted_voters_from_options,
 )
@@ -66,7 +66,7 @@ from .device_identity import resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_manager import auto_install_rules_from_options
-from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
+from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
 from .semver import strip_version_prefix
 from .vote_issue_body import REASON_CATEGORIES
 
@@ -80,29 +80,6 @@ _WS_REGISTERED = f"{DOMAIN}_ws_registered"
 # vote still self-heals within one reasonable dialog-reopen. See
 # MyVotesManager.is_stale's own docstring for the full reasoning.
 _STALE_VOTE_GRACE_PERIOD = timedelta(minutes=5)
-
-
-def _get_entry(hass: HomeAssistant) -> UpdateManagerConfigEntry | None:
-    """The one entry this single-instance integration ever has (config_flow
-    enforces this, see this module's own docstring), or None before setup
-    has run. The single place every websocket handler below (none of which
-    receive a ConfigEntry of their own the way a platform's async_setup_entry
-    does) resolves it from -- found by review while migrating off
-    hass.data[DOMAIN] to entry.runtime_data: _handle_get_settings and
-    _handle_save_settings already looked this entry up by hand, duplicating
-    the same hass.config_entries.async_entries(DOMAIN) call every other
-    handler below now also needs."""
-    entries = hass.config_entries.async_entries(DOMAIN)
-    return entries[0] if entries else None
-
-
-def _get_data(hass: HomeAssistant) -> UpdateManagerData | None:
-    """entry.runtime_data for the one entry above, or None before setup has
-    run -- runtime_data itself defaults to None until async_setup_entry
-    assigns it, so this already reads exactly like the old
-    hass.data.get(DOMAIN) it replaces, no extra None-check needed here."""
-    entry = _get_entry(hass)
-    return entry.runtime_data if entry else None
 
 
 async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
@@ -163,6 +140,13 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         updates.append(
             {
                 **entry,
+                # See install_manager.py's own is_cancelled docstring: a
+                # "waiting" update whose auto-install was cancelled before
+                # it ever became ready has no real PendingAnnouncement
+                # (pending_install below stays None) to reflect that --
+                # this is what lets the panel's own projectedAutoInstallTime
+                # tell that apart from an untouched one.
+                "auto_install_cancelled": install_manager.is_cancelled(entry["entity_id"], entry["latest_version"]),
                 "pending_install": (
                     {
                         "to_version": pending.to_version,
@@ -189,6 +173,20 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
             # The panel renders these as their own queue card(s), above the
             # normal ready/waiting/blocked groups.
             "rollout_groups": data.rollout_manager.rollout_groups_snapshot(),
+            # Tier-gate equivalent of rollout_groups above (see
+            # rollout_manager.py's own install_tiers.py-driven gate) -- who's
+            # currently held back purely by "something less disruptive still
+            # needs to finish first", and who's crossed the stuck threshold
+            # and now shows the wrench badge instead.
+            "tier_waiting": data.rollout_manager.tier_blocked_entity_ids(),
+            "stuck": data.rollout_manager.stuck_since_snapshot(),
+            # Entities recently observed in_progress, per this module's own
+            # periodic tracking (see rollout_manager.py's own
+            # _RECENTLY_INSTALLING_GRACE) -- lets the panel's own "is this
+            # installing" decision survive a page reload/panel re-entry,
+            # which resets its own client-side memory of the same thing but
+            # not this module's.
+            "recently_installing": data.rollout_manager.recently_installing_entity_ids(dt_util.utcnow()),
         },
     )
 
@@ -645,6 +643,51 @@ async def _handle_cancel_pending_install(
 @websocket_api.async_response
 @websocket_api.websocket_command(
     {
+        vol.Required("type"): "update_manager/force_ready",
+        vol.Required("entity_id"): str,
+        # Required, not read off the entity's own current latest_version
+        # server-side -- pins the override to the exact jump the panel
+        # showed when the button was clicked, same reasoning
+        # cancel_pending_install's own to_version already documents.
+        vol.Required("to_version"): str,
+    }
+)
+async def _handle_force_ready(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """The panel's own "Ready now" button, in a still-"waiting" update's
+    dialog -- see coordinator.py's own async_force_ready docstring."""
+    data = _get_data(hass)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    await data.coordinator.async_force_ready(msg["entity_id"], msg["to_version"])
+    connection.send_result(msg["id"])
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {vol.Required("type"): "update_manager/cancel_queued", vol.Required("entity_id"): str}
+)
+async def _handle_cancel_queued(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """The panel's own Cancel button, in the dialog of anything genuinely
+    waiting its turn, not yet dispatched (a queued Zigbee rollout entry or
+    a tier-blocked one alike) -- see rollout_manager.py's own
+    async_cancel_queued docstring. No coordinator refresh needed
+    afterwards: this entity's own staging status never changed (it was
+    "ready" the whole time), only the rollout manager's own bookkeeping
+    did, which the panel's own post-action _loadAll() already re-fetches."""
+    data = _get_data(hass)
+    if not data:
+        connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    await data.rollout_manager.async_cancel_queued(msg["entity_id"])
+    connection.send_result(msg["id"])
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {
         vol.Required("type"): "update_manager/install",
         vol.Required("entity_id"): str,
         vol.Optional("backup"): bool,
@@ -704,6 +747,25 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
         # save_settings/staging_skip.py's own skip/unskip calls).
         await data.coordinator.async_refresh_one(entity_id)
     connection.send_result(msg["id"], {"queued": queued})
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {vol.Required("type"): "update_manager/stop_waiting", vol.Required("entity_id"): str}
+)
+async def _handle_stop_waiting(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """Same action as rollout_manager.py's own Repair issue fix-flow
+    (repairs.py), just reachable straight from the entity's own detail
+    dialog too, not only via Settings > Repairs -- one obvious place for
+    this action beats needing to know a Repair issue exists at all. Never
+    touches the install itself, only stops treating this entity as
+    blocking anything else -- see RolloutManager.async_stop_waiting_for's
+    own docstring."""
+    data = _get_data(hass)
+    if data:
+        await data.rollout_manager.async_stop_waiting_for(msg["entity_id"])
+    connection.send_result(msg["id"])
 
 
 @websocket_api.require_admin
@@ -771,7 +833,6 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
         {
             "options": options,
             "defaults": DEFAULT_WAIT_DAYS,
-            "hard_excluded_entities": hard_excluded_entity_ids(hass),
         },
     )
 
@@ -1147,7 +1208,10 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _handle_core_announcement)
     websocket_api.async_register_command(hass, _handle_install_log)
     websocket_api.async_register_command(hass, _handle_cancel_pending_install)
+    websocket_api.async_register_command(hass, _handle_force_ready)
+    websocket_api.async_register_command(hass, _handle_cancel_queued)
     websocket_api.async_register_command(hass, _handle_install)
+    websocket_api.async_register_command(hass, _handle_stop_waiting)
     websocket_api.async_register_command(hass, _handle_skip)
     websocket_api.async_register_command(hass, _handle_unskip)
     websocket_api.async_register_command(hass, _handle_get_settings)
