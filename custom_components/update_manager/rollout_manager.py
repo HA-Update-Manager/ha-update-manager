@@ -340,6 +340,22 @@ class RolloutManager:
         self._handle_install_failure: Callable[[str, str], None] | None = None
         self._unsub_install_listener: Callable[[], None] | None = None
         self._unsub_periodic_recheck: Callable[[], None] | None = None
+        # Fired by _async_save below, the one place every real mutation of
+        # self._queues/self._tier_blocked already funnels through to persist
+        # -- see async_add_change_listener's own docstring for why this
+        # exists (staging_skip.py's own re-evaluation trigger).
+        self._change_listeners: list[Callable[[], None]] = []
+        # A private copy, not a read of self._coordinator.master_enabled
+        # directly -- see async_set_master_enabled's own docstring for why:
+        # install_manager.py's and staging_skip.py's own versions of this
+        # same guard both compare against that one shared coordinator
+        # value, which is fine when only one of them writes it per save,
+        # but a third reader/writer racing the same shared flag through
+        # websocket_api.py's own asyncio.gather (see async_apply_options)
+        # risks one of them seeing it already updated by another before
+        # its own guard runs, silently skipping its own reaction. Its own
+        # copy sidesteps that instead of adding a third party to the race.
+        self._master_enabled = True
 
     def _in_flight_entry(self, entity_id: str) -> _InFlightInstall:
         entry = self._in_flight.get(entity_id)
@@ -403,6 +419,41 @@ class RolloutManager:
                 "tier_blocked": {entity_id: _serialize_entry(e) for entity_id, e in self._tier_blocked.items()},
             }
         )
+        # Every real change to self._queues/self._tier_blocked calls this
+        # method to persist it -- the one shared place to notify from,
+        # rather than a separate call at each of the several methods that
+        # mutate either dict (async_cancel_queued, async_stop_waiting_for,
+        # _async_advance, _async_advance_past_stalled_front,
+        # _async_retry_tier_blocked, async_request_install itself), where
+        # missing just one would silently reintroduce the same gap this
+        # exists to close.
+        for listener in list(self._change_listeners):
+            listener()
+
+    def async_add_change_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Registers a callback fired whenever a queue or tier-blocked entry
+        is added, advanced, or removed -- direct user feedback, 2026-08-12:
+        leaving a Zigbee queue (Cancel in the dialog) could leave that
+        entity showing skipped in Home Assistant's own native update count
+        well after Update Manager's own panel already showed it back as
+        Ready, for however long it took some *unrelated* coordinator
+        recompute to happen to fire next. staging_skip.py's own
+        _async_evaluate_one already checks this module's live is_queued()
+        state (see that method's own comment), so its logic was always
+        correct -- it just had no trigger of its own for this module's
+        changes, only for the coordinator's, and this entity's own staging
+        status never actually changes by leaving a queue (see
+        rollout_manager.py's own docstring: the tier/network gate is a
+        second, independent gate layered on an already-"ready" status), so
+        no coordinator recompute reliably followed a plain queue exit
+        either. staging_skip.py subscribes here the same way it already
+        subscribes to the coordinator's own listener."""
+        self._change_listeners.append(listener)
+
+        def _remove() -> None:
+            self._change_listeners.remove(listener)
+
+        return _remove
 
     def async_start(self) -> None:
         self._unsub_install_listener = self._coordinator.async_add_install_listener(self._on_install_completed)
@@ -711,6 +762,50 @@ class RolloutManager:
                     return True
         return False
 
+    async def async_set_master_enabled(self, enabled: bool) -> None:
+        """Direct user feedback, 2026-08-12: while the master pause switch
+        is off, anything still shown "waiting for" its own turn in a queue
+        read as a real automatic action still quietly in progress, despite
+        "no automatic installs" being exactly what pausing is supposed to
+        mean. Turning off now empties every queue/tier-blocked wait
+        immediately, the same "gewoon wachtrij legen" a plain Cancel would
+        already do one at a time (see async_cancel_queued's own docstring
+        for why that's safe: each entity's own staging status was already
+        "ready" the whole time it sat waiting, nothing else needs to change
+        for it to show as a normal ready update again) -- not narrowed to
+        auto-install's own requests specifically, a manually-queued one
+        gets cleared too, direct user feedback confirming that's wanted
+        here rather than the finer-grained split first proposed. Whatever
+        is already the genuinely in-flight front of a Zigbee queue is left
+        running regardless: aborting a real, already-dispatched install
+        because a UI toggle flipped would be unsafe, not a pause. Turning
+        back on doesn't requeue anything either -- same as a plain Cancel,
+        this is a one-way "never mind waiting", not a suspend/resume.
+
+        No-ops when the value hasn't actually changed, same reasoning
+        install_manager.py's/staging_skip.py's own async_set_master_enabled
+        both already give -- except compared against this module's own
+        self._master_enabled, not self._coordinator.master_enabled (see
+        that field's own comment for why: a third reader/writer racing the
+        same shared coordinator flag through websocket_api.py's own
+        asyncio.gather risks seeing it already updated by one of the other
+        two before this method's own guard runs)."""
+        if enabled == self._master_enabled:
+            return
+        self._master_enabled = enabled
+        if not enabled:
+            await self._async_clear_all_waiting()
+
+    async def _async_clear_all_waiting(self) -> None:
+        changed = bool(self._tier_blocked)
+        self._tier_blocked = {}
+        for group_key, entries in self._queues.items():
+            if len(entries) > 1:
+                self._queues[group_key] = entries[:1]
+                changed = True
+        if changed:
+            await self._async_save()
+
     @callback
     def _on_install_completed(self, entity_id: str, old_version: str, new_version: str, new_state: State) -> None:
         self._in_flight.pop(entity_id, None)
@@ -743,7 +838,12 @@ class RolloutManager:
             del self._queues[group_key]
             await self._async_save()
             return
-        _LOGGER.warning(
+        # info, not warning -- direct user feedback, 2026-08-12: this is the
+        # queue working exactly as designed (one finished, the next one's
+        # own turn came), not something that needs attention. Warning made
+        # Home Assistant's own Logs page flag routine, successful pacing as
+        # if it were a problem.
+        _LOGGER.info(
             "Update Manager: [rollout] %s advanced, dispatching next in %s: %s",
             finished.entity_id,
             group_key,

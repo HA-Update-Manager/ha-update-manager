@@ -65,6 +65,7 @@ class StagingSkipManager:
         self._auto_update_warned: set[str] = set()
         self._enabled = False
         self._unsub_listener = None
+        self._unsub_rollout_listener = None
         # Serializes every pass that reads/writes self._skipped against
         # every other one. Found live (2026-07-17, after a restart left
         # almost everything "Skipped" instead of "Postponed"): _on_recompute
@@ -119,6 +120,20 @@ class StagingSkipManager:
     def async_start(self, enabled: bool) -> None:
         self._enabled = enabled
         self._unsub_listener = self._coordinator.async_add_listener(self._on_recompute)
+        # A queued/tier-blocked entity leaving that wait (Cancel in the
+        # dialog, or the queue/tier gate clearing on its own) never changes
+        # this entity's own staging status -- see _async_evaluate_one's own
+        # comment, that's a second, independent gate this module already
+        # accounts for in its own eligibility check via
+        # self._rollout_manager.is_queued(). Without also subscribing to
+        # rollout_manager.py's own changes here, that correct check simply
+        # never got re-run promptly: direct user feedback, 2026-08-12, an
+        # entity un-queued via Cancel kept showing skipped in Home
+        # Assistant's own native update count until some *unrelated*
+        # coordinator recompute happened to fire next, purely by chance
+        # (some entities re-evaluated almost immediately, others sat wrong
+        # for a while, depending on what else happened to be going on).
+        self._unsub_rollout_listener = self._rollout_manager.async_add_change_listener(self._on_recompute)
         # coordinator.py's own initial bulk scan (async_start) doesn't fire
         # listeners itself (see sensor.py's own __init__, which works
         # around the same gap by refreshing once by hand) -- without this,
@@ -132,6 +147,9 @@ class StagingSkipManager:
         if self._unsub_listener is not None:
             self._unsub_listener()
             self._unsub_listener = None
+        if self._unsub_rollout_listener is not None:
+            self._unsub_rollout_listener()
+            self._unsub_rollout_listener = None
 
     def is_own_skip(self, entity_id: str, version: str) -> bool:
         """Read by coordinator.py (see its own set_own_skip_checker,

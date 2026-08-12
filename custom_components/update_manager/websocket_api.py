@@ -123,6 +123,12 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
     await asyncio.gather(
         data.install_manager.async_set_master_enabled(master_enabled),
         _apply_staging_skip(),
+        # Empties any Zigbee/tier-gate wait the moment this turns off (see
+        # rollout_manager.py's own async_set_master_enabled) -- direct user
+        # feedback, 2026-08-12: an entity still showing "waiting for" its
+        # own turn while paused read as an automatic action still quietly
+        # happening despite the pause.
+        data.rollout_manager.async_set_master_enabled(master_enabled),
     )
 
 

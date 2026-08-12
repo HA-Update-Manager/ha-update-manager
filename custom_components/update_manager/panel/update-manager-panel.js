@@ -163,6 +163,27 @@ const INSTALLING_PROMOTE_DELAY_MS = 1000;
 // genuinely mid-install.
 const INSTALLING_FLICKER_GRACE_MS = 60000;
 
+// How long an entity keeps its spot in the Installing section after the
+// last render it was genuinely shown there for (queued, tier-waiting, or
+// installing), even once none of those checks confirm it any more --
+// direct user feedback, 2026-08-12: whatever an entity was blocked behind
+// (a Zigbee queue's own front, or the disruption-order tier gate) can
+// finish and release it well before its own in_progress attribute
+// actually flips true, a real gap of a few seconds for some devices, and
+// with nothing re-triggering a reload in that window it fell out of both
+// the "waiting" and "installing" checks at once, vanishing from view
+// entirely rather than just looking briefly out of date -- read as
+// stuck/broken. Deliberately shorter than INSTALLING_FLICKER_GRACE_MS
+// above (that one tolerates a real device's own sleep cycles mid-install,
+// a much longer, ongoing concern; this one only bridges the one-time gap
+// right after release, not an indefinite excuse to keep showing a stale
+// row). See _buildUpdatesList's own installingSectionLastSeenAt for where
+// this is spent, and _optimisticallyAdvanceRolloutQueue for the Zigbee
+// queue's own more precise fix (that one knows exactly who's next, so it
+// promotes them straight to a real "installing" spinner instead of just
+// holding their spot).
+const INSTALLING_SECTION_GRACE_MS = 15000;
+
 // The one place "problematic -> alert icon, else thumb-up" gets decided --
 // found by code review, 2026-07-27: this exact ternary (or its count>0
 // equivalent) was independently re-derived at five call sites across this
@@ -1282,6 +1303,11 @@ const _GITHUB_EMOJI_SHORTCODES = {
   goal_net: "🥅", test_tube: "🧪", stethoscope: "🩺", x: "❌",
   heavy_check_mark: "✔️", "100": "💯", star: "⭐", star2: "🌟",
   thumbsup: "👍", thumbsdown: "👎", eyes: "👀", heart: "❤️",
+  // release-drafter's own default template (not supervisor's/gitmoji's own
+  // sets, see this table's own intro comment) headers its own "Thanks to
+  // our contributors" section with exactly this shortcode -- direct user
+  // feedback, 2026-08-12, a real music-assistant/server release.
+  bow: "🙇",
 };
 
 function _replaceGithubEmojiShortcodes(text) {
@@ -1389,8 +1415,14 @@ function _decorateReleaseNotes(notes, releaseUrl) {
 // above isn't wrapped in brackets at all, just plain text containing a raw
 // URL. `ownOwner`/`ownRepo` (this entity's own repo, parsed from its own
 // releaseUrl) are excluded so a repo's own release notes linking back to
-// its own earlier release is never mistaken for "an upstream project".
-// null whenever no such link is found, or more than one *distinct* repo is
+// its own earlier release is never mistaken for "an upstream project" --
+// `fromVersion` (this entity's own previous version) catches the same
+// self-reference a second way, for whenever ownOwner/ownRepo aren't even
+// available to check against in the first place (a Supervisor add-on's own
+// update entity -- Music Assistant Server among them -- never sets
+// release_url at all, direct user feedback, 2026-08-12, see this
+// function's own inline comment on that specific check for the full
+// story). null whenever no such link is found, or more than one *distinct* repo is
 // referenced -- direct user feedback, suggesting this only apply when
 // there's exactly one link: several dependency bumps mentioned at once is a
 // real, common shape too, and guessing which one is "the" upstream project
@@ -1423,11 +1455,17 @@ function _decorateReleaseNotes(notes, releaseUrl) {
 // picking the resolvable one anyway would show the *wrong* (less relevant)
 // project's notes with no indication anything was left out, worse than
 // showing nothing.
-function _findEmbeddedUpstreamRelease(notes, ownOwner, ownRepo) {
+function _findEmbeddedUpstreamRelease(notes, ownOwner, ownRepo, fromVersion) {
   if (!notes) return null;
   const linkRe = /https?:\/\/[^\s)]+/g;
   const releaseRe = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases(?:\/(?:tag\/)?([^/]+))?/;
   const changelogBlobRe = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/[^/]+\/CHANGELOG\.md/i;
+  // "vX" and "X" treated as the same tag -- same normalization principle
+  // semver.py's own strip_version_prefix already applies everywhere else in
+  // this project (mirrored here, not shared, same reasoning
+  // _parseGithubReleaseUrl's own comment gives for github_release_notes.py's
+  // _RELEASE_URL_RE).
+  const normalizedFromVersion = fromVersion ? fromVersion.replace(/^v/i, "").toLowerCase() : null;
   const seen = new Map();
   let match;
   while ((match = linkRe.exec(notes)) !== null) {
@@ -1440,6 +1478,25 @@ function _findEmbeddedUpstreamRelease(notes, ownOwner, ownRepo) {
     }
     const [, owner, repo, tag] = releaseMatch || blobMatch;
     if (ownOwner && ownRepo && owner.toLowerCase() === ownOwner.toLowerCase() && repo.toLowerCase() === ownRepo.toLowerCase()) {
+      continue;
+    }
+    // A link whose own tag is exactly this entity's own previous version
+    // (fromVersion) is a "Changes since {fromVersion}" self-reference to
+    // this same entity's own prior release, not a genuine external
+    // upstream project -- direct user feedback, 2026-08-12, a real
+    // music-assistant/server 2.9.13 release whose only embedded link was
+    // exactly this shape ("_Changes since
+    // [2.9.12](.../music-assistant/server/releases/tag/2.9.12)_"). Catches
+    // this even when ownOwner/ownRepo above can't (this project's own
+    // Supervisor add-on entities -- Music Assistant Server included --
+    // never set release_url at all, confirmed against
+    // homeassistant/components/hassio/update.py's own SupervisorAddonUpdateEntity,
+    // so the owner/repo exclusion above had nothing to compare against and
+    // silently let this exact self-link through as if it named a real,
+    // different upstream repo). No such coincidence is expected from a
+    // genuine external project: it would need to happen to tag its own
+    // release with this entity's own, unrelated previous version number.
+    if (tag && normalizedFromVersion && tag.replace(/^v/i, "").toLowerCase() === normalizedFromVersion) {
       continue;
     }
     const key = `${owner.toLowerCase()}/${repo.toLowerCase()}`;
@@ -1576,6 +1633,15 @@ class UpdateManagerPanel extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._tab = "updates";
+    // tab name -> its own last scrollTop, restored on returning to that tab
+    // (see set route below) -- direct user feedback, 2026-08-12: all three
+    // tabs share one real scrollable element (hass-tabs-subpage's own
+    // internal .content div, confirmed against its real source -- our own
+    // this._contentEl is just slotted content inside it, not a scroll
+    // container of its own), so switching tabs kept whatever scroll
+    // position the *previous* tab happened to be left at instead of each
+    // tab remembering its own.
+    this._scrollPositions = {};
     this._route = null;
     this._updates = null;
     this._rolloutGroups = [];
@@ -1595,6 +1661,10 @@ class UpdateManagerPanel extends HTMLElement {
     // Set of entityIds, from the server -- see _loadAll's own comment and
     // _isEffectivelyInstalling below.
     this._recentlyInstalling = new Set();
+    // entityId -> Date.now() it was last genuinely shown in the Installing
+    // section for any reason -- feeds INSTALLING_SECTION_GRACE_MS's own
+    // tolerance, see that constant's own comment and _buildUpdatesList.
+    this._installingSectionLastSeenAt = new Map();
     // entityId -> the last real (non-null) update_percentage seen -- feeds
     // _stateWithRememberedPercentage below.
     this._lastKnownPercentage = new Map();
@@ -1658,10 +1728,27 @@ class UpdateManagerPanel extends HTMLElement {
     this._updateShell();
   }
 
+  // hass-tabs-subpage's own real scrollable element (.content.ha-scrollbar
+  // inside its own shadow root, confirmed against its real source) -- not
+  // this._contentEl, which is only slotted *into* it, not a scroll
+  // container of its own. No public property/method on hass-tabs-subpage
+  // itself for this (confirmed against its real source too -- its own
+  // @restoreScroll decorator is private, keyed off browser history in a
+  // way this panel's own client-side tab switching doesn't drive), so
+  // this reaches into its shadow root directly instead.
+  _scrollContainer() {
+    return this._subpageEl && this._subpageEl.shadowRoot && this._subpageEl.shadowRoot.querySelector(".content");
+  }
+
   // Set by HA's panel resolver on every navigation under this panel's own
   // URL (e.g. /update-manager/history) -- the same mechanism every other
   // HA settings page uses, see hass-router-page.ts/compute-route.ts.
   set route(route) {
+    // Remembers the tab being left's own scroll position (see
+    // this._scrollPositions's own comment) -- read before this._tab is
+    // reassigned below, while it still names the *old* tab.
+    const oldScrollContainer = this._scrollContainer();
+    if (oldScrollContainer) this._scrollPositions[this._tab] = oldScrollContainer.scrollTop;
     const path = (route && route.path) || "";
     if ((path === "" || path === "/") && route && route.prefix) {
       // Land on the Updates tab by default, same as e.g. /config redirecting
@@ -1685,6 +1772,10 @@ class UpdateManagerPanel extends HTMLElement {
     }
     this._updateShell();
     this._renderContent();
+    // Restores the *new* tab's own remembered position (0 for one never
+    // scrolled on before), now that its content has been rebuilt above.
+    const newScrollContainer = this._scrollContainer();
+    if (newScrollContainer) newScrollContainer.scrollTop = this._scrollPositions[this._tab] || 0;
   }
 
   // Only ever read for its own config.integration_version (see panel.py's
@@ -1781,20 +1872,7 @@ class UpdateManagerPanel extends HTMLElement {
       // verbatim everywhere from here on, same as pending_install.execute_at
       // already is.
       this._rolloutGroups = updatesResp.rollout_groups || [];
-      // Built once per load, not re-derived on every _rolloutStatusFor
-      // call -- found by code review, 2026-08-10: that method used to
-      // linearly scan every group and .find() each group's own entity
-      // list on every single call, and it's called once per entity inside
-      // both _buildInstallingCard's and _buildUpdatesList's own per-render
-      // loops (O(updates * groups * entries) per render instead of
-      // O(updates + queued entries)).
-      this._rolloutStatusByEntityId = new Map();
-      for (const group of this._rolloutGroups) {
-        const frontEntityId = group.entities[0].entity_id;
-        for (const entry of group.entities) {
-          this._rolloutStatusByEntityId.set(entry.entity_id, { status: entry.status, frontEntityId });
-        }
-      }
+      this._rebuildRolloutStatusMap();
       // Tier-gate equivalent of _rolloutGroups above (see rollout_manager.py's
       // own tier_blocked_entity_ids/stuck_entity_ids) -- entityId Sets, not
       // arrays, since every use of these is a membership check.
@@ -2114,7 +2192,7 @@ class UpdateManagerPanel extends HTMLElement {
   async _appendUpstreamReleaseNotes(container, before, tr, notes, releaseUrl, fromVersion, toVersion) {
     const scoped = _trimChangelogToVersion(notes, fromVersion, toVersion);
     const ownRepo = _parseGithubReleaseUrl(releaseUrl);
-    const found = _findEmbeddedUpstreamRelease(scoped, ownRepo && ownRepo.owner, ownRepo && ownRepo.repo);
+    const found = _findEmbeddedUpstreamRelease(scoped, ownRepo && ownRepo.owner, ownRepo && ownRepo.repo, fromVersion);
     if (!found) return;
     const tag = found.tag || toVersion;
     if (!tag) return;
@@ -2470,8 +2548,20 @@ class UpdateManagerPanel extends HTMLElement {
     if (this._showNotInstallableMenuItem) {
       this._showNotInstallableMenuItem.style.display = hasNotInstallable ? "" : "none";
     }
-    this._overflowMenuEl.style.display =
-      this._tab === "updates" && (hasSkipped || hasNotInstallable) ? "" : "none";
+    // visibility, not display: none -- direct user feedback, 2026-08-12:
+    // the tab bar visibly shifted sideways when switching tabs, because
+    // hass-tabs-subpage's own #tabbar centers within whatever space is left
+    // over between the menu button and this toolbar-icon slot (confirmed
+    // against its real source: `#tabbar { flex: 1; justify-content: center
+    // }`, no fixed/symmetric width reserved for either side), so a
+    // display:none'd menu button shrank this slot and pulled that leftover
+    // space, and the centered tabs with it, to the right. Keeping this
+    // button's own layout box always reserved (just invisible and
+    // non-interactive when hidden) keeps the toolbar-icon slot's width
+    // constant across every tab, so the tab bar's position stays put.
+    const showOverflowMenu = this._tab === "updates" && (hasSkipped || hasNotInstallable);
+    this._overflowMenuEl.style.visibility = showOverflowMenu ? "" : "hidden";
+    this._overflowMenuEl.inert = !showOverflowMenu;
   }
 
   // Fired on every hass push (see set hass), same as more-info-update.ts's
@@ -2550,6 +2640,12 @@ class UpdateManagerPanel extends HTMLElement {
     let installingChanged = false;
     let anyVersionChanged = false;
     let dialogEntityVersionChanged = false;
+    // Entities whose installed_version just changed to a real, new value --
+    // distinct from anyVersionChanged above (which also fires on a bare
+    // latest_version discovery, not a completion) -- feeds
+    // _optimisticallyAdvanceRolloutQueue below, see that method's own
+    // comment.
+    const finishedEntityIds = [];
     for (const u of this._updates) {
       const state = entityState(this._hass, u.entity_id);
       const installing = this._isEffectivelyInstalling(u.entity_id, state);
@@ -2597,6 +2693,7 @@ class UpdateManagerPanel extends HTMLElement {
       if (prev.installedVersion !== installedVersion || prev.latestVersion !== latestVersion) {
         anyVersionChanged = true;
         if (u.entity_id === this._dialogEntityId) dialogEntityVersionChanged = true;
+        if (prev.installedVersion !== installedVersion && installedVersion) finishedEntityIds.push(u.entity_id);
       }
     }
     this._installSnapshots = next;
@@ -2632,6 +2729,18 @@ class UpdateManagerPanel extends HTMLElement {
       // skipping its render there loses nothing, and switching to Updates/
       // History later renders it fresh anyway), the render only when it'd
       // actually be seen.
+      //
+      // Optimistic promotion (see _optimisticallyAdvanceRolloutQueue's own
+      // comment) happens first and gets its own immediate render, ahead of
+      // awaiting the reload below -- direct user feedback, 2026-08-12:
+      // without this, nothing actually appeared until the reload resolved
+      // anyway, defeating the whole point of guessing ahead of it. Only
+      // for a real completion, not a bare installingChanged (that already
+      // means something's own in_progress just became visible, nothing to
+      // optimistically fill in).
+      if (finishedEntityIds.length && this._optimisticallyAdvanceRolloutQueue(finishedEntityIds)) {
+        if (this._tab === "updates") this._renderContent();
+      }
       this._loadAll().then(() => {
         if (this._tab === "updates") this._renderContent();
       });
@@ -2785,6 +2894,19 @@ class UpdateManagerPanel extends HTMLElement {
   // re-setting dialog.open to the value it already has is a no-op, not a
   // close/reopen flicker.
   async _afterDialogAction(entityId) {
+    // INSTALLING_SECTION_GRACE_MS's own holdover is only meant to bridge a
+    // server-driven release (a queue advancing, a tier gate opening up on
+    // its own) through to its own in_progress actually flipping true --
+    // direct user feedback, 2026-08-12: Cancel/Leave queue reaching this
+    // same method is the *opposite* case, an explicit, deliberate exit
+    // with no install about to follow at all, and this entity's own grace
+    // timestamp from the render right before this action (when it was
+    // still genuinely shown waiting) would otherwise keep holding its
+    // spot in the Installing section for up to that same grace window
+    // regardless, undoing the very reload below and needing an
+    // unrelated later refresh (once the window happened to lapse) to
+    // finally show it back in its real group.
+    this._installingSectionLastSeenAt.delete(entityId);
     await this._loadAll();
     // this._dialogHistoryEntry, not a bare entityId re-open: preserves
     // which History entry's card should stay expanded across this refresh
@@ -3080,15 +3202,16 @@ class UpdateManagerPanel extends HTMLElement {
           // answer "who's in front of me" for the dialog's own Install-button
           // swap -- found by review: this used to be a second, independent
           // walk of the same groups, built fresh here just to get the same
-          // front entity's name. Only ever a genuinely queued-behind-someone
-          // entity here (status !== "installing") -- _buildUpdatesList's own
-          // installingEntityIds no longer force-includes a queue's *front*
-          // entity just because rollout_groups still lists it as such (see
-          // that method's own comment), so there's no ambiguous "front but
-          // not really installing" case left to handle here at all.
+          // predecessor's name. Genuinely queued-behind-someone (status
+          // !== "installing") gets that entity's own name; anything else
+          // reaching this branch is either genuinely tier-waiting, or an
+          // entity INSTALLING_SECTION_GRACE_MS is still holding a spot for
+          // after it was actually released (see _buildUpdatesList's own
+          // comment) -- both fall back to the same generic text, since
+          // neither has one specific entity's name worth naming.
           const rolloutStatus = this._rolloutStatusFor(entityId);
           if (rolloutStatus) {
-            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId)) };
+            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId)) };
           } else {
             timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.tier_waiting_text };
           }
@@ -3158,6 +3281,63 @@ class UpdateManagerPanel extends HTMLElement {
     return remembered == null
       ? state
       : { ...state, attributes: { ...state.attributes, update_percentage: remembered } };
+  }
+
+  // Rebuilds this._rolloutStatusByEntityId from this._rolloutGroups --
+  // shared by _loadAll (fresh server data) and
+  // _optimisticallyAdvanceRolloutQueue (a local guess ahead of the next
+  // server round trip), so the two never drift into two different ways of
+  // deriving the same map. waitingForEntityId is each entry's own
+  // immediate predecessor in the queue (group.entities[i - 1]), not
+  // always group.entities[0] -- direct user feedback, 2026-08-12: a
+  // three-deep Zigbee queue had every entry naming the same front device,
+  // reading as if they'd all install right after it, when the third
+  // entry actually still has to wait for the second to finish too.
+  _rebuildRolloutStatusMap() {
+    this._rolloutStatusByEntityId = new Map();
+    for (const group of this._rolloutGroups) {
+      group.entities.forEach((entry, i) => {
+        const waitingForEntityId = i > 0 ? group.entities[i - 1].entity_id : null;
+        this._rolloutStatusByEntityId.set(entry.entity_id, { status: entry.status, waitingForEntityId });
+      });
+    }
+  }
+
+  // Optimistically promotes a Zigbee queue's own next entry the moment its
+  // current front finishes (installed_version actually changing, passed in
+  // as finishedEntityIds), instead of waiting for the next _loadAll() round
+  // trip to confirm it server-side -- direct user feedback, 2026-08-12: a
+  // freshly-promoted device's own in_progress can take a real few seconds
+  // to flip true, and nothing else re-triggers a reload in that gap (see
+  // INSTALLING_SECTION_GRACE_MS's own comment), so it fell out of both the
+  // "waiting" and "installing" checks at once and looked stuck. Seeds
+  // this._installingLastTrueAt for the new front exactly as if it had
+  // already been observed installing once -- reuses
+  // _isEffectivelyInstalling's own existing INSTALLING_FLICKER_GRACE_MS
+  // tolerance rather than adding a second, parallel "is this optimistic"
+  // flag, and self-corrects the same way a real flicker would: the very
+  // next _loadAll() this same call already schedules (see
+  // _updateInstallProgress) overwrites this guess with confirmed server
+  // data regardless of whether it turned out right. Returns whether
+  // anything actually changed, so the caller knows whether an immediate
+  // render is worth it ahead of that reload.
+  _optimisticallyAdvanceRolloutQueue(finishedEntityIds) {
+    let advanced = false;
+    for (const finishedId of finishedEntityIds) {
+      const group = this._rolloutGroups.find((g) => g.entities[0] && g.entities[0].entity_id === finishedId);
+      if (!group) continue;
+      group.entities = group.entities.slice(1).map((e, i) => ({ ...e, status: i === 0 ? "installing" : "queued" }));
+      if (group.entities[0]) this._installingLastTrueAt.set(group.entities[0].entity_id, Date.now());
+      advanced = true;
+    }
+    if (!advanced) return false;
+    // rollout_groups_snapshot's own "2+ entries" rule (a lone entry isn't
+    // a queue worth showing) -- mirrored here so a two-entry group that
+    // just lost its front doesn't keep rendering its last remaining
+    // member as "waiting for" anyone.
+    this._rolloutGroups = this._rolloutGroups.filter((g) => g.entities.length >= 2);
+    this._rebuildRolloutStatusMap();
+    return true;
   }
 
   // O(1) lookup into this._rolloutStatusByEntityId (built once per
@@ -3239,10 +3419,24 @@ class UpdateManagerPanel extends HTMLElement {
       // (still "ready" from before it was dispatched) already puts it.
       const rolloutStatus = this._rolloutStatusFor(entityId);
       if (this._tierWaiting.has(entityId) || (rolloutStatus && rolloutStatus.status !== "installing")) {
+        this._installingSectionLastSeenAt.set(entityId, now);
         installingEntityIds.push(entityId);
         return;
       }
-      if (!this._isEffectivelyInstalling(entityId)) return;
+      if (!this._isEffectivelyInstalling(entityId)) {
+        // Neither confirmed waiting nor confirmed installing -- but shown
+        // here very recently? Whatever this entity was blocked behind (the
+        // tier gate especially, which has no single deterministic "next"
+        // the way a Zigbee queue does, see
+        // _optimisticallyAdvanceRolloutQueue's own comment for that more
+        // precise case) can release it before its own in_progress actually
+        // flips true, so keep its spot for a short grace window instead of
+        // letting it vanish from view entirely and look stuck/broken in
+        // the meantime -- see INSTALLING_SECTION_GRACE_MS's own comment.
+        const lastSeen = this._installingSectionLastSeenAt.get(entityId);
+        if (lastSeen != null && now - lastSeen < INSTALLING_SECTION_GRACE_MS) installingEntityIds.push(entityId);
+        return;
+      }
       // Seeded here too, not only reactively by _updateInstallProgress --
       // found live: the progress spinner still didn't always show on an
       // installing update item. A render triggered by a
@@ -3264,7 +3458,10 @@ class UpdateManagerPanel extends HTMLElement {
         }, INSTALLING_PROMOTE_DELAY_MS);
       }
       const since = this._installingSince.get(entityId);
-      if (since != null && now - since >= INSTALLING_PROMOTE_DELAY_MS) installingEntityIds.push(entityId);
+      if (since != null && now - since >= INSTALLING_PROMOTE_DELAY_MS) {
+        this._installingSectionLastSeenAt.set(entityId, now);
+        installingEntityIds.push(entityId);
+      }
     });
     if (installingEntityIds.length) outer.appendChild(this._buildInstallingCard(installingEntityIds));
 
@@ -3590,7 +3787,7 @@ class UpdateManagerPanel extends HTMLElement {
     // stayed false.
     const dialogStatusText = showPendingUpdate
       ? isQueuedInRollout
-        ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.frontEntityId))
+        ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId))
         : isTierWaiting
           ? tr.tier_waiting_text
           : statusText(tr, u, this._settings, this._hass)
@@ -4777,13 +4974,37 @@ class UpdateManagerPanel extends HTMLElement {
   // Two real, load-bearing differences from ha-row-item found by reading
   // its own static styles: its own supporting text genuinely wraps
   // (`.secondary { white-space: normal }`, confirmed -- ha-row-item's own
-  // equivalent is nowrap-only), so field_enabled_helper moves back into
-  // the row itself instead of a separate paragraph; and its own content
-  // slot gets real breathing-room padding (--settings-row-content-padding-
+  // equivalent is nowrap-only), so the master switch's own helper text
+  // moves back into the row itself instead of a separate paragraph; and
+  // its own content slot gets real breathing-room padding (--settings-row-content-padding-
   // block, 16px top+bottom) around whatever control sits in it, rather
   // than tightly centering it -- exactly what a full-height ha-input
   // (56px + 8px own bottom padding, confirmed against its own real source)
   // needs to not look cramped/misaligned next to a couple of text lines.
+  // "General" as a real card.header again (direct user feedback,
+  // 2026-08-12): the brand logo moved up into its own page-level header
+  // above every card (_buildPageHeader), matching how Home Assistant's own
+  // /config/integrations/integration/<domain> page puts the logo/title/
+  // version above its own cards rather than inside the first one -- this
+  // card goes back to a plain header string like every other card on this
+  // page. The master switch itself keeps its own outlined sub-row
+  // (.general-enabled-row) so it stays visually singled out from the sizes
+  // explanation below it, which lives in this same card (2026-08-12,
+  // direct user feedback: the separate "Update sizes" card folded back in
+  // here) -- both Postponement's own wait_days and Auto-update's own
+  // auto_install toggle still depend on this same size concept, but it's
+  // read often enough on its own (right when someone's first getting
+  // oriented, alongside the master switch) to earn top billing over living
+  // only in a card of its own further down. A plain <ul> bullet list for
+  // the size explanations themselves was tried once (cloud-companion-
+  // pref.ts's own real shape for similar enumerable content) and reverted
+  // the same day (direct user feedback: "ziet er niet uit", read as
+  // inconsistent with every other card's own settings-row rows) --
+  // .size-examples below reintroduces bullets, but only for the short,
+  // concrete version-jump examples themselves (custom-marked, not a bare
+  // <ul>'s own default styling, the specific thing that read as
+  // inconsistent that time), under each size's own lead sentence rather
+  // than replacing it.
   _buildGeneralCard(tr) {
     const card = document.createElement("ha-card");
     card.outlined = true;
@@ -4792,84 +5013,97 @@ class UpdateManagerPanel extends HTMLElement {
     const body = document.createElement("div");
     body.className = "card-content";
 
-    body.appendChild(
-      this._buildSettingsRow(tr, {
-        headingText: tr.field_enabled,
-        descriptionText: tr.field_enabled_helper,
-        selector: { boolean: {} },
-        key: "enabled",
-        coerce: (v) => !!v,
-      })
-    );
+    // A static sentence describing what the switch *does*, regardless of
+    // its own current value, read as odd while it was already off (direct
+    // user feedback, 2026-08-12): nothing about it reflected the actual
+    // current state. enabledDescription below picks the right one of the
+    // two real sentences (field_enabled_helper_on/_off) for whichever
+    // state this control is actually in right now, live -- _buildSettingsRow
+    // itself only wires its own control's value-changed to
+    // this._formData/autosave (see that method's own listener), not
+    // anything about this row's own text, and _saveSettingsNow deliberately
+    // never re-renders the whole Settings tab after a save (would drop
+    // focus out of an unrelated field mid-edit), so this needs its own
+    // second listener on the same control to update live instead of only
+    // catching up whenever some other reason happens to rebuild this card.
+    const enabledDescription = (enabled) => (enabled ? tr.field_enabled_helper_on : tr.field_enabled_helper_off);
+    const enabledRow = this._buildSettingsRow(tr, {
+      headingText: tr.field_enabled,
+      descriptionText: enabledDescription(!!this._formData.enabled),
+      selector: { boolean: {} },
+      key: "enabled",
+      coerce: (v) => !!v,
+    });
+    enabledRow.classList.add("general-enabled-row");
+    const enabledDescriptionEl = enabledRow.querySelector('span[slot="description"]');
+    const enabledControlEl = enabledRow.querySelector("ha-selector");
+    if (enabledDescriptionEl && enabledControlEl) {
+      enabledControlEl.addEventListener("value-changed", (e) => {
+        enabledDescriptionEl.textContent = enabledDescription(!!e.detail.value);
+      });
+    }
+    body.appendChild(enabledRow);
 
-    card.appendChild(body);
-    return card;
-  }
+    const sizesIntro = document.createElement("p");
+    sizesIntro.className = "section-intro subsection-gap";
+    sizesIntro.textContent = tr.sizes_intro_lead;
+    body.appendChild(sizesIntro);
 
-  // Its own card, above Postponement -- pulled out of General (2026-08-11,
-  // direct user feedback, "ik ben zoekende"): both Postponement's own
-  // wait_days and Auto-update's own auto_install toggle depend on this
-  // same concept, so it deserves a place of its own rather than living
-  // inside General (whose own remaining content, the master switch, isn't
-  // otherwise related to it) or a per-row (?) tooltip (tried and reverted
-  // earlier the same day). A plain <ul> bullet list was tried first
-  // (cloud-companion-pref.ts's own real shape for similar enumerable
-  // content) but reverted the same day, direct user feedback ("ziet er
-  // niet uit"): a generic bullet list reads as inconsistent now that
-  // every other card on this page speaks the same ha-list-item-base
-  // visual language. ha-list-item-base itself doesn't fit either though --
-  // these descriptions are genuinely too long for its own single-line
-  // supporting-text (same constraint field_enabled_helper hit), and there's
-  // no control that would belong in slot="end" anyway, purely
-  // informational. Label + a real (wrapping) paragraph instead -- the
-  // exact same field-label/section-intro pairing already used for
-  // General's own switch explanation and excludedLabel/excludedHint below
-  // (_buildAutoInstallCard), just one pair per size instead of one for
-  // the whole card.
-  _buildSizesCard(tr) {
-    const card = document.createElement("ha-card");
-    card.outlined = true;
-    card.header = tr.sizes_section_title;
-
-    const body = document.createElement("div");
-    body.className = "card-content";
-
-    const intro = document.createElement("p");
-    intro.className = "section-intro";
-    intro.textContent = tr.sizes_intro_lead;
-    body.appendChild(intro);
-
-    // Each size's own label+description pair grouped in its own sub-div,
-    // not appended straight to .card-content -- same reasoning as every
-    // other grouped-pair block this session: .card-content's own generic
-    // 16px top-margin would otherwise separate the label from its own
-    // description exactly as much as it separates one size from the next.
+    // Each size down to two compact lines now (2026-08-12, direct user
+    // feedback: the earlier stacked label/lead/bullet-list version took up
+    // too much height) -- label and lead share one line (.size-row), the
+    // examples join onto a second, smaller/secondary-colored one
+    // (.size-examples-line, middot-separated) instead of their own
+    // multi-line bullet list. Still grouped in its own sub-div, not
+    // appended straight to .card-content -- same reasoning as every other
+    // grouped-pair block this session: .card-content's own generic 16px
+    // top-margin would otherwise separate a size's own two lines from each
+    // other exactly as much as it separates one size from the next.
     const sizesGroup = document.createElement("div");
     sizesGroup.className = "sizes-group";
     for (const size of SIZES) {
       const sizeBlock = document.createElement("div");
-      // .subsection-label, not .field-label -- direct user feedback,
-      // 2026-08-11 ("de hierarchie is iets wat op de pagina goed is maar in
-      // de secties/cards zelf nog niet"): at the same size and only a color
-      // difference from its own description, "Small" didn't read as a
-      // heading over its own paragraph, it read as just more body text --
-      // a real contributor to this card feeling cluttered despite having
-      // only three short blocks. Medium weight sets it apart the same way
-      // Postponement/Auto-update's own new group headings do.
-      const label = document.createElement("p");
+      sizeBlock.className = "size-block";
+      const row = document.createElement("p");
+      row.className = "size-row";
+      // .subsection-label reused inline here (font-size: inherit scopes
+      // it back down to .size-row's own smaller size, see that rule's own
+      // comment) -- same class Postponement/Auto-update's own group
+      // headings use, direct user feedback 2026-08-11 on why this reads
+      // as a heading rather than more body text.
+      const label = document.createElement("span");
       label.className = "subsection-label";
       label.textContent = tr[`size_${size}_short`];
-      sizeBlock.appendChild(label);
-      const desc = document.createElement("p");
-      desc.className = "section-intro";
-      desc.textContent = tr[`size_${size}_desc`]();
-      sizeBlock.appendChild(desc);
+      row.appendChild(label);
+      row.appendChild(document.createTextNode(" " + tr[`size_${size}_lead`]));
+      sizeBlock.appendChild(row);
+      const examplesLine = document.createElement("p");
+      examplesLine.className = "size-examples-line";
+      examplesLine.textContent = tr[`size_${size}_examples`]().join(" · ");
+      sizeBlock.appendChild(examplesLine);
       sizesGroup.appendChild(sizeBlock);
     }
     body.appendChild(sizesGroup);
 
     card.appendChild(body);
     return card;
+  }
+
+  // Simplified 2026-08-12, direct user feedback: just the logo, centered,
+  // no separate title/version text -- the wide icon+wordmark logo.png
+  // (not icon.png, back to the same file _buildGeneralCard used to show
+  // inside its own card) already carries the name on its own, and the
+  // version already lives at the bottom of this same page
+  // (_buildVersionLink), no need to repeat it up here too.
+  _buildPageHeader() {
+    const header = document.createElement("div");
+    header.className = "page-header";
+    const logo = document.createElement("img");
+    logo.className = "page-header-logo";
+    logo.src = "/update_manager_brand/logo.png";
+    logo.alt = this._tr.field_enabled;
+    header.appendChild(logo);
+    return header;
   }
 
   // ha-card + ha-progress-button, the same building blocks (and .card-content/
@@ -4889,13 +5123,20 @@ class UpdateManagerPanel extends HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "settings-cards";
 
-    // First, above every other card: the settings that apply regardless
-    // of size (see _buildGeneralCard), not a rule about any one of them.
-    wrap.appendChild(this._buildGeneralCard(tr));
+    // Above every card, not inside the first one -- direct user feedback,
+    // 2026-08-12, inspired by Home Assistant's own real
+    // /config/integrations/integration/<domain> page putting its own logo
+    // above its cards rather than inside one, simplified down from that
+    // page's own logo+title+version header to just the logo, centered
+    // (see _buildPageHeader's own comment). Same 600px-max-width column as
+    // every card below it though (see .settings-cards .page-header's own
+    // CSS, sharing the exact values .settings-cards ha-card already uses).
+    wrap.appendChild(this._buildPageHeader());
 
-    // Above Postponement, not inside General -- see _buildSizesCard's own
-    // comment for why this is its own card.
-    wrap.appendChild(this._buildSizesCard(tr));
+    // First card: the settings that apply regardless of size, plus the
+    // size explanations themselves -- see _buildGeneralCard's own comment
+    // for why both live in this one card.
+    wrap.appendChild(this._buildGeneralCard(tr));
 
     wrap.appendChild(this._buildPostponementCard(tr));
     // Always rendered now (changed 2026-07-23): used to only appear once
@@ -6033,8 +6274,11 @@ class UpdateManagerPanel extends HTMLElement {
          width instead (found live), so align-self alone wouldn't reliably
          center every card here the way width: 100% + margin: 0 auto does.
          Same centering mechanism .update-groups ha-card below already uses
-         in its own plain block context, just adapted for this flex one. */
-      .settings-cards ha-card { width: 100%; max-width: 600px; margin: 0 auto; }
+         in its own plain block context, just adapted for this flex one.
+         .page-header shares this exact rule too (2026-08-12) -- it's not
+         a card, but it sits in this same flex column above them and reads
+         oddly wider than every card underneath it otherwise. */
+      .settings-cards ha-card, .settings-cards .page-header { width: 100%; max-width: 600px; margin: 0 auto; }
       /* Same "Update Manager vX.Y.Z" link this project's own sibling
          Lovelace cards already put at the bottom of their editor --
          .settings-cards' own flex gap above already gives this the same
@@ -6059,14 +6303,72 @@ class UpdateManagerPanel extends HTMLElement {
          context and just needs the flex/alignment part, not its own
          padding fighting the native one. */
       .card-actions { display: flex; justify-content: flex-end; }
-      /* Sizes card's own label+description pairs (_buildSizesCard) --
-         reverted from a plain <ul> the same day (direct user feedback:
-         "ziet er niet uit", read as inconsistent with every other card's
-         own settings-row rows). A generous 16px gap: these read as three
-         separate informational blocks, not closely related action rows. */
-      .sizes-group { display: flex; flex-direction: column; gap: var(--ha-space-4, 16px); }
+      /* Size explanations, two compact lines each (_buildGeneralCard) --
+         shrunk 2026-08-12, direct user feedback: the earlier stacked
+         label/lead/bullet-list version took up too much height. A plain
+         <ul> was tried even before that (reverted the same day it was
+         first built, direct user feedback: "ziet er niet uit", read as
+         inconsistent with every other card's own settings-row rows) -- a
+         tight 4px gap now, not that version's own generous 16px: two short
+         lines per size read as one compact fact each, not three separate
+         informational blocks worth deliberate breathing room. */
+      .sizes-group { display: flex; flex-direction: column; gap: var(--ha-space-2, 8px); }
       .field-label + .section-intro,
       .subsection-label + .section-intro { margin-top: var(--ha-space-1, 4px); }
+      .size-block { display: flex; flex-direction: column; gap: 2px; }
+      /* Label + lead share this one line -- .subsection-label's own font-
+         size (normally 14px, sized for a standalone heading) inherits
+         this row's smaller size instead, scoped to just this context so
+         Postponement/Auto-update's own group headings elsewhere keep
+         their real 14px. */
+      /* --ha-font-size-m, not -s -- direct user feedback, 2026-08-12: keep
+         this to the page's own two already-established sizes (14px for a
+         main line, matching .section-intro elsewhere; 13px only for the
+         .size-examples-line below, matching .hint's own secondary size),
+         not a third, in-between value. .subsection-label's own font-size
+         (also 14px, unmodified) already matches this row's, no override
+         needed the way .size-examples-line's own smaller context below
+         does need one. */
+      .size-row { margin: 0; font-size: var(--ha-font-size-m, 14px); line-height: 1.3; color: var(--primary-text-color); }
+      .size-row .subsection-label { margin-inline-end: var(--ha-space-1, 4px); }
+      /* Each size's own concrete version-jump examples, middot-joined onto
+         one line (see _buildGeneralCard's own Array#join) instead of a
+         multi-line list -- secondary/smaller than .size-row above, this is
+         supporting detail, not the main point of either line. Tabular-nums
+         so the version numbers' own digits line up. */
+      .size-examples-line {
+        margin: 0; font-size: var(--ha-font-size-s, 13px); line-height: 1.3;
+        color: var(--secondary-text-color); font-variant-numeric: tabular-nums;
+      }
+      /* Page-level header (_buildPageHeader), above every Settings card
+         instead of inside the first one -- inspired by (not a literal
+         copy of, see this method's own 2026-08-12 simplification comment)
+         ha-config-integration-page.ts's own real logo placement. Just the
+         logo, centered, no separate title/version text next to it any
+         more -- constrained to this page's own 600px column
+         (.settings-cards ha-card, .settings-cards .page-header share that
+         one rule) like every card below it. */
+      .settings-cards .page-header { display: flex; justify-content: center; margin-bottom: 0; }
+      .page-header-logo { display: block; height: 104px; width: auto; }
+      /* Deliberately outlined against this card's own plain background
+         (unlike every ha-settings-row elsewhere on this page, which sits
+         flush) -- direct user feedback, 2026-08-12: with the header gone
+         and only one row left in this card, the master switch needed to
+         read as its own singled-out, elevated control, not just another
+         plain settings row. Its own radius/padding, not reused from
+         .card-content ha-settings-row's own zeroed inline padding below --
+         that override stays a horizontal-only fix for every other row on
+         this page, this one additionally needs room on every side for its
+         own visible border. No display override here (found live,
+         2026-08-12, direct user feedback: broke the row's own 75/25
+         heading/control split) -- ha-settings-row's own :host is already
+         flex internally for that exact layout, and setting display:
+         block from outside collapses it back to a single column instead
+         of just adding a border around the existing row shape. */
+      .card-content ha-settings-row.general-enabled-row {
+        border: 1px solid var(--ha-color-border-neutral-quiet); border-radius: 8px;
+        padding-inline: var(--ha-space-4, 16px); padding-block: var(--ha-space-2, 8px);
+      }
       .hint {
         color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px);
         line-height: 1.4; margin: 0;

@@ -77,31 +77,36 @@ export const TRANSLATIONS = {
     // 2026-07-16): "Small/Medium/Large" is a scale any version
     // scheme maps onto -- semver, calendar versioning, and git commit
     // hashes each have their own notion of "small" (see semver.py). The
-    // _desc text is a small (?) tooltip's own content next to the size's
-    // own name in the Postponement/Auto-update settings rows
-    // (buildSizeHelpTooltip, 2026-08-11), not a standalone paragraph --
-    // the detail dialog's "Jump" fact row shows the _short word only, no
-    // room/need for the explanation there either.
+    // _lead/_examples text is the General card's own explanation for each
+    // size (_buildGeneralCard) -- the detail dialog's "Jump" fact row
+    // shows the _short word only, no room/need for the explanation there.
     size_small_short: "Small",
     // Functions, not plain strings, for the two with a calendar-version
     // example (currentCalendarVersion): always today's real year/month,
-    // never a hardcoded date that quietly goes stale. size_large_desc stays
-    // a function too, purely so every size_*_desc can be called the same
+    // never a hardcoded date that quietly goes stale. size_large_examples
+    // stays a function too, purely so every size_*_examples can be called
+    // the same
     // way (see computeHelper below) rather than branching per size.
-    size_small_desc: () => {
+    // Split from one run-on sentence into a short lead clause plus its own
+    // examples array (2026-08-12, direct user feedback): one bullet per
+    // example reads faster than the same facts packed into one sentence's
+    // worth of parentheticals. The real, live-computed examples
+    // (currentCalendarVersion) carry over unchanged, just no longer
+    // prefixed with "e.g." now that each is its own line.
+    size_small_lead: "A patch release, or an update within the same calendar month.",
+    size_small_examples: () => {
       const { year, month } = currentCalendarVersion();
-      return `A patch release (e.g. 1.0.0 → 1.0.1), or the same calendar month (e.g. ${year}.${month}.0 → ${year}.${month}.1).`;
+      return ["1.0.0 → 1.0.1", `${year}.${month}.0 → ${year}.${month}.1`];
     },
     size_medium_short: "Medium",
-    size_medium_desc: () => {
+    size_medium_lead: "A minor release, a new calendar month or year, or a commit-hash update.",
+    size_medium_examples: () => {
       const { year, month, nextYear, nextMonth } = currentCalendarVersion();
-      return (
-        `A minor release (e.g. 1.0.0 → 1.1.0), a new calendar month/year (e.g. ${year}.${month}.0 → ` +
-        `${nextYear}.${nextMonth}.0), or a commit-hash update (e.g. 7sg82tw → 8dhw8wg).`
-      );
+      return ["1.0.0 → 1.1.0", `${year}.${month}.0 → ${nextYear}.${nextMonth}.0`, "7sg82tw → 8dhw8wg"];
     },
     size_large_short: "Large",
-    size_large_desc: () => "A major release (e.g. 1.0.0 → 2.0.0) or a jump too different to classify.",
+    size_large_lead: "A major release, or a jump too different to classify.",
+    size_large_examples: () => ["1.0.0 → 2.0.0"],
     // Used in the detail dialog's status alert (see statusText/
     // _openDetailDialog) -- no emoji prefix here, the alert's own color and
     // icon (a real ha-alert, success/info/warning) already carry that, an
@@ -291,17 +296,24 @@ export const TRANSLATIONS = {
     community_link_failed: "Linking failed or was declined, try again.",
     enabled_section_title: "General",
     field_enabled: "Update Manager",
-    field_enabled_helper:
-      "Pauses every automatic action below: no announcements, no automatic installs, and postponed updates stop being hidden from Home Assistant's own update count. Everything you've configured stays saved, it just isn't applied until you turn this back on.",
-    sizes_section_title: "Update sizes",
-    // Lead-in only -- the bullet list itself (what Small/Medium/Large
-    // actually mean) is composed in JS from size_*_short/size_*_desc
-    // directly, not duplicated here as static text: those already carry
-    // live calendar-version examples (currentCalendarVersion), and this
-    // used to be a per-row (?) tooltip reusing the exact same two
-    // functions before it became its own card instead (2026-08-11, direct
-    // user feedback: "die tooltips vind ik niks").
-    sizes_intro_lead: "Every update is grouped into one of these three sizes, based on how big the version jump is.",
+    // Shortened 2026-08-12, direct user feedback: the full itemized list
+    // (announcements/installs/hiding) lived in this same one-line helper
+    // slot as the settings-row's own control -- the master switch just
+    // needs "everything pauses, nothing is lost", not the full inventory
+    // of what "everything" means. Split into an on/off pair the same day,
+    // further direct user feedback: one static sentence describing what
+    // the switch *does* read oddly while it was already off, since
+    // nothing about it reflected the actual current state.
+    field_enabled_helper_on: "Turning this off pauses every automatic action. Nothing you've configured is lost, it just won't apply until you turn it back on.",
+    field_enabled_helper_off: "Every automatic action is currently paused. Nothing you've configured was lost, turn this back on to resume.",
+    // Lead-in only -- the per-size explanations themselves (what Small/
+    // Medium/Large actually mean) are composed in JS from
+    // size_*_short/size_*_lead/size_*_examples directly, not duplicated
+    // here as static text: those already carry live calendar-version
+    // examples (currentCalendarVersion). Shown in the General card
+    // (_buildGeneralCard), no longer a card of its own.
+    sizes_intro_lead:
+      "Postponement and Auto-update let you set separate rules per size. Every update is grouped into one of these three sizes, based on how big the version jump is:",
     settings_header: "Postponement",
     settings_hint:
       "Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
@@ -471,20 +483,20 @@ export const TRANSLATIONS = {
     menu_show_not_installable_updates: "Niet-installeerbare updates tonen",
     dash: "–",
     size_small_short: "Klein",
-    size_small_desc: () => {
+    size_small_lead: "Een patch-release, of een update binnen dezelfde kalendermaand.",
+    size_small_examples: () => {
       const { year, month } = currentCalendarVersion();
-      return `Een patch-release (bijv. 1.0.0 → 1.0.1), of dezelfde kalendermaand (bijv. ${year}.${month}.0 → ${year}.${month}.1).`;
+      return ["1.0.0 → 1.0.1", `${year}.${month}.0 → ${year}.${month}.1`];
     },
     size_medium_short: "Middel",
-    size_medium_desc: () => {
+    size_medium_lead: "Een minor-release, een nieuwe kalendermaand of -jaar, of een commit-update.",
+    size_medium_examples: () => {
       const { year, month, nextYear, nextMonth } = currentCalendarVersion();
-      return (
-        `Een minor-release (bijv. 1.0.0 → 1.1.0), een nieuwe kalendermaand/-jaar (bijv. ${year}.${month}.0 → ` +
-        `${nextYear}.${nextMonth}.0), of een commit-update (bijv. 7sg82tw → 8dhw8wg).`
-      );
+      return ["1.0.0 → 1.1.0", `${year}.${month}.0 → ${nextYear}.${nextMonth}.0`, "7sg82tw → 8dhw8wg"];
     },
     size_large_short: "Groot",
-    size_large_desc: () => "Een major-release (bijv. 1.0.0 → 2.0.0), of een sprong die niet te classificeren is.",
+    size_large_lead: "Een major-release, of een sprong die niet te classificeren is.",
+    size_large_examples: () => ["1.0.0 → 2.0.0"],
     status_ready: "Klaar om te updaten",
     status_waiting_manual: (when) => `Klaar om te updaten ${when}`,
     status_waiting_soon: "Uitgesteld (bijna zo ver)",
@@ -600,10 +612,10 @@ export const TRANSLATIONS = {
     community_link_failed: "Koppelen is mislukt of geweigerd, probeer het opnieuw.",
     enabled_section_title: "Algemeen",
     field_enabled: "Update Manager",
-    field_enabled_helper:
-      "Pauzeert alle automatische acties hieronder: geen aankondigingen, geen automatische installaties, en uitgestelde updates worden niet langer verborgen voor Home Assistants eigen update-telling. Alles wat je hebt ingesteld blijft opgeslagen, het wordt alleen niet toegepast totdat je dit weer aanzet.",
-    sizes_section_title: "Update-groottes",
-    sizes_intro_lead: "Elke update valt in een van deze drie groottes, op basis van hoe groot de versiesprong is.",
+    field_enabled_helper_on: "Uitzetten pauzeert elke automatische actie. Niets van wat je hebt ingesteld gaat verloren, het wordt alleen niet toegepast totdat je dit weer aanzet.",
+    field_enabled_helper_off: "Elke automatische actie staat nu gepauzeerd. Niets van wat je hebt ingesteld is verloren gegaan, zet dit weer aan om te hervatten.",
+    sizes_intro_lead:
+      "Bij Uitstel en Auto-update stel je per grootte je eigen regels in. Elke update valt in een van deze drie groottes, op basis van hoe groot de versiesprong is:",
     settings_header: "Uitstel",
     settings_hint:
       "Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te " +

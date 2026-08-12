@@ -22,6 +22,15 @@ _PANEL_DIR = Path(__file__).parent / "panel"
 _PANEL_JS_PATH = _PANEL_DIR / "update-manager-panel.js"
 _TRANSLATIONS_JS_PATH = _PANEL_DIR / "translations.js"
 _STATIC_PATH_REGISTERED = f"{DOMAIN}_static_path_registered"
+# Sibling of _PANEL_DIR above, not under it: brand/ holds the same icon.png/
+# logo.png this project already submits to the community brands repo, kept
+# here purely as the source of truth for that submission -- not otherwise
+# reachable from a browser, since only _PANEL_DIR itself was ever registered
+# as a static path. Given its own route so the Settings tab's own General
+# card can show the real logo instead of duplicating it as a third copy
+# somewhere under panel/ just to piggyback on the existing route.
+_BRAND_DIR = Path(__file__).parent / "brand"
+_BRAND_STATIC_URL_PATH = "/update_manager_brand"
 
 
 def _panel_js_cache_key(*contents: bytes) -> str:
@@ -83,7 +92,15 @@ async def async_register_update_manager_panel(hass: HomeAssistant) -> None:
     if not hass.data.get(_STATIC_PATH_REGISTERED):
         hass.data[_STATIC_PATH_REGISTERED] = True
         await hass.http.async_register_static_paths(
-            [StaticPathConfig(_STATIC_URL_PATH, str(_PANEL_DIR), True)]
+            [
+                StaticPathConfig(_STATIC_URL_PATH, str(_PANEL_DIR), True),
+                # cache_headers=True is fine here unlike the panel JS above:
+                # a brand logo isn't actively edited during a live session,
+                # so there's no need for _panel_js_cache_key's own busting
+                # query string, just to serve it once and let the browser
+                # cache it aggressively.
+                StaticPathConfig(_BRAND_STATIC_URL_PATH, str(_BRAND_DIR), True),
+            ]
         )
 
     # Off the event loop: the main file is ~227KB, and Path.read_bytes() is
