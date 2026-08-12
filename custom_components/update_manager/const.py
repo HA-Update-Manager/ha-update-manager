@@ -59,6 +59,31 @@ CONF_LARGE_AUTO_INSTALL = "large_auto_install"
 CONF_ANNOUNCE_HOURS = "announce_hours"
 DEFAULT_ANNOUNCE_HOURS = 24
 
+# Optional, shared (not per-size) schedule of allowed weekdays/times an
+# update is permitted to become "ready" on -- issue #4, layered on top of the
+# wait/auto-install settings above, not a replacement for them (see
+# postponement_schedule.py's own docstring for how the two compose). 14 flat
+# keys, not one nested-dict-valued option: every existing option here is a
+# scalar or flat list, this stays consistent rather than introducing the only
+# nested value in the whole schema. Absent/False/empty for every day (the
+# default) means "unrestricted", byte-for-byte identical to not having this
+# feature at all -- no migration needed, unlike CONF_EXCLUDED_ENTITIES's own
+# real, non-empty seeded defaults. "" / absent for a day's own time means
+# "any time that day".
+#
+# Generated from a plain day-name list rather than 14 individually spelled-
+# out CONF_* constants -- nothing outside this tuple ever references a single
+# day's own key by name (coordinator.py/websocket_api.py both only ever
+# iterate the whole tuple), so naming each one individually was pure
+# ceremony. Index 0 = Monday .. 6 = Sunday, matching datetime.weekday() and
+# PostponementSchedule.days directly -- coordinator.py's own
+# schedule_from_options iterates this instead of repeating the 7-day
+# enabled/time pair by hand.
+_READY_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+WEEKDAY_READY_OPTION_KEYS: tuple[tuple[str, str], ...] = tuple(
+    (f"{day}_ready_enabled", f"{day}_ready_time") for day in _READY_WEEKDAYS
+)
+
 # User-picked, on top of coordinator.py's own hard, non-configurable
 # Core/Supervisor/HAOS exclusion -- entities here are still shown normally
 # in Updates/History (a real size/status, real history), install_manager.py

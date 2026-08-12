@@ -77,12 +77,11 @@ export const TRANSLATIONS = {
     // 2026-07-16): "Small/Medium/Large" is a scale any version
     // scheme maps onto -- semver, calendar versioning, and git commit
     // hashes each have their own notion of "small" (see semver.py). The
-    // _desc text is the settings screen's expandable-section *description*
-    // (ha-form's own computeHelper for that schema entry, confirmed against
-    // ha-form-expandable.ts -- renders as its own line below the header,
-    // not squeezed into the header itself, direct user feedback) -- the
-    // detail dialog's "Jump" fact row shows the _short word only, no room/
-    // need for the explanation there.
+    // _desc text is a small (?) tooltip's own content next to the size's
+    // own name in the Postponement/Auto-update settings rows
+    // (buildSizeHelpTooltip, 2026-08-11), not a standalone paragraph --
+    // the detail dialog's "Jump" fact row shows the _short word only, no
+    // room/need for the explanation there either.
     size_small_short: "Small",
     // Functions, not plain strings, for the two with a calendar-version
     // example (currentCalendarVersion): always today's real year/month,
@@ -145,20 +144,30 @@ export const TRANSLATIONS = {
     field_excluded_entities: "Always manual",
     field_excluded_entities_helper:
       "Still shown normally in Updates and History. Update Manager just never auto-installs these, regardless of what's configured above.",
-    field_wait_days: "Postponement period (days)",
+    field_wait_days_unit: "days",
     field_auto_install: "Update automatically",
     auto_install_section_title: "Auto-update",
+    // Same reasoning as postponement_sizes_label -- a heading over its own
+    // group of size rows, not left to the card header alone.
+    auto_install_sizes_label: "Which sizes install automatically?",
     field_hide_postponed: "Hide postponed updates",
-    field_hide_postponed_helper:
-      "Marks a postponed update as skipped in Home Assistant itself until it's actually ready. Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
-    auto_install_section_desc:
-      "The postponement/auto-install rules above apply per size. Everything below (announcement notice, always-manual entities, trusted voters) applies regardless of size.",
+    field_hide_postponed_helper: "Hides it from Home Assistant's own update count until it's ready.",
+    field_ready_days_add: "Add a day",
+    field_ready_remove: (day) => `Remove ${day}`,
+    settings_schedule_hint: "Optional: only let an update become ready on specific days.",
+    weekday_monday_short: "Monday",
+    weekday_tuesday_short: "Tuesday",
+    weekday_wednesday_short: "Wednesday",
+    weekday_thursday_short: "Thursday",
+    weekday_friday_short: "Friday",
+    weekday_saturday_short: "Saturday",
+    weekday_sunday_short: "Sunday",
     field_trusted_voters: "Trusted voters",
     field_trusted_voters_helper:
       "A GitHub username you trust more than your own rules. Their healthy vote overrides your rules above and auto-installs that jump immediately, even over someone else's problematic report.",
-    announce_hours_label: "Announcement notice (hours)",
-    announce_hours_helper:
-      "How long you have to cancel a scheduled automatic install (Updates tab) before it actually happens, once the postponement period is over.",
+    announce_hours_label: "Announcement notice",
+    announce_hours_unit: "hours",
+    announce_hours_helper: "How long you still have to cancel a scheduled automatic install.",
     // "Jump" (not "Impact", renamed 2026-08-07, direct user feedback while
     // reviewing the big->large rename): this fact row shows the size of the
     // version *jump* itself (small/medium/large, see semver.py), not a
@@ -270,7 +279,6 @@ export const TRANSLATIONS = {
     // specific to any one size, as opposed to "Update rules" (per size)
     // and "Auto-update" (the auto-install mechanism's own details) below
     // it.
-    enabled_section_title: "General",
     community_section_title: "Help others",
     community_section_desc:
       "Become part of the community: link your GitHub account to vote on whether an update turned out healthy or problematic.",
@@ -281,14 +289,29 @@ export const TRANSLATIONS = {
     community_link_waiting: "Waiting for you to approve on GitHub...",
     community_link_timed_out: "The linking code expired before it was approved, try again.",
     community_link_failed: "Linking failed or was declined, try again.",
-    field_enabled: "Enabled",
+    enabled_section_title: "General",
+    field_enabled: "Update Manager",
     field_enabled_helper:
       "Pauses every automatic action below: no announcements, no automatic installs, and postponed updates stop being hidden from Home Assistant's own update count. Everything you've configured stays saved, it just isn't applied until you turn this back on.",
-    settings_header: "Update rules",
+    sizes_section_title: "Update sizes",
+    // Lead-in only -- the bullet list itself (what Small/Medium/Large
+    // actually mean) is composed in JS from size_*_short/size_*_desc
+    // directly, not duplicated here as static text: those already carry
+    // live calendar-version examples (currentCalendarVersion), and this
+    // used to be a per-row (?) tooltip reusing the exact same two
+    // functions before it became its own card instead (2026-08-11, direct
+    // user feedback: "die tooltips vind ik niks").
+    sizes_intro_lead: "Every update is grouped into one of these three sizes, based on how big the version jump is.",
+    settings_header: "Postponement",
     settings_hint:
-      "Every update is grouped into one of these three sizes, based on how big the version jump " +
-      "is. For each, choose how many days to postpone it, and whether Update Manager should then " +
-      "install it for you.",
+      "Postponing is worth it: it gives a release with a bug time to be noticed and fixed before you commit to it.",
+    // A real heading over the size rows, not just the intro paragraph above
+    // them -- direct user feedback, 2026-08-11 ("de hierarchie is iets wat
+    // op de pagina goed is maar in de secties/cards zelf nog niet"): a group
+    // of related rows needs its own label to read as one group, the same
+    // way excludedLabel/trustedLabel already head their own groups below in
+    // Auto-update.
+    postponement_sizes_label: "How long do you want to postpone?",
     save: "Save",
     settings_saved_toast: "Settings saved",
     cancel_auto_install: "Cancel",
@@ -427,10 +450,13 @@ export const TRANSLATIONS = {
     relative_future: (n, unit) => `in ${n} ${unit}`,
     relative_just_now: "just now",
     relative_soon: "very soon",
-    when_today: (time) => `Today ${time}`,
-    when_tomorrow: (time) => `Tomorrow ${time}`,
-    when_weekday: (weekday, time) => `${weekday} ${time}`,
-    when_date: (date, time) => `${date}, ${time}`,
+    // `time` is null whenever the target is exactly midnight (see
+    // absoluteWhen's own comment) -- dropped instead of shown as "00:00",
+    // which read as genuinely ambiguous (start or end of that day?).
+    when_today: (time) => (time ? `Today ${time}` : "Today"),
+    when_tomorrow: (time) => (time ? `Tomorrow ${time}` : "Tomorrow"),
+    when_weekday: (weekday, time) => (time ? `${weekday} ${time}` : weekday),
+    when_date: (date, time) => (time ? `${date}, ${time}` : date),
   },
   nl: {
     locale: "nl",
@@ -472,20 +498,28 @@ export const TRANSLATIONS = {
     field_excluded_entities: "Altijd handmatig",
     field_excluded_entities_helper:
       "Blijven gewoon zichtbaar bij Updates en Historie. Update Manager installeert ze alleen nooit automatisch, ongeacht wat je hierboven instelt.",
-    field_wait_days: "Uitsteltermijn (dagen)",
+    field_wait_days_unit: "dagen",
     field_auto_install: "Automatisch updaten",
     auto_install_section_title: "Auto-update",
-    auto_install_section_desc:
-      "De uitstel-/auto-installatieregels hierboven gelden per grootte. Alles hieronder (aankondigingstermijn, altijd-handmatige entiteiten, vertrouwde stemmers) geldt sowieso, ongeacht grootte.",
+    auto_install_sizes_label: "Welke groottes installeer je automatisch?",
     field_trusted_voters: "Vertrouwde stemmers",
     field_trusted_voters_helper:
       "Een GitHub-gebruikersnaam die je meer vertrouwt dan je eigen regels. Hun probleemloze stem overrult je eigen regels hierboven en installeert die sprong meteen automatisch, ook als iemand anders 'm als problematisch meldde.",
     field_hide_postponed: "Uitgestelde updates verbergen",
-    field_hide_postponed_helper:
-      "Markeert een uitgestelde update zelf als overgeslagen in Home Assistant, tot 'ie echt klaar is. Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te worden voordat jij 'm installeert.",
-    announce_hours_label: "Aankondigingstermijn (uren)",
-    announce_hours_helper:
-      "Hoelang je hebt om een geplande automatische installatie (Updates-tab) te annuleren voordat die echt gebeurt, zodra de uitsteltermijn voorbij is.",
+    field_hide_postponed_helper: "Verbergt 'm uit Home Assistants eigen update-telling tot 'ie klaar is.",
+    field_ready_days_add: "Dag toevoegen",
+    field_ready_remove: (day) => `${day} verwijderen`,
+    settings_schedule_hint: "Optioneel: laat een update alleen op specifieke dagen ready worden.",
+    weekday_monday_short: "Maandag",
+    weekday_tuesday_short: "Dinsdag",
+    weekday_wednesday_short: "Woensdag",
+    weekday_thursday_short: "Donderdag",
+    weekday_friday_short: "Vrijdag",
+    weekday_saturday_short: "Zaterdag",
+    weekday_sunday_short: "Zondag",
+    announce_hours_label: "Aankondigingstermijn",
+    announce_hours_unit: "uur",
+    announce_hours_helper: "Hoelang je nog hebt om een geplande automatische installatie te annuleren.",
     col_jump: "Sprong",
     dialog_announcement_label: "Aankondiging",
     dialog_current_version: "Geïnstalleerde versie",
@@ -554,7 +588,6 @@ export const TRANSLATIONS = {
         : `Auto-installatie tegengehouden: ${count} mensen hebben deze sprong als problematisch gerapporteerd.`,
     dialog_more_info: "Meer info",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
-    enabled_section_title: "Algemeen",
     community_section_title: "Help anderen",
     community_section_desc:
       "Word onderdeel van de community: koppel je GitHub-account om te stemmen of een update probleemloos of problematisch bleek.",
@@ -565,14 +598,17 @@ export const TRANSLATIONS = {
     community_link_waiting: "Wachten tot je akkoord geeft op GitHub...",
     community_link_timed_out: "De koppelcode is verlopen voordat 'm werd goedgekeurd, probeer het opnieuw.",
     community_link_failed: "Koppelen is mislukt of geweigerd, probeer het opnieuw.",
-    field_enabled: "Ingeschakeld",
+    enabled_section_title: "Algemeen",
+    field_enabled: "Update Manager",
     field_enabled_helper:
       "Pauzeert alle automatische acties hieronder: geen aankondigingen, geen automatische installaties, en uitgestelde updates worden niet langer verborgen voor Home Assistants eigen update-telling. Alles wat je hebt ingesteld blijft opgeslagen, het wordt alleen niet toegepast totdat je dit weer aanzet.",
-    settings_header: "Update-regels",
+    sizes_section_title: "Update-groottes",
+    sizes_intro_lead: "Elke update valt in een van deze drie groottes, op basis van hoe groot de versiesprong is.",
+    settings_header: "Uitstel",
     settings_hint:
-      "Elke update valt in een van deze drie groottes, op basis van hoe groot de versiesprong is. " +
-      "Per grootte kies je hoeveel dagen je 'm uitstelt, en of Update Manager 'm daarna zelf " +
-      "installeert.",
+      "Uitstellen loont: het geeft een release met een fout de tijd om opgemerkt en gerepareerd te " +
+      "worden voordat jij 'm installeert.",
+    postponement_sizes_label: "Hoelang wil je uitstellen?",
     save: "Opslaan",
     settings_saved_toast: "Instellingen opgeslagen",
     cancel_auto_install: "Annuleren",
@@ -635,9 +671,9 @@ export const TRANSLATIONS = {
     relative_future: (n, unit) => `over ${n} ${unit}`,
     relative_just_now: "zojuist",
     relative_soon: "zo dadelijk",
-    when_today: (time) => `vandaag ${time}`,
-    when_tomorrow: (time) => `morgen ${time}`,
-    when_weekday: (weekday, time) => `${weekday} ${time}`,
-    when_date: (date, time) => `${date}, ${time}`,
+    when_today: (time) => (time ? `vandaag ${time}` : "vandaag"),
+    when_tomorrow: (time) => (time ? `morgen ${time}` : "morgen"),
+    when_weekday: (weekday, time) => (time ? `${weekday} ${time}` : weekday),
+    when_date: (date, time) => (time ? `${date}, ${time}` : date),
   },
 };

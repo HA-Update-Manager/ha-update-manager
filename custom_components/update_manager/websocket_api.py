@@ -41,6 +41,7 @@ from .const import (
     CONF_TRUSTED_VOTERS,
     DEFAULT_WAIT_DAYS,
     DOMAIN,
+    WEEKDAY_READY_OPTION_KEYS,
 )
 from .community_verdict import (
     EMPTY_VERDICT_RESULT,
@@ -52,6 +53,7 @@ from .community_vote import async_submit_vote
 from .coordinator import (
     excluded_entities_from_options,
     rules_from_options,
+    schedule_from_options,
     trusted_voters_from_options,
 )
 from .core_blog_notes import (
@@ -109,7 +111,7 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
     # gathering them wouldn't add real concurrency, only reorder which one
     # "wins" the lock first).
     await data.coordinator.async_update_rules(
-        rules_from_options(options), excluded_entities_from_options(options)
+        rules_from_options(options), excluded_entities_from_options(options), schedule_from_options(options)
     )
     data.install_manager.update_rules(auto_install_rules_from_options(options))
     data.community_verdict_manager.set_trusted_voters(trusted_voters_from_options(options))
@@ -865,6 +867,15 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
                 vol.Required(CONF_SHOW_SKIPPED_UPDATES): bool,
                 vol.Required(CONF_SHOW_NOT_INSTALLABLE_UPDATES): bool,
                 vol.Required(CONF_TRUSTED_VOTERS): [str],
+                # 14 generated entries (2 per weekday, see const.py's own
+                # WEEKDAY_READY_OPTION_KEYS), not typed out by hand -- an
+                # empty string for the time half means "any time that day",
+                # anything else must be a real HH:MM.
+                **{vol.Required(enabled_key): bool for enabled_key, _ in WEEKDAY_READY_OPTION_KEYS},
+                **{
+                    vol.Required(time_key): vol.Any("", vol.Match(r"^([01]\d|2[0-3]):[0-5]\d$"))
+                    for _, time_key in WEEKDAY_READY_OPTION_KEYS
+                },
             },
             extra=vol.REMOVE_EXTRA,
         )

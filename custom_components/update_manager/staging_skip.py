@@ -55,6 +55,14 @@ class StagingSkipManager:
         # -- see that method's own comment on why a single observed
         # mismatch isn't trusted immediately.
         self._pending_clears: dict[str, str] = {}
+        # entity_ids already warned about auto_update=True (see
+        # _async_evaluate_one's own guard) -- a fixed, unchanging trait of
+        # the entity, not something that would ever need re-warning about on
+        # a later pass. Logged once per entity instead of not at all,
+        # 2026-08-11 direct user feedback: staying fully silent about it
+        # made "hide postponed updates" having no visible effect on this one
+        # entity look unexplained rather than a known limitation.
+        self._auto_update_warned: set[str] = set()
         self._enabled = False
         self._unsub_listener = None
         # Serializes every pass that reads/writes self._skipped against
@@ -356,6 +364,35 @@ class StagingSkipManager:
             if skipped_version == latest_version:
                 # Already skipped, but not by us (no matching record) --
                 # someone else's skip, not ours to manage either way.
+                return False
+            if state is not None and state.attributes.get("auto_update"):
+                # HA's own update.skip service wrapper (homeassistant/
+                # components/update/__init__.py's async_skip) unconditionally
+                # rejects this for any entity with auto_update=True --
+                # nothing this module could ever do makes that call succeed,
+                # it's a fixed trait of the entity, not a transient state.
+                # Found live, 2026-08-11: without this check, an entity
+                # whose own integration republishes its state frequently
+                # (each publish triggering another coordinator recompute,
+                # another _on_recompute, another _async_evaluate_all pass)
+                # retried and failed this same doomed call every couple of
+                # seconds, 232 times in 5 minutes in one real log. hide_post-
+                # poned simply can't hide this entity's own update count
+                # contribution -- it stays visible in HA's native count like
+                # any other auto_update entity, same as if this feature
+                # didn't exist for it at all. Postponement/wait_days/
+                # schedule/auto-install themselves are untouched by this --
+                # only the "hide from HA's own count" half of the feature
+                # can't apply here.
+                if entity_id not in self._auto_update_warned:
+                    self._auto_update_warned.add(entity_id)
+                    _LOGGER.warning(
+                        "Update Manager: %s has auto_update enabled, so its own integration "
+                        "manages installs automatically -- 'hide postponed updates' can't hide "
+                        "it from Home Assistant's own update count while postponed (postponement "
+                        "itself still applies normally)",
+                        entity_id,
+                    )
                 return False
             await self._async_skip(entity_id, latest_version)
             return True

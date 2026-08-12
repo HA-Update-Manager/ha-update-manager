@@ -32,8 +32,10 @@ from .const import (
     CONF_TRUSTED_VOTERS,
     DEFAULT_WAIT_DAYS,
     DOMAIN,
+    WEEKDAY_READY_OPTION_KEYS,
 )
 from .hacs_identity import corrected_release_url
+from .postponement_schedule import DayRule, EMPTY_SCHEDULE, PostponementSchedule, next_allowed_ready
 from .semver import classify_version_size
 from .staging import StagingRules, StagingResult, evaluate_staging, wait_for_size
 
@@ -146,6 +148,31 @@ def _is_excluded_from_auto_install(entity_id: str, excluded_entities: frozenset[
     return entity_id in excluded_entities
 
 
+def _cache_timing_fields(result: StagingResult, now: datetime) -> dict:
+    """remaining_seconds and ready_at together, from the same StagingResult
+    and the same `now` -- shared by every cache-writing site (_recompute_all,
+    _async_cache_active, _cache_skipped) so the two can't drift apart.
+    ready_at is an absolute instant, not something a later reader has to
+    reconstruct by re-adding remaining_seconds to whatever `now` happens to
+    be by the time they read it -- found live, 2026-08-11: the panel used to
+    compute its own "ready at" as Date.now() + remaining_seconds at fetch
+    time, and every fetch silently overshot the true target by however
+    stale this cache entry already was (up to _RECHECK_INTERVAL, since
+    _recompute_all only actually re-derives remaining_seconds on that same
+    periodic cadence) -- a "ready at 10:00" pill drifting to "10:01", then
+    "10:07" on later fetches, nothing server-side having actually changed.
+    remaining_seconds is kept alongside it, still needed for the panel's own
+    sort order (soonest-first) without re-deriving a duration from ready_at
+    every time; websocket_api.py's own _handle_updates returns this cache
+    entry (and so both fields) to the panel verbatim."""
+    if result.remaining is None:
+        return {"remaining_seconds": None, "ready_at": None}
+    return {
+        "remaining_seconds": round(result.remaining.total_seconds()),
+        "ready_at": (now + result.remaining).isoformat(),
+    }
+
+
 def excluded_entities_from_options(options: dict) -> frozenset[str]:
     return frozenset(options.get(CONF_EXCLUDED_ENTITIES, []))
 
@@ -193,6 +220,28 @@ def rules_from_options(options: dict) -> StagingRules:
         small_wait=_wait(CONF_SMALL_WAIT_DAYS),
         medium_wait=_wait(CONF_MEDIUM_WAIT_DAYS),
         large_wait=_wait(CONF_LARGE_WAIT_DAYS),
+    )
+
+
+def schedule_from_options(options: dict) -> PostponementSchedule:
+    """Builds a PostponementSchedule from the settings panel's stored values
+    -- WEEKDAY_READY_OPTION_KEYS is already in PostponementSchedule.days'
+    own Monday..Sunday order, so this is a straight zip, no per-day branching
+    needed. Every day defaults to disabled/no-time when its own keys are
+    absent (a freshly-created config entry, or an existing one that's never
+    touched this setting), giving EMPTY_SCHEDULE-equivalent behavior with no
+    migration required -- see const.py's own WEEKDAY_READY_OPTION_KEYS
+    comment."""
+
+    def _day(enabled_key: str, time_key: str) -> DayRule:
+        raw_time = options.get(time_key) or None
+        return DayRule(
+            enabled=bool(options.get(enabled_key, False)),
+            time=dt_util.parse_time(raw_time) if raw_time else None,
+        )
+
+    return PostponementSchedule(
+        days=tuple(_day(enabled_key, time_key) for enabled_key, time_key in WEEKDAY_READY_OPTION_KEYS)
     )
 
 
@@ -252,16 +301,27 @@ class UpdateManagerCoordinator:
         rules: StagingRules,
         excluded_entities: frozenset[str] = frozenset(),
         community_verdict_manager: CommunityVerdictManager | None = None,
+        schedule: PostponementSchedule = EMPTY_SCHEDULE,
     ) -> None:
         self.hass = hass
         self.rules = rules
         self.excluded_entities = excluded_entities
+        self.schedule = schedule
+        # Cached alongside self.schedule itself (see async_update_rules'
+        # own matching assignment below), not rescanned inside
+        # _apply_schedule_gate on every single cached entity, every
+        # periodic recheck and every per-entity refresh -- the default,
+        # untouched-by-any-install state is every day disabled, so most
+        # installs would otherwise pay a 7-day scan (and a timezone
+        # conversion, see _apply_schedule_gate's own comment) per entity for
+        # a result that's always thrown away.
+        self._schedule_active = any(day.enabled for day in schedule.days)
         # None-able (unlike every other manager reference this coordinator
         # holds) so this class still works standalone without it, e.g. in a
         # future test, see community_verdict.py's own docstring for what
         # this is for, purely read-only, no effect on staging status itself.
         self._community_verdict_manager = community_verdict_manager
-        # entity_id -> {"entity_id", "version_size", "status", "remaining_seconds", "installable"}
+        # entity_id -> {"entity_id", "version_size", "status", "remaining_seconds", "ready_at", "installable"}
         self.cache: dict[str, dict] = {}
         # entity_id -> {"version", "since"}: the authoritative "when did
         # `version` first become this entity's latest_version" record, see
@@ -523,10 +583,9 @@ class UpdateManagerCoordinator:
             result = self._staging_result(
                 entity_id, cached["latest_version"], cached["version_size"], available_since, now, self.rules
             )
+            result = self._apply_schedule_gate(result, now)
             cached["status"] = result.status
-            cached["remaining_seconds"] = (
-                round(result.remaining.total_seconds()) if result.remaining is not None else None
-            )
+            cached.update(_cache_timing_fields(result, now))
             cached["auto_install_excluded"] = _is_excluded_from_auto_install(
                 entity_id, self.excluded_entities
             )
@@ -536,10 +595,16 @@ class UpdateManagerCoordinator:
         self._recompute_all(now)
         self._fire_listeners()
 
-    async def async_update_rules(self, rules: StagingRules, excluded_entities: frozenset[str] | None = None) -> None:
+    async def async_update_rules(
+        self,
+        rules: StagingRules,
+        excluded_entities: frozenset[str] | None = None,
+        schedule: PostponementSchedule | None = None,
+    ) -> None:
         """Applies newly-saved staging rules (and, since 2026-07-16, the
-        user's own excluded-entities picks) without a full entry reload (see
-        __init__.py's update_listener): the already-cached installed_version/
+        user's own excluded-entities picks, and now the postponement
+        schedule too) without a full entry reload (see __init__.py's
+        update_listener): the already-cached installed_version/
         latest_version/available_since facts don't change just because the
         settings did, only the derived ready/waiting/blocked verdict (and
         now also auto_install_excluded) does -- cheap to recompute in place,
@@ -550,6 +615,9 @@ class UpdateManagerCoordinator:
         self.rules = rules
         if excluded_entities is not None:
             self.excluded_entities = excluded_entities
+        if schedule is not None:
+            self.schedule = schedule
+            self._schedule_active = any(day.enabled for day in schedule.days)
         self._recompute_all(dt_util.utcnow())
         self._fire_listeners()
 
@@ -747,6 +815,41 @@ class UpdateManagerCoordinator:
             return StagingResult("ready", None)
         return evaluate_staging(size, available_since, now, rules)
 
+    def _apply_schedule_gate(self, result: StagingResult, now: datetime) -> StagingResult:
+        """The postponement schedule (issue #4), composed on top of
+        _staging_result's own wait-based verdict -- shared by _recompute_all
+        and _async_cache_active for the same reason _staging_result itself
+        is (see its own comment above): found live, 2026-08-11, a freshly-
+        discovered/refreshed update (going through _async_cache_active, not
+        _recompute_all) showed its raw wait-days deadline, ignoring the
+        schedule entirely, for up to _RECHECK_INTERVAL until the next
+        periodic recompute caught it. Never touches "blocked" (needs a
+        manual decision regardless of any schedule). Checked against the
+        wait period's own deadline, not just `now` -- an already-elapsed
+        wait still needs to defer to the next allowed slot if the schedule
+        doesn't happen to already allow `now` itself. as_local, not the bare
+        (UTC) deadline -- the schedule's own day/time rules are the user's
+        own wall-clock picks in the panel (a plain time selector, no
+        timezone of its own), so "Wednesday 10:00" means 10:00 in the
+        instance's own local timezone, not UTC; comparing naive local times
+        against a bare UTC instant silently shifts both the hour and, near
+        midnight, sometimes the weekday itself. next_allowed itself comes
+        back local-aware; the final subtraction below still works correctly
+        against `now` (UTC) regardless, since aware-datetime subtraction is
+        timezone-independent. self._schedule_active checked first, before
+        any of that -- the default, untouched-by-any-install state is every
+        day disabled, so most installs would otherwise pay the timezone
+        conversion and 7-day scan below for every cached entity, on every
+        periodic recheck and every per-entity refresh, for a result that's
+        always thrown away."""
+        if not self._schedule_active or result.status not in ("ready", "waiting"):
+            return result
+        wait_deadline = now if result.status == "ready" else now + result.remaining
+        next_allowed = next_allowed_ready(self.schedule, dt_util.as_local(wait_deadline))
+        if next_allowed is None:
+            return result
+        return StagingResult("waiting", next_allowed - now)
+
     async def _async_cache_active(self, entity_id: str, state: State, current: str, latest: str) -> None:
         size = classify_version_size(current, latest)
         now = dt_util.utcnow()
@@ -765,6 +868,7 @@ class UpdateManagerCoordinator:
         # a real fact used elsewhere (History); only the derived status/
         # remaining is overridden, see _staging_result's own comment.
         result = self._staging_result(entity_id, latest, size, available_since, now, rules)
+        result = self._apply_schedule_gate(result, now)
         # Some update entities (e.g. firmware that must be flashed manually)
         # only ever report that a newer version exists, with no install
         # action at all -- ready/waiting/blocked is still meaningful for
@@ -803,9 +907,7 @@ class UpdateManagerCoordinator:
             "latest_version": latest,
             "version_size": size,
             "status": result.status,
-            "remaining_seconds": (
-                round(result.remaining.total_seconds()) if result.remaining is not None else None
-            ),
+            **_cache_timing_fields(result, now),
             "installable": installable,
             # Corrected here (not left to the frontend to read state.attributes
             # itself) specifically for Core -- see corrected_release_url's own
@@ -946,6 +1048,7 @@ class UpdateManagerCoordinator:
             "version_size": classify_version_size(current, latest),
             "status": "skipped",
             "remaining_seconds": None,
+            "ready_at": None,
             "installable": bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL),
             # Same correction as _async_cache_active's own -- see
             # corrected_release_url's own docstring. Every cache entry gets

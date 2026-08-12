@@ -111,6 +111,16 @@ const ICON_CHEVRON_DOWN = "M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,
 const ICON_THUMB_UP =
   "M23 10a2 2 0 0 0-2-2h-6.32l.96-4.57c.02-.1.03-.21.03-.32c0-.41-.17-.79-.44-1.06L14.17 1L7.59 7.58C7.22 7.95 7 8.45 7 9v10a2 2 0 0 0 2 2h9c.83 0 1.54-.5 1.84-1.22l3.02-7.05c.09-.23.14-.47.14-.73zM1 21h4V9H1z";
 const ICON_ALERT = "M13 14h-2V9h2m0 9h-2v-2h2M1 21h22L12 2z";
+// mdiDeleteOutline, verified against @mdi/js 7.4.47's own real source --
+// Postponement's own weekday schedule row, its own remove button (see
+// _buildPostponementCard). A trash icon, not mdiClose (tried first,
+// changed 2026-08-11, direct user feedback: this project's own Trusted
+// voters field already uses this same icon for its own per-item remove
+// button, ha-input-multi's real source confirms -- matching it here
+// instead of a third, different icon for what's functionally the same
+// "remove this one item from a list" action).
+const ICON_DELETE_OUTLINE =
+  "M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19M8,9H16V19H8V9M15.5,4L14.5,3H9.5L8.5,4H5V6H19V4H15.5Z";
 // mdiWrench, verified against @mdi/js 7.4.47's own real source (not
 // guessed) -- the "stuck, needs your attention" trailing icon/Repair icon,
 // deliberately not ICON_ALERT above (that's specifically for a problematic
@@ -198,15 +208,20 @@ function tabForPath(relativePath) {
 }
 
 // Native ha-form all the way through (direct user feedback: a hand-rolled
-// table, while compact, stopped feeling like standard HA) -- one always-
-// expanded section per size (so nothing needs a click to reveal, still
-// "speaks for itself"), each holding its two fields stacked, not side by
-// side (direct user feedback: let each take the full width). The two field
-// labels do repeat across the 3 sections, but only ever one size's worth is
-// what you're looking at at a
-// time -- the section title itself (tr.size_*, shown once per size, with
-// its explanation) is what would otherwise have needed repeating.
+// table, while compact, stopped feeling like standard HA). Postponement's
+// own wait_days and Auto-update's own auto_install each get one plain,
+// always-visible field per size, not an expandable section (2026-08-11,
+// direct user feedback backed by Fitts's Law: the two used to share one
+// expandable per size, but once they moved into separate cards each held
+// only a single field, and a click-to-reveal that hides exactly one control
+// costs more than it saves).
 const SIZES = ["small", "medium", "large"];
+
+// Monday..Sunday, matching const.py's own WEEKDAY_READY_OPTION_KEYS order
+// (and so datetime.weekday() on the backend) -- the postponement schedule's
+// own per-day rows are built from this the same way per-size sections are
+// built from SIZES above.
+const WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
 // vote_reason_* translation keys, one shared source of truth (see
 // _buildVoteControls): found by review, two independently hand-written
@@ -233,14 +248,6 @@ const _JOURNEY_B_REASON_ORDER = [
 ];
 const _JOURNEY_A_REASON_ORDER = ["breaking change", "requires a newer HA version", "is a dev/pre-release build"];
 
-function fieldKind(name) {
-  for (const size of SIZES) {
-    if (name === `${size}_wait_days`) return "wait_days";
-    if (name === `${size}_auto_install`) return "auto_install";
-  }
-  return null;
-}
-
 // Found via live testing: a config entry's stored options never get
 // automatically cleaned up by HA, so fields from an earlier design (e.g.
 // the removed *_blocked/*_mode from before 2026-07-16) can keep sitting in
@@ -261,6 +268,9 @@ function knownSettingsFields() {
   for (const size of SIZES) {
     names.push(`${size}_wait_days`, `${size}_auto_install`);
   }
+  for (const day of WEEKDAYS) {
+    names.push(`${day}_ready_enabled`, `${day}_ready_time`);
+  }
   return names;
 }
 
@@ -271,7 +281,12 @@ function knownSettingsFields() {
 // value-changed handler (see entitiesForm/trustedForm below): this is the
 // one place every settings field already passes through before being sent,
 // so a future third list-typed field is covered automatically instead of
-// needing to remember this same fix on its own.
+// needing to remember this same fix on its own. Blank entries (e.g. a
+// trusted-voter row cleared back to "" rather than removed via its own
+// trash icon, see trustedForm's own comment) are dropped here too, at save
+// time only -- not from _formData/the live widget's own state, which would
+// delete ha-input-multi's freshly-added blank row before the user can type
+// into it (found live, 2026-08-11).
 const LIST_SETTINGS_FIELDS = new Set(["excluded_entities", "trusted_voters"]);
 
 function pickKnownSettings(data) {
@@ -279,7 +294,7 @@ function pickKnownSettings(data) {
   const result = {};
   for (const key of known) {
     if (!(key in data)) continue;
-    result[key] = LIST_SETTINGS_FIELDS.has(key) ? data[key] || [] : data[key];
+    result[key] = LIST_SETTINGS_FIELDS.has(key) ? (data[key] || []).filter((v) => v && String(v).trim()) : data[key];
   }
   return result;
 }
@@ -403,8 +418,7 @@ function projectedAutoInstallTime(u, settings) {
   if (u.status !== "waiting" || u.remaining_seconds == null) return null;
   if (u.auto_install_cancelled) return null;
   if (!autoInstallEnabledFor(u, settings) || settings.announce_hours == null) return null;
-  const totalSeconds = u.remaining_seconds + settings.announce_hours * 3600;
-  return new Date(Date.now() + totalSeconds * 1000).toISOString();
+  return new Date(new Date(u.ready_at).getTime() + settings.announce_hours * 3600 * 1000).toISOString();
 }
 
 // The real moment this "waiting" update's own announcement would actually
@@ -428,7 +442,7 @@ function projectedAnnouncementTime(u, settings) {
   // check), so projecting one here would be just as misleading.
   if (u.auto_install_cancelled) return null;
   if (!autoInstallEnabledFor(u, settings)) return null;
-  return new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
+  return u.ready_at;
 }
 
 // "Ready" (green) covers two different situations: nothing planned yet
@@ -470,8 +484,7 @@ function statusText(tr, u, settings, hass) {
     if (projected) {
       text = tr.status_pending_install(absoluteWhen(tr, projected, hass));
     } else if (u.remaining_seconds != null) {
-      const readyAt = new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
-      text = tr.status_waiting_manual(absoluteWhen(tr, readyAt, hass));
+      text = tr.status_waiting_manual(absoluteWhen(tr, u.ready_at, hass));
     } else {
       text = tr.status_waiting_soon;
     }
@@ -503,8 +516,7 @@ function timerBadge(tr, u, settings, hass) {
     const projected = projectedAutoInstallTime(u, settings);
     if (projected) return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, projected, hass, true)) };
     if (u.remaining_seconds != null) {
-      const readyAt = new Date(Date.now() + u.remaining_seconds * 1000).toISOString();
-      return { icon: ICON_CLOCK_OUTLINE, text: capitalize(absoluteWhen(tr, readyAt, hass, true)) };
+      return { icon: ICON_CLOCK_OUTLINE, text: capitalize(absoluteWhen(tr, u.ready_at, hass, true)) };
     }
     return { icon: ICON_CLOCK_OUTLINE, text: tr.relative_soon };
   }
@@ -925,7 +937,18 @@ function absoluteWhen(tr, iso, hass, compact) {
   // "today" from our own tr object right next to a Dutch weekday name
   // from the browser's own locale).
   const locale = tr.locale;
-  const time = date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", hour12: useAmPm(hass) });
+  // Exactly midnight almost always means no specific time was ever set --
+  // "any time that day" (see postponement_schedule.py's own DayRule.time
+  // being None), not a genuine to-the-minute target -- direct user
+  // feedback, 2026-08-11: showing the bare digits "00:00" left it
+  // genuinely ambiguous whether that meant the start or the end of that
+  // day. Dropped entirely in that case (null, not a "00:00" string) --
+  // every when_*/tr string below already knows how to read a null time as
+  // "just the day, no time attached".
+  const isMidnight = date.getHours() === 0 && date.getMinutes() === 0;
+  const time = isMidnight
+    ? null
+    : date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", hour12: useAmPm(hass) });
   const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const now = new Date();
   const dayDiff = Math.round((startOfDay(date) - startOfDay(now)) / 86400000);
@@ -934,7 +957,7 @@ function absoluteWhen(tr, iso, hass, compact) {
     // moment is still later today -- the bare time can never be misread as
     // "already happened" or as some other day, so "today" never actually
     // disambiguates anything here.
-    if (compact) return time;
+    if (compact) return time || tr.when_today(null);
     return tr.when_today(time);
   }
   if (dayDiff === 1) {
@@ -944,8 +967,14 @@ function absoluteWhen(tr, iso, hass, compact) {
     // happened today and naturally reads as its next occurrence, tomorrow.
     // If the target time hasn't passed yet today (tomorrow's 20:00 while
     // it's 08:00 now), a bare "20:00" would look identical to a same-day
-    // 20:00 -- the word has to stay in that case.
-    if (compact && date.getHours() * 60 + date.getMinutes() <= now.getHours() * 60 + now.getMinutes()) return time;
+    // 20:00 -- the word has to stay in that case. `time &&` guards this
+    // shortcut out entirely when time is null -- a bare "00:00" would
+    // otherwise (00:00 always being <= whatever "now"'s own clock is)
+    // almost always have taken this branch, showing the exact ambiguous
+    // digits this whole fix exists to avoid, with no day word to anchor it.
+    if (compact && time && date.getHours() * 60 + date.getMinutes() <= now.getHours() * 60 + now.getMinutes()) {
+      return time;
+    }
     return tr.when_tomorrow(time);
   }
   if (dayDiff > 1 && dayDiff < 7) return tr.when_weekday(date.toLocaleDateString(locale, { weekday: "long" }), time);
@@ -1728,6 +1757,29 @@ class UpdateManagerPanel extends HTMLElement {
         this._hass.callWS({ type: "update_manager/get_settings" }),
       ]);
       this._updates = updatesResp.updates;
+      // Stamped once, right here, not recomputed from Date.now() wherever
+      // remaining_seconds is displayed (statusText/timerBadge/
+      // projectedAutoInstallTime/projectedAnnouncementTime and the dialog's
+      // own Ready alert all used to do that independently) -- found live,
+      // 2026-08-11, in two stages. First fix: compute it once here at fetch
+      // time instead of on every later render (e.g. _updateDialogProgress
+      // firing again on some unrelated hass push, with this._updates itself
+      // still the same, not-yet-refetched snapshot) -- that stopped it
+      // drifting *within* one fetch, but every fresh fetch still did
+      // Date.now() + remaining_seconds using *this* client's clock, and
+      // remaining_seconds is a coordinator.py cache snapshot that's only
+      // actually re-derived every _RECHECK_INTERVAL (up to 15 minutes
+      // stale) -- so every single fetch still overshot the true target by
+      // however stale that snapshot already was server-side, and a user
+      // watching the pill across a couple of fetches saw it keep creeping
+      // forward (10:00 -> 10:01 -> 10:07) even though nothing had actually
+      // changed. Second fix, this one: ready_at now comes from the backend
+      // directly (coordinator.py's own _cache_timing_fields, computed once
+      // from the server's own `now` the moment the underlying facts were
+      // actually derived, not reconstructed client-side from a duration
+      // whose reference point the client has no way to know) -- read
+      // verbatim everywhere from here on, same as pending_install.execute_at
+      // already is.
       this._rolloutGroups = updatesResp.rollout_groups || [];
       // Built once per load, not re-derived on every _rolloutStatusFor
       // call -- found by code review, 2026-08-10: that method used to
@@ -1781,6 +1833,18 @@ class UpdateManagerPanel extends HTMLElement {
         // values), so both need their own explicit empty-array default the
         // same way.
         const fallback = this._defaults || {};
+        // The postponement schedule's own 14 fields default to disabled/
+        // empty (fully optional, matches coordinator.py's own
+        // schedule_from_options default), not part of const.py's
+        // DEFAULT_WAIT_DAYS -- those are wait/auto-install tuning values,
+        // this is a plain off-by-default behavior toggle, same reasoning
+        // hide_postponed/show_skipped_updates above already get their own
+        // explicit default here rather than coming from `fallback`.
+        const scheduleDefaults = {};
+        for (const day of WEEKDAYS) {
+          scheduleDefaults[`${day}_ready_enabled`] = false;
+          scheduleDefaults[`${day}_ready_time`] = "";
+        }
         this._formData = {
           enabled: true,
           excluded_entities: [],
@@ -1788,6 +1852,7 @@ class UpdateManagerPanel extends HTMLElement {
           hide_postponed: true,
           show_skipped_updates: true,
           show_not_installable_updates: true,
+          ...scheduleDefaults,
           ...fallback,
           ...pickKnownSettings(this._settings),
         };
@@ -3733,6 +3798,7 @@ class UpdateManagerPanel extends HTMLElement {
         // while heldBackByCommunity is true, same reasoning as the Cancel
         // button's own comment above (this whole block is gated on
         // willShowStatusAlert).
+        let readyAlert = null;
         if (u.status === "waiting") {
           const readyBtn = document.createElement("ha-progress-button");
           readyBtn.slot = "action";
@@ -3750,7 +3816,26 @@ class UpdateManagerPanel extends HTMLElement {
               await this._afterDialogAction(entityId);
             })
           );
-          statusAlert.appendChild(readyBtn);
+          // A separate alert, not appended into statusAlert above, whenever
+          // that one already has its own Cancel button -- direct user
+          // feedback, 2026-08-11: two unrelated actions (cancel the
+          // scheduled auto-install vs. skip the wait entirely) crammed onto
+          // one "will update automatically at X" message read as confusing,
+          // neither button's relationship to that sentence was clear. Reuses
+          // status_waiting_manual, the exact sentence statusText itself
+          // would show for this entity if no auto-install were scheduled at
+          // all -- Ready's own action is exactly "become that instead, right
+          // now". No such conflict when cancelToVersion is falsy (no Cancel
+          // button competing for the same alert), so readyBtn joins
+          // statusAlert directly, same as before.
+          if (cancelToVersion) {
+            readyAlert = document.createElement("ha-alert");
+            readyAlert.alertType = "info";
+            readyAlert.appendChild(document.createTextNode(tr.status_waiting_manual(absoluteWhen(tr, u.ready_at, this._hass))));
+            readyAlert.appendChild(readyBtn);
+          } else {
+            statusAlert.appendChild(readyBtn);
+          }
           this._dialogActionButtons.push(readyBtn);
         }
         // Lets someone leave a genuinely not-yet-dispatched wait and go back
@@ -3781,6 +3866,7 @@ class UpdateManagerPanel extends HTMLElement {
           this._dialogActionButtons.push(cancelQueuedBtn);
         }
         body.appendChild(statusAlert);
+        if (readyAlert) body.appendChild(readyAlert);
       }
 
       // Shown regardless of whatever the status alert above already says
@@ -4619,27 +4705,81 @@ class UpdateManagerPanel extends HTMLElement {
     }
   }
 
-  // "General": the settings that aren't specific to any one update size,
-  // the master pause switch (const.py's CONF_ENABLED) and whether a
-  // postponed update stays hidden from Home Assistant's own update count
-  // (const.py's CONF_HIDE_POSTPONED). First card on the page, above "Update
-  // rules": merged from two separate cards (2026-07-21, direct user
-  // feedback: both were "general Update Manager settings", not a rule
-  // about any one size, and having them apart read as two unrelated
-  // toggles rather than one coherent "how does Update Manager behave
-  // overall" section). No intro paragraph explaining "postponed" here
-  // anymore either (also direct user feedback, same day): that concept is
-  // about the per-size wait itself, not a general behavior, so belongs
-  // with "Postponement period" in Update rules, not up here, and the
-  // page had too much text regardless. The word carries enough of its own
-  // meaning in context (a field literally called "Postponement period"
-  // right below, "Hide postponed updates" here) without a paragraph
-  // spelling it out first.
-  // Plain ha-form, both fields' label and helper fully native (reverted
+  // Shared by every plain "label [+ description] + one ha-selector control"
+  // row across General/Postponement/Auto-update below (2026-08-11 code
+  // review: five call sites were hand-copying the same heading/description/
+  // selector/value-changed/autosave wiring with only the field name and
+  // selector config actually varying). The weekday schedule rows
+  // (_buildPostponementCard's own renderSchedule) don't go through this --
+  // those need a second control (the remove button) alongside the
+  // selector, not just one.
+  _buildSettingsRow(tr, { headingText, descriptionText, selector, key, coerce = (v) => v }) {
+    const row = document.createElement("ha-settings-row");
+    const heading = document.createElement("span");
+    heading.slot = "heading";
+    heading.textContent = headingText;
+    row.appendChild(heading);
+    if (descriptionText) {
+      const description = document.createElement("span");
+      description.slot = "description";
+      description.textContent = descriptionText;
+      row.appendChild(description);
+    }
+    const control = document.createElement("ha-selector");
+    control.hass = this._hass;
+    control.selector = selector;
+    // Found live, 2026-08-11: ha-input's own real source always renders a
+    // hint-line slot, only visually collapsed (its own "hint-hidden" class)
+    // when there's no hint text *and* required is false among other
+    // conditions -- ha-selector's own required defaults to true. Nothing
+    // built through this helper is ever genuinely "required" in the HTML-
+    // validation sense (a real value/default is always already in
+    // _formData), so this is safe everywhere.
+    control.required = false;
+    control.value = coerce(this._formData[key]);
+    control.addEventListener("value-changed", (e) => {
+      this._formData = { ...this._formData, [key]: e.detail.value };
+      control.value = e.detail.value;
+      this._scheduleAutosave();
+    });
+    row.appendChild(control);
+    return row;
+  }
+
+  // "General": just the master pause switch (const.py's CONF_ENABLED) now --
+  // "Hide postponed updates" moved out into "Postponement" (issue #4's
+  // schedule feature, 2026-08-11): it's about postponed updates
+  // specifically, not a general behavior, same reasoning that already took
+  // the old intro paragraph explaining "postponed" out of this card back on
+  // 2026-07-21 (see that same day's own history: the word belongs with
+  // "Postponement period", not here). No longer a "two merged toggles"
+  // card -- a single genuinely general, instance-wide toggle stands fine on
+  // its own.
+  // Plain ha-form, the field's label and helper fully native (reverted
   // 2026-07-21, direct user feedback after trying both a hand-built
   // ha-settings-row version and a split-per-field manual-.hint version:
   // neither was wanted, this plain ha-form rendering is "how it was" and
   // should stay that way).
+  // The master switch as one ha-settings-row (heading + its own full
+  // explanation + the switch), same shape every setting on this page uses
+  // now -- switched from ha-list-item-base to ha-settings-row entirely
+  // (2026-08-11, direct user feedback pointing at /profile/general's own
+  // real "Number format" row as a reference that looks right, unlike ours):
+  // confirmed against ha-settings-row.ts's own real source, this is the
+  // older, far more established HA component for exactly this "label +
+  // description + arbitrary end control" shape (35 real usages across the
+  // frontend, vs. ha-row-item's own 26, and specifically the one real HA
+  // code uses whenever the end control isn't just a plain button/switch).
+  // Two real, load-bearing differences from ha-row-item found by reading
+  // its own static styles: its own supporting text genuinely wraps
+  // (`.secondary { white-space: normal }`, confirmed -- ha-row-item's own
+  // equivalent is nowrap-only), so field_enabled_helper moves back into
+  // the row itself instead of a separate paragraph; and its own content
+  // slot gets real breathing-room padding (--settings-row-content-padding-
+  // block, 16px top+bottom) around whatever control sits in it, rather
+  // than tightly centering it -- exactly what a full-height ha-input
+  // (56px + 8px own bottom padding, confirmed against its own real source)
+  // needs to not look cramped/misaligned next to a couple of text lines.
   _buildGeneralCard(tr) {
     const card = document.createElement("ha-card");
     card.outlined = true;
@@ -4648,21 +4788,82 @@ class UpdateManagerPanel extends HTMLElement {
     const body = document.createElement("div");
     body.className = "card-content";
 
-    const form = document.createElement("ha-form");
-    form.hass = this._hass;
-    form.schema = [
-      { name: "enabled", selector: { boolean: {} } },
-      { name: "hide_postponed", selector: { boolean: {} } },
-    ];
-    form.data = this._formData;
-    form.computeLabel = (s) => (s.name === "enabled" ? tr.field_enabled : tr.field_hide_postponed);
-    form.computeHelper = (s) => (s.name === "enabled" ? tr.field_enabled_helper : tr.field_hide_postponed_helper);
-    form.addEventListener("value-changed", (e) => {
-      this._formData = { ...this._formData, ...e.detail.value };
-      form.data = this._formData;
-      this._scheduleAutosave();
-    });
-    body.appendChild(form);
+    body.appendChild(
+      this._buildSettingsRow(tr, {
+        headingText: tr.field_enabled,
+        descriptionText: tr.field_enabled_helper,
+        selector: { boolean: {} },
+        key: "enabled",
+        coerce: (v) => !!v,
+      })
+    );
+
+    card.appendChild(body);
+    return card;
+  }
+
+  // Its own card, above Postponement -- pulled out of General (2026-08-11,
+  // direct user feedback, "ik ben zoekende"): both Postponement's own
+  // wait_days and Auto-update's own auto_install toggle depend on this
+  // same concept, so it deserves a place of its own rather than living
+  // inside General (whose own remaining content, the master switch, isn't
+  // otherwise related to it) or a per-row (?) tooltip (tried and reverted
+  // earlier the same day). A plain <ul> bullet list was tried first
+  // (cloud-companion-pref.ts's own real shape for similar enumerable
+  // content) but reverted the same day, direct user feedback ("ziet er
+  // niet uit"): a generic bullet list reads as inconsistent now that
+  // every other card on this page speaks the same ha-list-item-base
+  // visual language. ha-list-item-base itself doesn't fit either though --
+  // these descriptions are genuinely too long for its own single-line
+  // supporting-text (same constraint field_enabled_helper hit), and there's
+  // no control that would belong in slot="end" anyway, purely
+  // informational. Label + a real (wrapping) paragraph instead -- the
+  // exact same field-label/section-intro pairing already used for
+  // General's own switch explanation and excludedLabel/excludedHint below
+  // (_buildAutoInstallCard), just one pair per size instead of one for
+  // the whole card.
+  _buildSizesCard(tr) {
+    const card = document.createElement("ha-card");
+    card.outlined = true;
+    card.header = tr.sizes_section_title;
+
+    const body = document.createElement("div");
+    body.className = "card-content";
+
+    const intro = document.createElement("p");
+    intro.className = "section-intro";
+    intro.textContent = tr.sizes_intro_lead;
+    body.appendChild(intro);
+
+    // Each size's own label+description pair grouped in its own sub-div,
+    // not appended straight to .card-content -- same reasoning as every
+    // other grouped-pair block this session: .card-content's own generic
+    // 16px top-margin would otherwise separate the label from its own
+    // description exactly as much as it separates one size from the next.
+    const sizesGroup = document.createElement("div");
+    sizesGroup.className = "sizes-group";
+    for (const size of SIZES) {
+      const sizeBlock = document.createElement("div");
+      // .subsection-label, not .field-label -- direct user feedback,
+      // 2026-08-11 ("de hierarchie is iets wat op de pagina goed is maar in
+      // de secties/cards zelf nog niet"): at the same size and only a color
+      // difference from its own description, "Small" didn't read as a
+      // heading over its own paragraph, it read as just more body text --
+      // a real contributor to this card feeling cluttered despite having
+      // only three short blocks. Medium weight sets it apart the same way
+      // Postponement/Auto-update's own new group headings do.
+      const label = document.createElement("p");
+      label.className = "subsection-label";
+      label.textContent = tr[`size_${size}_short`];
+      sizeBlock.appendChild(label);
+      const desc = document.createElement("p");
+      desc.className = "section-intro";
+      desc.textContent = tr[`size_${size}_desc`]();
+      sizeBlock.appendChild(desc);
+      sizesGroup.appendChild(sizeBlock);
+    }
+    body.appendChild(sizesGroup);
+
     card.appendChild(body);
     return card;
   }
@@ -4688,7 +4889,11 @@ class UpdateManagerPanel extends HTMLElement {
     // of size (see _buildGeneralCard), not a rule about any one of them.
     wrap.appendChild(this._buildGeneralCard(tr));
 
-    wrap.appendChild(this._buildUpdateRulesCard(tr));
+    // Above Postponement, not inside General -- see _buildSizesCard's own
+    // comment for why this is its own card.
+    wrap.appendChild(this._buildSizesCard(tr));
+
+    wrap.appendChild(this._buildPostponementCard(tr));
     // Always rendered now (changed 2026-07-23): used to only appear once
     // some size's own auto_install toggle was on, but the trusted-voter
     // override living in this same card (see _buildAutoInstallCard) works
@@ -4747,7 +4952,7 @@ class UpdateManagerPanel extends HTMLElement {
     body.className = "card-content";
 
     const hint = document.createElement("p");
-    hint.className = "hint";
+    hint.className = "section-intro";
     hint.textContent = tr.community_section_desc;
     body.appendChild(hint);
 
@@ -4755,12 +4960,28 @@ class UpdateManagerPanel extends HTMLElement {
     body.appendChild(statusContainer);
     card.appendChild(body);
 
+    // Its own footer, a sibling of .card-content (not nested inside it) --
+    // confirmed against home-assistant/frontend's own real
+    // cloud-account-overview.ts (its own "Manage account"/"Sign out"
+    // buttons live in exactly this shape, class="card-actions" directly
+    // under ha-card): ha-card's own native styles already give a slotted
+    // ".card-actions" child a divider/padding for free, no CSS of our own
+    // needed for that part. Right-aligned (this card only ever has one
+    // action showing at a time, unlike the reference's own two side by
+    // side) -- direct user feedback: Unlink used to sit directly under
+    // "Linked as X" in the same flow as the informational text above it,
+    // instead of reading as a distinct action the way it does here.
+    const actionsContainer = document.createElement("div");
+    actionsContainer.className = "card-actions";
+    card.appendChild(actionsContainer);
+
     const renderNotLinked = () => {
       if (this._communityLinkPollTimer) {
         clearInterval(this._communityLinkPollTimer);
         this._communityLinkPollTimer = null;
       }
       statusContainer.innerHTML = "";
+      actionsContainer.innerHTML = "";
       const linkBtn = document.createElement("ha-progress-button");
       linkBtn.appearance = "filled";
       linkBtn.label = tr.community_link;
@@ -4770,11 +4991,12 @@ class UpdateManagerPanel extends HTMLElement {
           renderPending(result);
         })
       );
-      statusContainer.appendChild(linkBtn);
+      actionsContainer.appendChild(linkBtn);
     };
 
     const renderLinked = (username) => {
       statusContainer.innerHTML = "";
+      actionsContainer.innerHTML = "";
       const linkedText = document.createElement("p");
       linkedText.textContent = tr.community_linked_as(username);
       statusContainer.appendChild(linkedText);
@@ -4787,11 +5009,12 @@ class UpdateManagerPanel extends HTMLElement {
           renderNotLinked();
         })
       );
-      statusContainer.appendChild(unlinkBtn);
+      actionsContainer.appendChild(unlinkBtn);
     };
 
     const renderPending = (result) => {
       statusContainer.innerHTML = "";
+      actionsContainer.innerHTML = "";
       const instructions = document.createElement("p");
       instructions.textContent = tr.community_link_instructions;
       statusContainer.appendChild(instructions);
@@ -5287,7 +5510,15 @@ class UpdateManagerPanel extends HTMLElement {
   // (direct user feedback: the emoji looked bad throughout, and the
   // metaphor wasn't pulling its weight). The community layer now has its
   // own separate card (_buildCommunityCard below), not folded into this one.
-  _buildUpdateRulesCard(tr) {
+  // "Postponement": per-size wait_days, "Hide postponed updates" (moved in
+  // from General, 2026-08-11, issue #4 -- it's about postponed updates
+  // specifically, not a general behavior), and the new optional schedule of
+  // allowed ready days/times. The per-size auto-install toggle moved *out*
+  // of here into "Auto-update" the same day: installing automatically is a
+  // different concern from postponing, and now shares a card with the
+  // announcement-notice/always-manual/trusted-voter settings that already
+  // only matter once auto-install is in play.
+  _buildPostponementCard(tr) {
     const card = document.createElement("ha-card");
     card.outlined = true;
     card.header = tr.settings_header;
@@ -5295,64 +5526,183 @@ class UpdateManagerPanel extends HTMLElement {
     const body = document.createElement("div");
     body.className = "card-content";
 
+    // Normal body size (see _buildGeneralCard's own comment on
+    // .section-intro -- real HA reference pages use plain body text for
+    // their actual explanation, not a smaller secondary style).
     const hint = document.createElement("p");
-    hint.className = "hint";
+    hint.className = "section-intro";
     hint.textContent = tr.settings_hint;
     body.appendChild(hint);
 
-    // Back to ha-form's own `type: "expandable"` schema entries (reverted
-    // 2026-07-21: a hand-built ha-expansion-panel per size was tried
-    // instead, to get an auto-install icon next to the chevron, but direct
-    // user feedback was that the native ha-form-expandable version, with
-    // its own styling/spacing integrated into the rest of this same form,
-    // was better, and losing the icon idea was the right trade).
-    // expanded is now false, not true: confirmed against ha-form-expandable's
-    // own source, the ha-expansion-panel underneath it already lets you
-    // click its header to open/close regardless of this initial value, so
-    // it only ever controlled the *default* state, which used to be
-    // permanently open for no real reason.
-    const form = document.createElement("ha-form");
-    form.hass = this._hass;
-    form.schema = SIZES.map((size) => ({
-      name: size,
-      type: "expandable",
-      title: tr[`size_${size}_short`],
-      expanded: false,
-      flatten: true,
-      // Stacked, not a "grid" side by side (direct user feedback: each
-      // should be free to take the full width, a number field and a
-      // checkbox don't need to compete for half the row each).
-      schema: [
-        { name: `${size}_wait_days`, selector: { number: { min: 0, max: 365, mode: "box" } } },
-        { name: `${size}_auto_install`, selector: { boolean: {} } },
-      ],
-    }));
-    form.data = this._formData;
-    form.computeLabel = (s) => {
-      const kind = fieldKind(s.name);
-      if (kind === "wait_days") return tr.field_wait_days;
-      if (kind === "auto_install") return tr.field_auto_install;
-      return s.name;
+    // ha-settings-row for every row here, not ha-row-item/ha-list-item-base
+    // (switched entirely 2026-08-11, direct user feedback pointing at
+    // /profile/general's own real "Number format" row -- see
+    // _buildGeneralCard's own comment for the full reasoning: ha-settings-
+    // row's own content slot gives a control real breathing-room padding
+    // instead of tightly centering it, and its own description genuinely
+    // wraps). Also fixes the earlier Fitts's-Law problem (an expand-click
+    // hiding a single field) for free -- these rows were never expandable
+    // to begin with. What each size actually means lives in General's own
+    // intro paragraph, not a per-row tooltip (tried, reverted the same
+    // day, direct user feedback: "die tooltips vind ik niks").
+    // A real heading over this group of rows, not just settings_hint's own
+    // paragraph above -- direct user feedback, 2026-08-11: within-card
+    // hierarchy needed the same treatment the page's own card-level
+    // structure already had. .subsection-label, not .field-label -- this
+    // heads a *group* of rows, not one row's own label+description pair.
+    const sizeRowsLabel = document.createElement("p");
+    sizeRowsLabel.className = "subsection-label subsection-gap";
+    sizeRowsLabel.textContent = tr.postponement_sizes_label;
+    body.appendChild(sizeRowsLabel);
+    const sizeRows = document.createElement("div");
+    for (const size of SIZES) {
+      sizeRows.appendChild(
+        this._buildSettingsRow(tr, {
+          headingText: tr[`size_${size}_short`],
+          selector: { number: { min: 0, max: 365, mode: "box", unit_of_measurement: tr.field_wait_days_unit } },
+          key: `${size}_wait_days`,
+        })
+      );
+    }
+    body.appendChild(sizeRows);
+
+    // A real divider, not just extra whitespace, ahead of the schedule
+    // section below -- direct user feedback, 2026-08-11 ("dividers met 16px
+    // padding aan beide kanten?"): the wait-days mechanism above and the
+    // schedule below are genuinely separate concerns (the schedule is an
+    // optional extra layer on top, see next_allowed_ready's own docstring),
+    // worth a harder visual break than a subsection-label alone gives.
+    // Styled from ha-form-divider.ts's own real, verified source (a plain
+    // <hr>, no dedicated HA component for this outside ha-form itself) --
+    // used at every genuine subsection boundary on this page (direct user
+    // feedback, 2026-08-11), not between every row within one.
+    body.appendChild(document.createElement("hr")).className = "divider";
+
+    // The optional schedule itself (issue #4) -- fully off by default (see
+    // coordinator.py's own schedule_from_options). Redesigned 2026-08-11
+    // (twice the same day): first pass used a single multi-select for every
+    // day (Hick's/Miller's/Jakob's Laws: 7 always-visible expandables gave
+    // a rarely-used, fully optional feature far more visual weight than it
+    // deserves) with a separate time row appearing underneath once a day
+    // was picked -- direct user feedback found the split itself confusing
+    // ("waarom moet ik maandag op een andere plek weghalen dan waar ik het
+    // instel"): removing a day and configuring its own time lived in two
+    // different controls. Now each added day is one self-contained row
+    // (name, time, its own remove button) -- add and configure and remove
+    // all happen in the same place. The add-control itself only lists days
+    // not yet added (so it can't ever need a "remove" of its own), and
+    // disappears entirely once all seven are -- nothing left to add.
+    const scheduleHint = document.createElement("p");
+    scheduleHint.className = "section-intro";
+    scheduleHint.textContent = tr.settings_schedule_hint;
+    body.appendChild(scheduleHint);
+
+    const scheduleRows = document.createElement("div");
+    body.appendChild(scheduleRows);
+
+    const addDayPicker = document.createElement("ha-selector");
+    addDayPicker.hass = this._hass;
+    addDayPicker.label = tr.field_ready_days_add;
+    addDayPicker.required = false;
+    body.appendChild(addDayPicker);
+
+    const renderSchedule = () => {
+      scheduleRows.innerHTML = "";
+      const addedDays = WEEKDAYS.filter((day) => this._formData[`${day}_ready_enabled`]);
+      for (const day of addedDays) {
+        const row = document.createElement("ha-settings-row");
+        const heading = document.createElement("span");
+        heading.slot = "heading";
+        heading.textContent = tr[`weekday_${day}_short`];
+        row.appendChild(heading);
+
+        // Time + remove grouped in their own inner row -- keeps them
+        // close together, appended into ha-settings-row's own default
+        // (content) slot as a single unit.
+        const controls = document.createElement("div");
+        controls.className = "schedule-time-row-controls";
+
+        // No .label of its own (direct user feedback: "At" rendered as a
+        // second label stacked above the field, redundant with the day
+        // name already right next to it) -- field_ready_time_helper above
+        // already explains what an empty value means.
+        const timeSelector = document.createElement("ha-selector");
+        timeSelector.hass = this._hass;
+        timeSelector.selector = { time: { no_second: true } };
+        timeSelector.required = false;
+        timeSelector.value = this._formData[`${day}_ready_time`] || undefined;
+        timeSelector.addEventListener("value-changed", (e) => {
+          // ha-selector's time value is always "HH:MM:SS" (ha-time-input
+          // appends ":00" regardless of no_second, which only hides the
+          // seconds field itself) -- truncated to "HH:MM" here since that's
+          // what the backend's save schema validates against.
+          const value = e.detail.value ? e.detail.value.slice(0, 5) : "";
+          this._formData = { ...this._formData, [`${day}_ready_time`]: value };
+          timeSelector.value = value || undefined;
+          this._scheduleAutosave();
+        });
+        controls.appendChild(timeSelector);
+
+        const removeBtn = document.createElement("ha-icon-button");
+        removeBtn.path = ICON_DELETE_OUTLINE;
+        removeBtn.label = tr.field_ready_remove(tr[`weekday_${day}_short`]);
+        removeBtn.addEventListener("click", () => {
+          this._formData = { ...this._formData, [`${day}_ready_enabled`]: false, [`${day}_ready_time`]: "" };
+          this._scheduleAutosave();
+          renderSchedule();
+        });
+        controls.appendChild(removeBtn);
+
+        row.appendChild(controls);
+        scheduleRows.appendChild(row);
+      }
+      scheduleRows.style.display = addedDays.length ? "" : "none";
+
+      const remainingDays = WEEKDAYS.filter((day) => !addedDays.includes(day));
+      // mode: "dropdown" pinned explicitly -- ha-selector-select's own
+      // default heuristic (confirmed against its real source) switches to
+      // a radio-button list once fewer than 6 options remain, which here
+      // meant the widget's own presentation kept changing shape as days
+      // got added. Direct user feedback: keep it a dropdown throughout.
+      addDayPicker.selector = {
+        select: {
+          mode: "dropdown",
+          options: remainingDays.map((day) => ({ value: day, label: tr[`weekday_${day}_short`] })),
+        },
+      };
+      addDayPicker.value = undefined;
+      addDayPicker.style.display = remainingDays.length ? "" : "none";
     };
-    form.computeHelper = (s) => {
-      // The per-size expandable section's own description (its `name` is
-      // just "small"/"medium"/"large"), rendered by ha-form-expandable as
-      // its own line below the header, not squeezed into the title
-      // itself, and visible regardless of expanded state.
-      if (SIZES.includes(s.name)) return tr[`size_${s.name}_desc`]();
-      // No per-field helper for auto_install (direct user feedback:
-      // text-heavy page): it used to repeat the exact same sentence
-      // identically under Small, Medium, and Large, since all three
-      // sections used to be always expanded at once. Said once now, in
-      // settings_hint above, instead of three times in a row.
-      return "";
-    };
-    form.addEventListener("value-changed", (e) => {
-      this._formData = { ...this._formData, ...e.detail.value };
-      form.data = this._formData;
+    renderSchedule();
+
+    addDayPicker.addEventListener("value-changed", (e) => {
+      const day = e.detail.value;
+      if (!day) return;
+      this._formData = { ...this._formData, [`${day}_ready_enabled`]: true, [`${day}_ready_time`]: "" };
       this._scheduleAutosave();
+      renderSchedule();
     });
-    body.appendChild(form);
+
+    // Moved to the bottom, not the top (reverted 2026-08-11, direct user
+    // feedback: "voelt hierarchisch logischer") -- it's a display
+    // preference that applies regardless of *which* mechanism above (wait
+    // days or the schedule) is currently the binding one, so it reads
+    // better as a trailing toggle under both than as the card's own lead
+    // setting ahead of the mechanics it modifies the display of. A divider
+    // ahead of it too now (direct user feedback, 2026-08-11), not just
+    // .subsection-gap -- every subsection boundary on this page gets the
+    // same divider treatment, not just the two biggest ones.
+    body.appendChild(document.createElement("hr")).className = "divider";
+    body.appendChild(
+      this._buildSettingsRow(tr, {
+        headingText: tr.field_hide_postponed,
+        descriptionText: tr.field_hide_postponed_helper,
+        selector: { boolean: {} },
+        key: "hide_postponed",
+        coerce: (v) => !!v,
+      })
+    );
+
     card.appendChild(body);
     return card;
   }
@@ -5361,6 +5711,11 @@ class UpdateManagerPanel extends HTMLElement {
   // auto-install toggle is on (see _buildSettingsCard's own comment on
   // this: the trusted-voter override living here is reachable independent
   // of any size toggle, so hiding this card behind one made no sense).
+  // Per-size auto-install toggle moved *in* here from "Postponement"
+  // (2026-08-11, issue #4): installing automatically is this card's own
+  // concern, postponing is Postponement's. No size_*_desc repeated here --
+  // that explanation (what each size actually means) lives in Postponement
+  // only, whichever card someone opens first.
   // Announcement above the entities list, not below (direct user feedback:
   // that list can grow long and would push the announcement setting
   // further down the page).
@@ -5372,39 +5727,64 @@ class UpdateManagerPanel extends HTMLElement {
     const body = document.createElement("div");
     body.className = "card-content";
 
-    const hint = document.createElement("p");
-    hint.className = "hint";
-    hint.textContent = tr.auto_install_section_desc;
-    body.appendChild(hint);
+    // No intro paragraph here (removed 2026-08-11, direct user feedback:
+    // "erg overbodig") -- the card header ("Auto-update") and each row's
+    // own label already say what this section is, unlike Postponement,
+    // which genuinely needs its own lead-in to explain *why* postponing
+    // is worth it at all (not something the header alone conveys).
 
-    // Manually-drawn label + hint, same pattern as excludedLabel/
-    // excludedHint below. Direct user feedback: liked that look enough to
-    // want it here too, not just on the field it was originally built for,
-    // even though this field's own helper never had the same "renders too
-    // far below a tall widget" problem excluded_entities did; just for a
-    // consistent look across this card.
-    const announceLabel = document.createElement("p");
-    announceLabel.className = "field-label";
-    announceLabel.textContent = tr.announce_hours_label;
-    body.appendChild(announceLabel);
+    // ha-settings-row for every row here, same real HA settings-row
+    // pattern Postponement's own rows use (see that method's own
+    // comment) -- no more expandables, no more hand-rolled flex CSS.
+    // Same subsection-label treatment as Postponement's own size-rows
+    // group -- see that card's own comment.
+    const autoInstallRowsLabel = document.createElement("p");
+    autoInstallRowsLabel.className = "subsection-label subsection-gap";
+    autoInstallRowsLabel.textContent = tr.auto_install_sizes_label;
+    body.appendChild(autoInstallRowsLabel);
+    const autoInstallRows = document.createElement("div");
+    for (const size of SIZES) {
+      autoInstallRows.appendChild(
+        this._buildSettingsRow(tr, {
+          headingText: tr[`size_${size}_short`],
+          selector: { boolean: {} },
+          key: `${size}_auto_install`,
+          coerce: (v) => !!v,
+        })
+      );
+    }
+    body.appendChild(autoInstallRows);
 
-    const announceHint = document.createElement("p");
-    announceHint.className = "hint";
-    announceHint.textContent = tr.announce_hours_helper;
-    body.appendChild(announceHint);
+    // Same divider treatment as every other subsection boundary on this
+    // page now (direct user feedback, 2026-08-11) -- announce_hours is its
+    // own concern (when to warn before an auto-install), not another
+    // per-size row belonging to the group above it.
+    body.appendChild(document.createElement("hr")).className = "divider";
 
-    const announceForm = document.createElement("ha-form");
-    announceForm.hass = this._hass;
-    announceForm.schema = [{ name: "announce_hours", selector: { number: { min: 1, max: 336, mode: "box" } } }];
-    announceForm.data = this._formData;
-    announceForm.computeLabel = () => "";
-    announceForm.computeHelper = () => "";
-    announceForm.addEventListener("value-changed", (e) => {
-      this._formData = { ...this._formData, ...e.detail.value };
-      announceForm.data = this._formData;
-      this._scheduleAutosave();
-    });
-    body.appendChild(announceForm);
+    // Same ha-settings-row shape as every other row on this page now
+    // (2026-08-11, direct user feedback, "wees consistent" -- this field
+    // was still on the older manually-drawn label+hint+ha-form pattern
+    // from before today's redesign). unit_of_measurement gives the field
+    // its own "hours" suffix directly, same fix wait_days already got,
+    // so the label itself no longer needs "(hours)" spelled out too. Its
+    // own description genuinely wraps here (confirmed against
+    // ha-settings-row's own real source), no title-attribute fallback
+    // needed.
+    body.appendChild(
+      this._buildSettingsRow(tr, {
+        headingText: tr.announce_hours_label,
+        descriptionText: tr.announce_hours_helper,
+        selector: { number: { min: 1, max: 336, mode: "box", unit_of_measurement: tr.announce_hours_unit } },
+        key: "announce_hours",
+      })
+    );
+
+    // Same divider treatment as Postponement's own wait-days/schedule
+    // boundary -- see that card's own comment. The auto-install/announce
+    // rows above and the entity lists below are a genuinely separate
+    // concern (who's involved and what's excluded, vs. what installs
+    // automatically and when).
+    body.appendChild(document.createElement("hr")).className = "divider";
 
     // A manually-drawn label, not ha-form's own computeLabel for this
     // field (see entitiesForm below, which suppresses it): direct user
@@ -5454,6 +5834,12 @@ class UpdateManagerPanel extends HTMLElement {
     });
     body.appendChild(entitiesForm);
 
+    // Same divider treatment as every other subsection boundary now
+    // (direct user feedback, 2026-08-11) -- trusted voters is its own
+    // concern (overriding your own rules for one person's vote), separate
+    // from the plain exclusion list above it.
+    body.appendChild(document.createElement("hr")).className = "divider";
+
     // Same manually-drawn label + hint pattern as excludedLabel/excludedHint
     // above -- direct user feedback, wanting a specific person's healthy
     // verdict to always trigger auto-install regardless of your own rules,
@@ -5484,10 +5870,15 @@ class UpdateManagerPanel extends HTMLElement {
     trustedForm.computeLabel = () => "";
     trustedForm.computeHelper = () => "";
     trustedForm.addEventListener("value-changed", (e) => {
-      // `|| []`, not the bare selector value -- keeps this._formData itself
-      // clean (a real array, matching every other field's own always-a-
-      // value shape), on top of pickKnownSettings' own LIST_SETTINGS_FIELDS
-      // coercion at save time.
+      // `|| []`, not filtered here -- ha-input-multi's own "add" button adds
+      // a blank row and fires this same value-changed immediately (before
+      // the user has typed anything); filtering blanks out at this point
+      // (tried, reverted the same day) deleted that row on arrival, making
+      // the add button look broken. Blank entries are dropped at save time
+      // instead (see pickKnownSettings' own LIST_SETTINGS_FIELDS handling),
+      // which still means clearing a row's text has the same end effect as
+      // its own trash icon once autosave actually runs, without breaking
+      // the add flow itself.
       this._formData = { ...this._formData, trusted_voters: e.detail.value.trusted_voters || [] };
       trustedForm.data = this._formData;
       this._scheduleAutosave();
@@ -5654,7 +6045,24 @@ class UpdateManagerPanel extends HTMLElement {
       ha-card { margin: 0; }
       .card-content { padding: 0 16px 16px; display: flex; flex-direction: column; }
       .card-content > *:not(:first-child) { margin-top: 16px; }
-      .card-actions { display: flex; justify-content: flex-end; padding: 8px 16px 16px; }
+      /* No padding override of our own -- ha-card's own native
+         ::slotted(.card-actions) styling already gives this a divider and
+         var(--ha-space-2) padding, confirmed against its real source, the
+         exact same values cloud-account-overview.ts's own "Manage
+         account"/"Sign out" row uses. Our own previous 8px/16px/16px
+         override (found live, 2026-08-11, direct user feedback: didn't
+         match the Nabu Casa account page) was left over from a different
+         context and just needs the flex/alignment part, not its own
+         padding fighting the native one. */
+      .card-actions { display: flex; justify-content: flex-end; }
+      /* Sizes card's own label+description pairs (_buildSizesCard) --
+         reverted from a plain <ul> the same day (direct user feedback:
+         "ziet er niet uit", read as inconsistent with every other card's
+         own settings-row rows). A generous 16px gap: these read as three
+         separate informational blocks, not closely related action rows. */
+      .sizes-group { display: flex; flex-direction: column; gap: var(--ha-space-4, 16px); }
+      .field-label + .section-intro,
+      .subsection-label + .section-intro { margin-top: var(--ha-space-1, 4px); }
       .hint {
         color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px);
         line-height: 1.4; margin: 0;
@@ -5672,6 +6080,91 @@ class UpdateManagerPanel extends HTMLElement {
          unit, not two separate blocks. */
       .field-label { font-size: var(--ha-font-size-m, 14px); color: var(--primary-text-color); margin: 0; }
       .field-label + .hint { margin-top: var(--ha-space-1, 4px); }
+      /* Heads a *group* of rows (Postponement/Auto-update's own size rows),
+         not one row's own label+description pair -- medium weight, unlike
+         .field-label's deliberately normal weight above, so a group heading
+         reads as a level above the rows it introduces instead of blending
+         in as just another row label. .subsection-gap (below) gives it (and
+         every other subsection start on this page) more room than
+         .card-content's own generic 16px between any two adjacent
+         children -- direct user feedback, 2026-08-11: within-card hierarchy
+         needed the same treatment the page's own card-level structure
+         already had ("de hierarchie is iets wat op de pagina goed is maar
+         in de secties/cards zelf nog niet"). */
+      .subsection-label {
+        font-size: var(--ha-font-size-m, 14px); font-weight: var(--ha-font-weight-medium, 500);
+        color: var(--primary-text-color); margin: 0;
+      }
+      /* More specific than .card-content > *:not(:first-child)'s own 16px
+         (a real class beats a bare universal selector), so this wins
+         without needing !important. :not(:first-child) repeated here too --
+         _buildAutoInstallCard's own first row (no intro paragraph above it,
+         see that method's own comment) would otherwise get an unwanted 24px
+         gap from the card's own top edge instead of sitting flush like
+         every other card's first child does. */
+      .card-content > .subsection-gap:not(:first-child) { margin-top: var(--ha-space-6, 24px); }
+      /* A real divider between a card's own genuinely separate concern
+         sections (Postponement's wait-days vs. schedule; Auto-update's
+         install rows vs. entity lists) -- styled from ha-form-divider.ts's
+         own real, verified source (a plain <hr>, no dedicated standalone HA
+         component for this outside ha-form itself), not guessed. 16px on
+         both sides, as asked -- margin: 0 on the divider itself so it comes
+         from .card-content's own generic *:not(:first-child) 16px above
+         (same as any other child) and the *next* element's own matching
+         16px margin-top below; .card-content's flex column layout doesn't
+         collapse adjacent margins the way normal block flow would, so
+         adding a margin-bottom here too would have doubled the gap below
+         instead of matching the one above. */
+      .divider { border: none; border-top: 1px solid var(--ha-color-border-neutral-quiet); margin: 0; }
+      /* Real body text for a card's own main explanation, not .hint's
+         smaller secondary style (2026-08-11, direct user feedback
+         researching real HA patterns against cloud-remote-pref.ts/
+         ha-config-backup-app-update-backups.ts's own real source: both use
+         a plain <p>, secondary *color* only, no smaller font-size --
+         everything on this page used to go through .hint regardless of
+         whether it was the main point or a minor aside). */
+      .section-intro { color: var(--secondary-text-color); font-size: var(--ha-font-size-m, 14px); margin: 0; line-height: 1.4; }
+      /* Postponement's own weekday schedule rows (issue #4) group a time
+         selector and remove button together into one unit, appended into
+         ha-settings-row's own default (content) slot -- keeps the two
+         close to each other, rather than the row spacing them apart the
+         way two separate top-level children would be. */
+      .schedule-time-row-controls { display: flex; align-items: center; gap: var(--ha-space-1, 4px); }
+      .schedule-time-row-controls > ha-selector { flex: 0 0 auto; width: 130px; }
+      /* Every ha-settings-row in a settings card (switched from
+         ha-list-item-base entirely, 2026-08-11 -- see _buildGeneralCard's
+         own comment for the full reasoning). Its own :host has no
+         vertical padding of its own at all (confirmed against its real
+         source -- spacing between stacked rows comes entirely from
+         .body's/.content's own internal padding, generous enough on its
+         own not to need a wrapper gap on top), but does have a flat
+         "padding: 0 var(--ha-space-4)" (16px) horizontally that isn't
+         exposed as an overridable custom property the way ha-row-item's
+         own padding was -- combined with .card-content's own 16px, a
+         row's own text started a full 32px from the card edge instead of
+         lining up with every plain paragraph's own 16px. Overridden here
+         directly (a plain property, not a custom-property hook) so
+         .card-content's own padding is the only one that counts. */
+      /* Left (heading/description) vs right (control) split 50/50 by
+         default -- confirmed against ha-settings-row.ts's own real source:
+         .prefix-wrap (left) has flex: var(--settings-row-prefix-flex, 1),
+         .content (right) has a flat, unexposed flex: 1 with no part=""
+         to target it directly, so the only real lever is raising the
+         left side's own share. 3 (75/25 once both sides' own flex-grow is
+         weighed) leaves our controls (a switch, a narrow number field)
+         their own natural width instead of stretching them, and gives the
+         actual longer text on the left the room it can use -- direct user
+         feedback, "vaak staat er links veel meer wat wel wat breedte kan
+         gebruiken". */
+      /* --settings-row-content-padding-block (default 16px top+bottom,
+         also confirmed against the real source, unlike .content's own
+         unexposed flex-grow above) zeroed too -- direct user feedback:
+         combined with a real ha-input's own genuine 64px height (56px
+         base + 8px own bottom padding, confirmed earlier), the row ended
+         up 96px tall, reading as "far apart" again for closely related
+         settings. Zeroed, the row is exactly as tall as its control
+         actually needs (64px), no padding of its own on top. */
+      .card-content ha-settings-row { padding-inline: 0; --settings-row-prefix-flex: 3; --settings-row-content-padding-block: 0; }
 
       /* One shared page grid for all three tabs (2026-07-21, direct user
          feedback: Updates, History and Settings each had their own

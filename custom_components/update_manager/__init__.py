@@ -21,6 +21,7 @@ from .coordinator import (
     UpdateManagerCoordinator,
     excluded_entities_from_options,
     rules_from_options,
+    schedule_from_options,
     trusted_voters_from_options,
 )
 from .device import device_info as update_manager_device_info
@@ -186,7 +187,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # Same reasoning again: needs only hass, read by websocket_api.py's own
     # verdict_for_version handler, written by its vote handler.
     my_votes_manager = MyVotesManager(hass)
-    coordinator = UpdateManagerCoordinator(hass, rules, excluded_entities_from_options(options), community_verdict_manager)
+    coordinator = UpdateManagerCoordinator(
+        hass, rules, excluded_entities_from_options(options), community_verdict_manager, schedule_from_options(options)
+    )
     install_log = InstallLog(hass)
     # Constructed before InstallManager/StagingSkipManager: both take a
     # reference to it (see rollout_manager.py's own docstring: gates every
