@@ -136,12 +136,24 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
         return
 
     install_manager = data.install_manager
+    # One shared instant for this whole response, not one dt_util.utcnow()
+    # call per entity inside export_entry -- every entity in one response
+    # describes "the state of things right now", not each read at its own,
+    # slightly later instant as the loop progresses.
+    now = dt_util.utcnow()
     updates = []
     for entry in data.coordinator.cache.values():
         pending = install_manager.pending_for(entry["entity_id"])
         updates.append(
             {
-                **entry,
+                # export_entry: entry's own cached facts, with status/
+                # remaining_seconds/ready_at overridden by a version computed
+                # fresh right now, instead of trusting entry's own possibly-
+                # stale stored ones (see coordinator.py's own status_now/
+                # _derive_status_fields docstrings for why storing them at
+                # all was the actual bug behind an earlier "ready at" pill
+                # drift, not just how often they got refreshed).
+                **data.coordinator.export_entry(entry, now),
                 # See install_manager.py's own is_cancelled docstring: a
                 # "waiting" update whose auto-install was cancelled before
                 # it ever became ready has no real PendingAnnouncement

@@ -40,17 +40,24 @@ class TestEmptySchedule:
         assert next_allowed_ready(_schedule(), TUESDAY) is None
 
 
-class TestTodayAlreadyAllowed:
-    def test_today_enabled_no_time_is_always_allowed(self):
+class TestWaitDeadlineAlreadyWithinAnAllowedWindow:
+    """next_allowed_ready never returns None for a non-empty schedule -- it
+    resolves *which* instant matters, the caller (coordinator.py's own
+    _apply_schedule_gate) decides whether that's already arrived by
+    comparing it against the real current time itself. These cases all
+    resolve back to wait_deadline unchanged, the caller's own signal that
+    nothing is actually being held back."""
+
+    def test_today_enabled_no_time_resolves_to_wait_deadline_itself(self):
         schedule = _schedule({1: DayRule(True, None)})  # Tuesday, any time
-        assert next_allowed_ready(schedule, TUESDAY) is None
+        assert next_allowed_ready(schedule, TUESDAY) == TUESDAY
 
-    def test_today_enabled_time_exactly_now(self):
+    def test_today_enabled_time_exactly_wait_deadline(self):
         schedule = _schedule({1: DayRule(True, time(12, 0))})
-        assert next_allowed_ready(schedule, TUESDAY) is None
+        assert next_allowed_ready(schedule, TUESDAY) == TUESDAY
 
 
-class TestTodayStillAhead:
+class TestWaitDeadlineStillAhead:
     def test_today_enabled_time_still_ahead_returns_today_at_that_time(self):
         schedule = _schedule({1: DayRule(True, time(17, 0))})
         result = next_allowed_ready(schedule, TUESDAY)
@@ -76,18 +83,28 @@ class TestFutureDay:
         assert result == datetime(2026, 8, 13, 9, 0, tzinfo=timezone.utc)  # Thursday
 
 
+class TestTimedDayMissedOnceWaitDeadlineIsPastIt:
+    """A day WITH a time set is a strict checkpoint: wait_deadline landing
+    on that same day but after its own set time means this occurrence is
+    missed entirely, not "still fine, any time after also counts" the way a
+    no-time day works (TestWaitDeadlineAlreadyWithinAnAllowedWindow's own
+    no-time case)."""
+
+    def test_wait_deadline_same_day_after_the_set_time_rolls_to_next_week(self):
+        schedule = _schedule({1: DayRule(True, time(10, 0))})  # Tuesday 10:00
+        wait_deadline = TUESDAY.replace(hour=12, minute=28)  # Tuesday 12:28
+        result = next_allowed_ready(schedule, wait_deadline)
+        assert result == datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)  # next Tuesday
+
+
 class TestWeekWrapAround:
-    def test_only_todays_own_weekday_enabled_and_already_passed_wraps_to_next_week(self):
-        # A day WITH a time set is a strict, exact weekly check-in, not a
-        # "that time or any time after" open window (unlike a day with no
-        # time set -- TestTodayAlreadyAllowed's own no-time case, which does
-        # still mean the whole day counts). Only Tuesday enabled, its own
-        # 10:00 already passed today -- that occurrence is missed entirely,
-        # so this must skip a full week ahead rather than staying "allowed"
-        # for the rest of today.
+    def test_only_the_wait_deadlines_own_weekday_enabled_and_already_missed(self):
+        # Only Tuesday enabled, wait_deadline itself already past its own
+        # 10:00 -- needs to wrap a full 7 days to find that same weekday
+        # again, not just scan the other 6 (all disabled).
         schedule = _schedule({1: DayRule(True, time(10, 0))})
-        now = TUESDAY.replace(hour=14)
-        result = next_allowed_ready(schedule, now)
+        wait_deadline = TUESDAY.replace(hour=14)
+        result = next_allowed_ready(schedule, wait_deadline)
         assert result == datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)  # next Tuesday
 
     def test_sunday_only_enabled_from_a_monday(self):

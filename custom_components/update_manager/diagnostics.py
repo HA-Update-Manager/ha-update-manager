@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 from .runtime_data import UpdateManagerConfigEntry
 
@@ -24,11 +25,21 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: UpdateM
     # race windows around that (a reload's unload-then-setup gap, for one).
     if data is None:
         return {"options": dict(entry.options)}
+    # One shared instant for the whole export, not one dt_util.utcnow() call
+    # per entity inside export_entry -- see websocket_api.py's own matching
+    # comment in _handle_updates.
+    now = dt_util.utcnow()
     return {
         # The raw, actually-persisted settings -- added 2026-07-16 to check
         # a save without needing the browser console/websocket_api either.
         "options": dict(entry.options),
-        "updates": list(data.coordinator.cache.values()),
+        # export_entry, not the raw cache entry -- same reasoning
+        # websocket_api.py's own _handle_updates has: status/remaining_seconds/
+        # ready_at computed fresh at export time, not whatever a periodic
+        # recompute last happened to store.
+        "updates": [
+            data.coordinator.export_entry(cached, now) for cached in data.coordinator.cache.values()
+        ],
         "install_log": data.install_log.entries,
         "pending_installs": [
             {

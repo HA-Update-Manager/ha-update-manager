@@ -19,7 +19,7 @@ from typing import Any
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.event import EventStateChangedData, async_track_time_interval
+from homeassistant.helpers.event import EventStateChangedData, async_track_point_in_time, async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -148,25 +148,33 @@ def _is_excluded_from_auto_install(entity_id: str, excluded_entities: frozenset[
     return entity_id in excluded_entities
 
 
+# The shape any status without a countdown attached to it uses, whether
+# that's staging.py's own "blocked"/a "ready" that isn't projected any
+# further out, or coordinator.py's own "skipped" (which isn't a StagingResult
+# at all, see status_now's own comment) -- one literal, reused everywhere
+# this shape is needed instead of each call site hand-writing its own copy.
+_NO_TIMING_FIELDS = {"remaining_seconds": None, "ready_at": None}
+
+
 def _cache_timing_fields(result: StagingResult, now: datetime) -> dict:
     """remaining_seconds and ready_at together, from the same StagingResult
-    and the same `now` -- shared by every cache-writing site (_recompute_all,
-    _async_cache_active, _cache_skipped) so the two can't drift apart.
-    ready_at is an absolute instant, not something a later reader has to
-    reconstruct by re-adding remaining_seconds to whatever `now` happens to
-    be by the time they read it -- found live, 2026-08-11: the panel used to
-    compute its own "ready at" as Date.now() + remaining_seconds at fetch
-    time, and every fetch silently overshot the true target by however
-    stale this cache entry already was (up to _RECHECK_INTERVAL, since
-    _recompute_all only actually re-derives remaining_seconds on that same
-    periodic cadence) -- a "ready at 10:00" pill drifting to "10:01", then
-    "10:07" on later fetches, nothing server-side having actually changed.
-    remaining_seconds is kept alongside it, still needed for the panel's own
-    sort order (soonest-first) without re-deriving a duration from ready_at
-    every time; websocket_api.py's own _handle_updates returns this cache
-    entry (and so both fields) to the panel verbatim."""
+    and the same `now` -- shared by every caller that derives them
+    (_derive_status_fields, and _cache_skipped's own None/None shape) so the
+    two can't drift apart from each other. ready_at is an absolute instant,
+    not something a reader has to reconstruct by re-adding remaining_seconds
+    to whatever `now` happens to be by the time they read it. remaining_seconds
+    is kept alongside it, still needed for the panel's own sort order
+    (soonest-first) without re-deriving a duration from ready_at every time.
+
+    Storing either of these anywhere and trusting that storage to still be
+    accurate later is the actual mistake to avoid -- see
+    _derive_status_fields's own docstring for the two earlier attempts (a
+    plain periodic recompute, then a precise per-entity wakeup timer on top
+    of it) that each only shrank that staleness window instead of
+    eliminating it. status_now calls this fresh at the exact instant it's
+    actually needed instead."""
     if result.remaining is None:
-        return {"remaining_seconds": None, "ready_at": None}
+        return dict(_NO_TIMING_FIELDS)
     return {
         "remaining_seconds": round(result.remaining.total_seconds()),
         "ready_at": (now + result.remaining).isoformat(),
@@ -371,6 +379,10 @@ class UpdateManagerCoordinator:
         self._install_listeners: list[InstallListener] = []
         self._unsub_state_changed: Callable[[], None] | None = None
         self._unsub_recheck: Callable[[], None] | None = None
+        # A precise, one-off wake-up on top of _unsub_recheck's own
+        # _RECHECK_INTERVAL safety net -- see _schedule_next_wakeup's own
+        # comment for why.
+        self._unsub_next_wakeup: Callable[[], None] | None = None
         # The master pause switch (const.py's CONF_ENABLED) -- the single,
         # shared source of truth install_manager.py/staging_skip.py both
         # read directly (self._coordinator.master_enabled) instead of each
@@ -450,6 +462,15 @@ class UpdateManagerCoordinator:
             await self._async_refresh_one(entity_id)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
 
+        # _async_refresh_one above (unlike its own async_refresh_one/
+        # _async_handle_changed wrappers) doesn't call _fire_listeners on
+        # its own -- without this, _schedule_next_wakeup's own precise
+        # wake-up wouldn't actually start covering anything until the first
+        # periodic recheck, a real state_changed event, or a settings save
+        # happened to fire it, up to _RECHECK_INTERVAL after a fresh
+        # restart.
+        self._fire_listeners()
+
     @callback
     def _recover_install_across_restart(self, entity_id: str) -> None:
         """Retroactively fires the install listeners for an install that
@@ -517,9 +538,59 @@ class UpdateManagerCoordinator:
         duplicated at three call sites (_async_periodic_recheck,
         async_update_rules, _async_handle_changed), mirroring the same
         duplication _fire_install_listeners above was already extracted to
-        fix for the install-listener list."""
+        fix for the install-listener list. Also the one place
+        _schedule_next_wakeup gets refreshed, for the same reason -- every
+        one of those call sites just finished a recompute, exactly when the
+        soonest still-pending deadline might have changed."""
         for listener in list(self._listeners):
             listener()
+        self._schedule_next_wakeup()
+
+    def _schedule_next_wakeup(self) -> None:
+        """A precise, one-off wake-up at the earliest ready_at among every
+        currently "waiting" entity, on top of _unsub_recheck's own
+        _RECHECK_INTERVAL periodic safety net.
+
+        Not for display accuracy -- status_now computes that fresh on every
+        read regardless of when this last ran, so nothing shown in the
+        panel can ever be stale (see its own docstring). This is purely
+        about how promptly install_manager.py/staging_skip.py/sensor.py
+        (the real, action-taking consumers of self.cache's own stored
+        status, all synchronized via self._listeners) actually notice a
+        change and do something about it -- announcing/auto-installing, or
+        un-hiding a postponed update, right around the moment it's actually
+        due, instead of up to _RECHECK_INTERVAL late. Still worth keeping
+        even once storing status for display purposes was no longer
+        needed, 2026-08-12: recomputing right at each update's own known,
+        already-calculated deadline is strictly better than only ever
+        recomputing on a coarse periodic interval, for the same reason a
+        calendar reminder beats a "check every 15 minutes" habit.
+
+        Cancels and recomputes from scratch every call instead of only
+        extending/shortening the existing one, simplest correct way to
+        always reflect whatever the soonest deadline currently is,
+        including one a settings save just changed."""
+        if self._unsub_next_wakeup is not None:
+            self._unsub_next_wakeup()
+            self._unsub_next_wakeup = None
+
+        ready_ats = [
+            parsed
+            for cached in self.cache.values()
+            if cached["status"] == "waiting" and cached.get("ready_at")
+            and (parsed := dt_util.parse_datetime(cached["ready_at"])) is not None
+        ]
+        if not ready_ats:
+            return
+        self._unsub_next_wakeup = async_track_point_in_time(
+            self.hass, self._async_scheduled_recompute, min(ready_ats)
+        )
+
+    @callback
+    def _async_scheduled_recompute(self, now: datetime) -> None:
+        self._unsub_next_wakeup = None
+        self._recompute_all(now)
+        self._fire_listeners()
 
     @callback
     def async_stop(self) -> None:
@@ -529,6 +600,9 @@ class UpdateManagerCoordinator:
         if self._unsub_recheck is not None:
             self._unsub_recheck()
             self._unsub_recheck = None
+        if self._unsub_next_wakeup is not None:
+            self._unsub_next_wakeup()
+            self._unsub_next_wakeup = None
 
     def _recompute_all(self, now: datetime) -> None:
         """The actual status/remaining_seconds/auto_install_excluded
@@ -579,13 +653,7 @@ class UpdateManagerCoordinator:
             if cached["status"] == "skipped":
                 if not self._is_own_skip(entity_id, cached["latest_version"]):
                     continue
-            available_since = dt_util.parse_datetime(cached["available_since"])
-            result = self._staging_result(
-                entity_id, cached["latest_version"], cached["version_size"], available_since, now, self.rules
-            )
-            result = self._apply_schedule_gate(result, now)
-            cached["status"] = result.status
-            cached.update(_cache_timing_fields(result, now))
+            cached.update(self._derive_status_fields(entity_id, cached, now))
             cached["auto_install_excluded"] = _is_excluded_from_auto_install(
                 entity_id, self.excluded_entities
             )
@@ -808,47 +876,175 @@ class UpdateManagerCoordinator:
     ) -> StagingResult:
         """The panel's own "Ready now" button (see self._force_ready's own
         comment) overrides the normal wait-days verdict for this one
-        entity/version pair -- shared by _recompute_all and
-        _async_cache_active, found by code review, 2026-08-10 (both used
-        to inline the exact same three-line branch independently)."""
+        entity/version pair -- shared by _staged_result's own two callers
+        (_recompute_all and _async_cache_active) via that method, found by
+        code review, 2026-08-10 (both used to inline the exact same
+        three-line branch independently)."""
         if self._force_ready.get(entity_id) == latest:
             return StagingResult("ready", None)
         return evaluate_staging(size, available_since, now, rules)
 
-    def _apply_schedule_gate(self, result: StagingResult, now: datetime) -> StagingResult:
-        """The postponement schedule (issue #4), composed on top of
-        _staging_result's own wait-based verdict -- shared by _recompute_all
-        and _async_cache_active for the same reason _staging_result itself
-        is (see its own comment above): found live, 2026-08-11, a freshly-
-        discovered/refreshed update (going through _async_cache_active, not
-        _recompute_all) showed its raw wait-days deadline, ignoring the
-        schedule entirely, for up to _RECHECK_INTERVAL until the next
-        periodic recompute caught it. Never touches "blocked" (needs a
-        manual decision regardless of any schedule). Checked against the
-        wait period's own deadline, not just `now` -- an already-elapsed
-        wait still needs to defer to the next allowed slot if the schedule
-        doesn't happen to already allow `now` itself. as_local, not the bare
-        (UTC) deadline -- the schedule's own day/time rules are the user's
-        own wall-clock picks in the panel (a plain time selector, no
-        timezone of its own), so "Wednesday 10:00" means 10:00 in the
-        instance's own local timezone, not UTC; comparing naive local times
-        against a bare UTC instant silently shifts both the hour and, near
-        midnight, sometimes the weekday itself. next_allowed itself comes
-        back local-aware; the final subtraction below still works correctly
-        against `now` (UTC) regardless, since aware-datetime subtraction is
-        timezone-independent. self._schedule_active checked first, before
-        any of that -- the default, untouched-by-any-install state is every
-        day disabled, so most installs would otherwise pay the timezone
-        conversion and 7-day scan below for every cached entity, on every
-        periodic recheck and every per-entity refresh, for a result that's
-        always thrown away."""
-        if not self._schedule_active or result.status not in ("ready", "waiting"):
+    def _staged_result(
+        self, entity_id: str, latest: str, size: str, available_since: datetime, now: datetime, rules: StagingRules
+    ) -> StagingResult:
+        """_staging_result's own wait-based verdict, with the postponement
+        schedule (issue #4) composed on top of it -- shared by
+        _recompute_all and _async_cache_active, same reason _staging_result
+        itself is shared (see its own docstring). Single-sourced here, not
+        left to each caller to guard + look up wait_for_size + call
+        _apply_schedule_gate itself: found by code review, 2026-08-12, that
+        exact three-line block had drifted back into being duplicated at
+        both call sites once _apply_schedule_gate's own signature grew a
+        `wait_deadline` parameter -- the same shape of duplication
+        _staging_result was already extracted once to fix."""
+        result = self._staging_result(entity_id, latest, size, available_since, now, rules)
+        if result.status not in ("ready", "waiting"):
+            # "blocked" needs a manual decision regardless of any schedule;
+            # "skipped" never reaches here at all (see _recompute_all's own
+            # guard, and _async_cache_active never produces it either).
             return result
-        wait_deadline = now if result.status == "ready" else now + result.remaining
-        next_allowed = next_allowed_ready(self.schedule, dt_util.as_local(wait_deadline))
-        if next_allowed is None:
+        if self._force_ready.get(entity_id) == latest:
+            # The "Ready now" override (_staging_result's own force_ready
+            # branch, a couple lines up) is a deliberate, explicit decision
+            # that this one jump doesn't need to wait any further at all --
+            # bypasses the schedule gate entirely, the same way it already
+            # bypasses the wait-days period itself, rather than running the
+            # forced-ready result through it. Found by code review,
+            # 2026-08-12: an earlier version of this still ran the forced
+            # result through _apply_schedule_gate (using `now` as the wait
+            # deadline instead of available_since + wait), which stopped
+            # re-deriving the original, now-irrelevant wait period, but
+            # could still downgrade the override right back to "waiting"
+            # whenever the schedule itself simply wasn't open yet -- the
+            # override existing specifically to skip past that too, not
+            # just past the wait-days math.
             return result
-        return StagingResult("waiting", next_allowed - now)
+        wait_deadline = available_since + wait_for_size(rules, size)
+        return self._apply_schedule_gate(result, wait_deadline, now)
+
+    def _apply_schedule_gate(self, result: StagingResult, wait_deadline: datetime, now: datetime) -> StagingResult:
+        """The actual schedule composition -- called only by _staged_result
+        above, already past its own "ready"/"waiting" guard, so `result` is
+        never "blocked"/"skipped" here. Split out from _staged_result on its
+        own (rather than inlined) purely so its own considerable amount of
+        reasoning about *why* `wait_deadline`/`as_local` below are correct
+        doesn't have to live inside _staged_result's own, shorter docstring.
+
+        Found live, 2026-08-11: a freshly-discovered/refreshed update
+        (going through _async_cache_active, not _recompute_all) showed its
+        raw wait-days deadline, ignoring the schedule entirely, for up to
+        _RECHECK_INTERVAL until the next periodic recompute caught it --
+        the actual reason this is shared rather than only ever called from
+        _recompute_all.
+
+        `wait_deadline`, not `now` -- this size's own wait period ending is
+        a fixed fact about this update, the same value every time this
+        happens to be evaluated for it, regardless of whether that's before
+        or after it actually elapses; found live, 2026-08-11/12, after two
+        reverted attempts that each compared the schedule against `now`
+        directly (whatever moment this happens to run at, a periodic
+        recheck or the precise-wakeup timer) instead: `now` is never
+        deterministic relative to a schedule's own configured time (a
+        periodic check essentially never lands on the exact instant, and by
+        the time staging itself already says "ready" -- wait already
+        elapsed -- "now" has no memory of when that actually happened
+        anymore), so the schedule's own answer kept depending on incidental
+        recompute timing rather than on anything about the update itself.
+        See next_allowed_ready's own docstring for the full account and
+        exactly what "resolved against wait_deadline" means.
+
+        as_local, not the bare (UTC) wait_deadline -- the schedule's own
+        day/time rules are the user's own wall-clock picks in the panel (a
+        plain time selector, no timezone of its own), so "Wednesday 10:00"
+        means 10:00 in the instance's own local timezone, not UTC; comparing
+        naive local times against a bare UTC instant silently shifts both
+        the hour and, near midnight, sometimes the weekday itself. The
+        result comes back local-aware; comparing/subtracting it against
+        `now` (UTC) still works correctly regardless, since aware-datetime
+        arithmetic is timezone-independent. self._schedule_active checked
+        first, before any of that -- the default, untouched-by-any-install
+        state is every day disabled, so most installs would otherwise pay
+        the timezone conversion and 8-day scan below for every cached
+        entity, on every periodic recheck and every per-entity refresh, for
+        a result that's always thrown away."""
+        if not self._schedule_active:
+            return result
+        target = next_allowed_ready(self.schedule, dt_util.as_local(wait_deadline))
+        if target is None or target <= now:
+            # None: schedule doesn't restrict anything (checked above, kept
+            # as next_allowed_ready's own contract too). target <= now: its
+            # own resolved instant has already arrived in real time, same
+            # verdict staging itself already gave -- nothing left to gate.
+            return result
+        return StagingResult("waiting", target - now)
+
+    def _derive_status_fields(self, entity_id: str, cached: dict, now: datetime) -> dict:
+        """status/remaining_seconds/ready_at, derived fresh from `cached`'s
+        own already-known facts (latest_version/version_size/available_since
+        -- never itself time-dependent, only ever changes on a real
+        state_changed event) and whatever `now` the caller passes in.
+
+        Two callers, two different reasons to call this: _recompute_all
+        below calls it (and writes the result back into `cached`) so
+        install_manager.py/staging_skip.py/sensor.py, all synchronized via
+        self._listeners right after that same recompute, see an accurate
+        status without needing to derive it themselves. status_now calls it
+        completely independently, fresh, at whatever instant a caller
+        actually asks -- this is the one that matters for display: found
+        live, 2026-08-11/12, that storing a derived remaining_seconds/
+        ready_at and only refreshing it periodically (however often, and
+        however precisely-timed) is structurally incompatible with a
+        display that's read at arbitrary, unrelated moments -- the very
+        first fix here (_cache_timing_fields's own ready_at) computed it
+        once, but still only *inside* a periodic recompute; the pill still
+        drifted between recomputes, then a follow-up added a precise
+        per-entity wakeup timer to shrink that gap, which only shrank it,
+        never eliminated it, and added real scheduling complexity for a
+        problem that a stored value can never actually stop having.
+        `available_since + wait_days` (and the schedule on top of it) is
+        the same fixed calculation regardless of when it's evaluated, so
+        there's nothing to gain from ever storing its answer -- only
+        something to lose (staleness) every time it's read after having
+        been stored."""
+        available_since = dt_util.parse_datetime(cached["available_since"])
+        result = self._staged_result(
+            entity_id, cached["latest_version"], cached["version_size"], available_since, now, self.rules
+        )
+        return {"status": result.status, **_cache_timing_fields(result, now)}
+
+    def status_now(self, cached: dict, now: datetime | None = None) -> dict:
+        """The current status/remaining_seconds/ready_at for one cache
+        entry, computed fresh from this exact instant -- not whatever
+        happens to already be stored in it, which can be anywhere up to
+        _RECHECK_INTERVAL stale. See _derive_status_fields's own docstring
+        for why storing them at all was the actual bug, not just how often
+        they got refreshed.
+
+        `now` defaults to a fresh dt_util.utcnow() per call, but a caller
+        deriving several entities in the same pass (export_entry's own
+        callers, websocket_api.py's _handle_updates and diagnostics.py, each
+        looping over every cached entity for one request) should compute it
+        once and pass it through instead -- these are all meant to describe
+        "the state of things at this one moment", not each entity read at
+        its own, slightly different instant.
+
+        "skipped" is left exactly as stored, not re-derived -- it's a
+        direct reflection of HA's own skipped_version state (see
+        _recompute_all's own matching guard), not a staging-timing verdict
+        _derive_status_fields would know how to reproduce; calling it for a
+        genuinely skipped entity would wrongly overwrite "skipped" with
+        whatever ready/waiting/blocked the wait-days math alone says."""
+        if cached["status"] == "skipped":
+            return {"status": "skipped", **_NO_TIMING_FIELDS}
+        return self._derive_status_fields(cached["entity_id"], cached, now or dt_util.utcnow())
+
+    def export_entry(self, cached: dict, now: datetime | None = None) -> dict:
+        """One cache entry's own facts, with status/remaining_seconds/
+        ready_at overridden by status_now's own fresh derivation -- the one
+        place that merge happens, shared by websocket_api.py's own
+        _handle_updates and diagnostics.py, which both need exactly this
+        same "cached facts + fresh verdict" shape for their own response."""
+        return {**cached, **self.status_now(cached, now)}
 
     async def _async_cache_active(self, entity_id: str, state: State, current: str, latest: str) -> None:
         size = classify_version_size(current, latest)
@@ -867,8 +1063,7 @@ class UpdateManagerCoordinator:
         # available_since is still computed normally above either way, it's
         # a real fact used elsewhere (History); only the derived status/
         # remaining is overridden, see _staging_result's own comment.
-        result = self._staging_result(entity_id, latest, size, available_since, now, rules)
-        result = self._apply_schedule_gate(result, now)
+        result = self._staged_result(entity_id, latest, size, available_since, now, rules)
         # Some update entities (e.g. firmware that must be flashed manually)
         # only ever report that a newer version exists, with no install
         # action at all -- ready/waiting/blocked is still meaningful for
@@ -1047,8 +1242,7 @@ class UpdateManagerCoordinator:
             "latest_version": latest,
             "version_size": classify_version_size(current, latest),
             "status": "skipped",
-            "remaining_seconds": None,
-            "ready_at": None,
+            **_NO_TIMING_FIELDS,
             "installable": bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL),
             # Same correction as _async_cache_active's own -- see
             # corrected_release_url's own docstring. Every cache entry gets

@@ -36,48 +36,69 @@ class PostponementSchedule(NamedTuple):
 EMPTY_SCHEDULE = PostponementSchedule(days=tuple(DayRule(False, None) for _ in range(7)))  # type: ignore[arg-type]
 
 
-def next_allowed_ready(schedule: PostponementSchedule, now: datetime) -> datetime | None:
-    """None whenever nothing needs holding back right now: either the
-    schedule doesn't restrict anything at all (every day disabled), or `now`
-    already falls within today's own allowed window. Otherwise the next
-    datetime that would satisfy it.
+def next_allowed_ready(schedule: PostponementSchedule, wait_deadline: datetime) -> datetime | None:
+    """None only when the schedule doesn't restrict anything at all (every
+    day disabled). Otherwise the schedule-allowed instant this update's own
+    wait period (`wait_deadline` -- when its size's own wait_days period
+    ends, regardless of whether that's already in the past or still ahead)
+    resolves to. May itself be in the past (at or before `wait_deadline`)
+    when that deadline already falls inside an allowed window -- the caller
+    (coordinator.py's own _apply_schedule_gate) compares this against the
+    *actual* current time to decide whether that's already satisfied or
+    still ahead, this function only resolves *which* instant matters, not
+    whether it's arrived yet.
 
-    For a caller (coordinator.py's own _recompute_all) that already knows
-    this entity is otherwise "ready" (its own wait period has fully elapsed)
-    and wants to know whether the schedule should hold it back a little
-    longer, and until when -- not a general "is this entity ready" check on
-    its own.
+    Resolved against `wait_deadline` specifically, not against whatever
+    moment this happens to be evaluated at (`now`) -- two versions that got
+    this wrong were tried and reverted the same day (2026-08-11/12):
+    comparing a day's own set time against `now` directly meant the answer
+    depended on exactly when coordinator.py's periodic recompute (or the
+    precise-wakeup timer) happened to fire, not on anything about the
+    update itself -- a wait period that finishes at 12:28 on a day set for
+    10:00 got treated as "already allowed" purely because whatever moment
+    it happened to be rechecked at was also past 10:00, even though 12:28
+    itself is well past that day's own checkpoint and should wait for the
+    next one; conversely, requiring an *exact* match against `now` meant
+    the ordinary "it's now just past the set time" case almost never
+    actually fired, since a periodic check is essentially never at the
+    exact instant a schedule's own time ticks over. `wait_deadline` doesn't
+    have either problem: it's a fixed fact (available_since + this size's
+    own wait_days, see coordinator.py's own _apply_schedule_gate), the same
+    value every time this runs for this same update, so the result is
+    stable regardless of when it's actually evaluated.
 
-    A day with no time set (None) means "any time that day" -- the whole day
-    counts as allowed, from its own start. A day WITH a time set is a strict,
-    exact weekly check-in instead, not a "that time or any time after" open
-    window: direct user feedback, 2026-08-11, correcting an earlier version
-    of this function that let a wait period finishing at 12:28 on a day set
-    for 10:00 count as already allowed. Once that exact instant has passed --
-    even moments later, even still the same day -- this occurrence no longer
-    applies; the search continues to the next enabled day/occurrence instead,
-    which for a single enabled day means a further 7 days out. Checked over
-    8 days, not 7 -- a single enabled day whose own instant already passed
-    today needs today-plus-7 (next week, same day) to still be found within
-    the loop.
+    A day with no time set means "any time that day" -- if `wait_deadline`
+    itself already falls on such a day, that's immediately satisfied
+    (returns `wait_deadline` itself, not some other instant); a day WITH a
+    time set is a strict checkpoint instead: `wait_deadline` on or before it
+    satisfies it (returns that exact time), but `wait_deadline` any later
+    the same day means this occurrence is missed, keep looking (which, for
+    a single enabled day, means a further 7 days out -- checked over 8 days
+    for exactly that reason, not 7).
 
-    `now` must be timezone-aware (or naive, matching the schedule's own
-    stored times) -- same contract staging.py's own evaluate_staging already
-    has for `now`/`available_since`, not normalized here either."""
+    `wait_deadline` must be timezone-aware (or naive, matching the
+    schedule's own stored times) -- same contract staging.py's own
+    evaluate_staging already has for `now`/`available_since`, not
+    normalized here either."""
+    if not any(day.enabled for day in schedule.days):
+        return None
     for offset in range(8):
-        day = now + timedelta(days=offset)
+        day = wait_deadline + timedelta(days=offset)
         rule = schedule.days[day.weekday()]
         if not rule.enabled:
             continue
         if rule.time is None:
-            allowed_from = datetime.combine(day.date(), time.min, tzinfo=now.tzinfo)
-            if allowed_from <= now:
-                return None
-            return allowed_from
-        allowed_from = datetime.combine(day.date(), rule.time, tzinfo=now.tzinfo)
-        if allowed_from < now:
-            continue  # this occurrence already passed -- doesn't count, keep looking
-        if allowed_from == now:
-            return None
+            start_of_day = datetime.combine(day.date(), time.min, tzinfo=wait_deadline.tzinfo)
+            return wait_deadline if start_of_day <= wait_deadline else start_of_day
+        allowed_from = datetime.combine(day.date(), rule.time, tzinfo=wait_deadline.tzinfo)
+        if allowed_from < wait_deadline:
+            continue  # this occurrence's own checkpoint already passed relative to wait_deadline -- doesn't count, keep looking
         return allowed_from
-    return None  # every day disabled (the default) -- nothing to hold back
+    # Unreachable: the any() check above guarantees at least one enabled
+    # weekday within offsets 0-6 (7 consecutive days cover every weekday
+    # exactly once); if that occurrence's own checkpoint had already passed
+    # (the only way to "continue" past it), offset 7 -- the same weekday, 7
+    # days later, so strictly past wait_deadline -- always matches instead.
+    # A loud failure here beats a silent, wrong None if that reasoning is
+    # ever actually wrong.
+    raise AssertionError("next_allowed_ready: no enabled day matched within 8 days despite any(enabled)")

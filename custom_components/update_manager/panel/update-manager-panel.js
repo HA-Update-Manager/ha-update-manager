@@ -3865,8 +3865,12 @@ class UpdateManagerPanel extends HTMLElement {
           statusAlert.appendChild(cancelQueuedBtn);
           this._dialogActionButtons.push(cancelQueuedBtn);
         }
-        body.appendChild(statusAlert);
+        // readyAlert first, statusAlert second -- direct user feedback,
+        // 2026-08-12: read top to bottom, "ready now" (skip the rest of the
+        // wait) belongs above "will update automatically at X" (the
+        // scheduled outcome if you do nothing), not below it.
         if (readyAlert) body.appendChild(readyAlert);
+        body.appendChild(statusAlert);
       }
 
       // Shown regardless of whatever the status alert above already says
