@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -62,14 +63,14 @@ _NOTIFICATION_STRINGS = {
         "title": "Scheduled update",
         "body": (
             "Update Manager wants to update **{name}** to version {to_version} on {when}. "
-            "If you don't want that, cancel it on the [Update Manager page]({url})."
+            "If you don't want that, cancel it in [Update Manager]({url})."
         ),
     },
     "nl": {
         "title": "Geplande update",
         "body": (
             "Update Manager wil **{name}** bijwerken naar versie {to_version} op {when}. "
-            "Wil je dat niet, annuleer dan op de [Update Manager-pagina]({url})."
+            "Wil je dat niet, annuleer dan in [Update Manager]({url})."
         ),
     },
 }
@@ -88,7 +89,7 @@ _NOTIFICATION_STRINGS_MULTI = {
         "title": "Scheduled updates",
         "body": (
             "Update Manager wants to install {count} updates on {when}:\n\n{items}\n\n"
-            "If you don't want that, cancel any of them on the [Update Manager page]({url})."
+            "If you don't want that, cancel any of them in [Update Manager]({url})."
         ),
         "item": "* **{name}** to version {to_version}",
     },
@@ -96,7 +97,7 @@ _NOTIFICATION_STRINGS_MULTI = {
         "title": "Geplande updates",
         "body": (
             "Update Manager wil {count} updates installeren op {when}:\n\n{items}\n\n"
-            "Wil je dat niet, annuleer ze dan op de [Update Manager-pagina]({url})."
+            "Wil je dat niet, annuleer ze dan in [Update Manager]({url})."
         ),
         "item": "* **{name}** naar versie {to_version}",
     },
@@ -113,8 +114,8 @@ _FAILURE_NOTIFICATION_STRINGS = {
         "title": "Update failed",
         "body": (
             "Update Manager tried to update **{name}** to version {to_version}, but the install "
-            "failed. Check the Home Assistant logs for details, or try installing it manually from "
-            "the [Update Manager page]({url})."
+            "failed. Check the Home Assistant logs for details, or try installing it manually in "
+            "[Update Manager]({url})."
         ),
     },
     "nl": {
@@ -122,7 +123,7 @@ _FAILURE_NOTIFICATION_STRINGS = {
         "body": (
             "Update Manager probeerde **{name}** bij te werken naar versie {to_version}, maar de "
             "installatie is mislukt. Bekijk de Home Assistant-logs voor details, of installeer "
-            "handmatig via de [Update Manager-pagina]({url})."
+            "handmatig in [Update Manager]({url})."
         ),
     },
 }
@@ -138,8 +139,15 @@ def auto_install_rules_from_options(options: dict) -> AutoInstallRules:
 
 
 def _friendly_name(hass: HomeAssistant, entity_id: str) -> str:
+    """A trailing " Update" (HA's own default entity name for the update
+    platform, e.g. "Music Assistant Update") reads redundantly right next
+    to this module's own "to version X" wording -- "Music Assistant Update
+    to version 2.9.13" (direct user feedback, 2026-08-14). Stripped the
+    same case-insensitive way the panel's own friendlyEntityName already
+    does (update-manager-panel.js), so both surfaces agree."""
     state = hass.states.get(entity_id)
-    return state.name if state else entity_id
+    name = state.name if state else entity_id
+    return re.sub(r"\s+update$", "", name, flags=re.IGNORECASE)
 
 
 class InstallManager:

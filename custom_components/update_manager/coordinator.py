@@ -329,7 +329,7 @@ class UpdateManagerCoordinator:
         # future test, see community_verdict.py's own docstring for what
         # this is for, purely read-only, no effect on staging status itself.
         self._community_verdict_manager = community_verdict_manager
-        # entity_id -> {"entity_id", "version_size", "status", "remaining_seconds", "ready_at", "installable"}
+        # entity_id -> {"entity_id", "version_size", "status", "remaining_seconds", "ready_at", "ready_since", "installable"}
         self.cache: dict[str, dict] = {}
         # entity_id -> {"version", "since"}: the authoritative "when did
         # `version` first become this entity's latest_version" record, see
@@ -361,18 +361,25 @@ class UpdateManagerCoordinator:
         self._last_installed_store: Store[dict[str, str]] = Store(
             hass, _LAST_INSTALLED_STORAGE_VERSION, _LAST_INSTALLED_STORAGE_KEY
         )
-        # entity_id -> the exact latest_version the panel's own "Ready now"
-        # button forced ready for, overriding the normal wait-days countdown
-        # for that one jump -- lets someone skip the rest of a postponement
-        # period they've decided isn't needed for this specific update.
+        # entity_id -> {"version", "at"}: the exact latest_version the
+        # panel's own "Ready now" button forced ready for, overriding the
+        # normal wait-days countdown for that one jump -- lets someone skip
+        # the rest of a postponement period they've decided isn't needed
+        # for this specific update. "at" (added alongside "version" -- was
+        # a bare version string before) is the real click instant, the only
+        # source for this specific jump's own "ready since" fact once
+        # forced (see _resolve_ready_since's own docstring); a record
+        # loaded from before this field existed has no "at" of its own
+        # (see async_start's own migration), which _resolve_ready_since
+        # already treats as a genuine, honest gap rather than a guess.
         # Self-clears the moment latest_version
         # moves past the forced version: only ever consulted when it still
         # matches the entity's *current* latest (see _async_cache_active/
         # _recompute_all), so a version bump silently orphans the old
         # record, no explicit cleanup needed here, same reasoning
         # staging_skip.py's own self._skipped already relies on for itself.
-        self._force_ready: dict[str, str] = {}
-        self._force_ready_store: Store[dict[str, str]] = Store(
+        self._force_ready: dict[str, dict[str, str]] = {}
+        self._force_ready_store: Store[dict[str, Any]] = Store(
             hass, _FORCE_READY_STORAGE_VERSION, _FORCE_READY_STORAGE_KEY
         )
         self._listeners: list[Callable[[], None]] = []
@@ -442,7 +449,13 @@ class UpdateManagerCoordinator:
         )
         self._available_since = available_since or {}
         self._last_installed_version = last_installed_version or {}
-        self._force_ready = force_ready or {}
+        # Pre-{"version", "at"} records on disk are a bare version string
+        # (this field's own shape before it gained "at") -- migrated in
+        # place to the current shape, "at" left absent rather than guessed.
+        self._force_ready = {
+            entity_id: ({"version": record} if isinstance(record, str) else record)
+            for entity_id, record in (force_ready or {}).items()
+        }
 
         # Subscribe *before* the initial bulk scan, not after -- found via
         # live testing on a real instance (some pending updates never
@@ -739,7 +752,7 @@ class UpdateManagerCoordinator:
         override doesn't itself produce a real state_changed event the way
         a genuine update.skip call does, so nothing else would otherwise
         tell this coordinator to look again."""
-        self._force_ready[entity_id] = to_version
+        self._force_ready[entity_id] = {"version": to_version, "at": dt_util.utcnow().isoformat()}
         await self._force_ready_store.async_save(self._force_ready)
         await self.async_refresh_one(entity_id)
 
@@ -871,6 +884,10 @@ class UpdateManagerCoordinator:
         await self._available_since_store.async_save(self._available_since)
         return available_since
 
+    def _is_force_ready(self, entity_id: str, latest: str) -> bool:
+        record = self._force_ready.get(entity_id)
+        return record is not None and record.get("version") == latest
+
     def _staging_result(
         self, entity_id: str, latest: str, size: str, available_since: datetime, now: datetime, rules: StagingRules
     ) -> StagingResult:
@@ -880,7 +897,7 @@ class UpdateManagerCoordinator:
         (_recompute_all and _async_cache_active) via that method, found by
         code review, 2026-08-10 (both used to inline the exact same
         three-line branch independently)."""
-        if self._force_ready.get(entity_id) == latest:
+        if self._is_force_ready(entity_id, latest):
             return StagingResult("ready", None)
         return evaluate_staging(size, available_since, now, rules)
 
@@ -903,7 +920,7 @@ class UpdateManagerCoordinator:
             # "skipped" never reaches here at all (see _recompute_all's own
             # guard, and _async_cache_active never produces it either).
             return result
-        if self._force_ready.get(entity_id) == latest:
+        if self._is_force_ready(entity_id, latest):
             # The "Ready now" override (_staging_result's own force_ready
             # branch, a couple lines up) is a deliberate, explicit decision
             # that this one jump doesn't need to wait any further at all --
@@ -978,6 +995,46 @@ class UpdateManagerCoordinator:
             return result
         return StagingResult("waiting", target - now)
 
+    def _resolve_ready_since(
+        self, entity_id: str, latest: str, size: str, available_since: datetime, rules: StagingRules, status: str
+    ) -> str | None:
+        """The real instant this entity/version pair actually stopped
+        "waiting" -- shown on the panel's own "Ready to update" timeline
+        step once done (see the panel's own _buildTimeline docstring).
+
+        A pure function of already-known, unchanging facts (available_since,
+        this size's own configured wait, the postponement schedule, and
+        whether "Ready now" was ever clicked for this exact version),
+        recomputed fresh on every call, deliberately never stored -- same
+        reasoning already settled for ready_at itself (see
+        _derive_status_fields's own docstring): a stored instant can only
+        ever go stale relative to a later settings/schedule change, a
+        freshly-derived one never can. This mirrors _staged_result's own
+        force_ready/wait_deadline/schedule-gate logic exactly (not a
+        separate reimplementation) because it has to reach the exact same
+        verdict that produced `status` in the first place.
+
+        None only when genuinely nothing to show: still "waiting" (hasn't
+        happened yet), this size's own wait is configured to permanently
+        block (no wait period to resolve at all, see evaluate_staging's own
+        "blocked" branch), or (the one real gap) a "Ready now" override
+        recorded before self._force_ready gained its own "at" timestamp,
+        whose actual click time was simply never persisted."""
+        if status == "waiting":
+            return None
+        if self._is_force_ready(entity_id, latest):
+            record = self._force_ready.get(entity_id) or {}
+            return record.get("at")
+        wait = wait_for_size(rules, size)
+        if wait is None:
+            return None
+        wait_deadline = available_since + wait
+        if self._schedule_active:
+            target = next_allowed_ready(self.schedule, dt_util.as_local(wait_deadline))
+            if target is not None:
+                return target.isoformat()
+        return wait_deadline.isoformat()
+
     def _derive_status_fields(self, entity_id: str, cached: dict, now: datetime) -> dict:
         """status/remaining_seconds/ready_at, derived fresh from `cached`'s
         own already-known facts (latest_version/version_size/available_since
@@ -1010,7 +1067,10 @@ class UpdateManagerCoordinator:
         result = self._staged_result(
             entity_id, cached["latest_version"], cached["version_size"], available_since, now, self.rules
         )
-        return {"status": result.status, **_cache_timing_fields(result, now)}
+        ready_since = self._resolve_ready_since(
+            entity_id, cached["latest_version"], cached["version_size"], available_since, self.rules, result.status
+        )
+        return {"status": result.status, **_cache_timing_fields(result, now), "ready_since": ready_since}
 
     def status_now(self, cached: dict, now: datetime | None = None) -> dict:
         """The current status/remaining_seconds/ready_at for one cache
@@ -1064,6 +1124,7 @@ class UpdateManagerCoordinator:
         # a real fact used elsewhere (History); only the derived status/
         # remaining is overridden, see _staging_result's own comment.
         result = self._staged_result(entity_id, latest, size, available_since, now, rules)
+        ready_since = self._resolve_ready_since(entity_id, latest, size, available_since, rules, result.status)
         # Some update entities (e.g. firmware that must be flashed manually)
         # only ever report that a newer version exists, with no install
         # action at all -- ready/waiting/blocked is still meaningful for
@@ -1103,6 +1164,7 @@ class UpdateManagerCoordinator:
             "version_size": size,
             "status": result.status,
             **_cache_timing_fields(result, now),
+            "ready_since": ready_since,
             "installable": installable,
             # Corrected here (not left to the frontend to read state.attributes
             # itself) specifically for Core -- see corrected_release_url's own
@@ -1236,6 +1298,13 @@ class UpdateManagerCoordinator:
         # itself falls back to.
         previous = self.cache.get(entity_id)
         available_since = previous["available_since"] if previous else dt_util.utcnow().isoformat()
+        # Same carry-over as available_since just above (and the same
+        # already-accepted imprecision: neither checks previous's own
+        # latest_version still matches) -- a skipped entity never runs
+        # through _resolve_ready_since (no staging computation here at
+        # all), so whatever it last resolved to is the closest real fact
+        # still available, None if it never had one.
+        ready_since = previous.get("ready_since") if previous else None
         self.cache[entity_id] = {
             "entity_id": entity_id,
             "installed_version": current,
@@ -1243,6 +1312,7 @@ class UpdateManagerCoordinator:
             "version_size": classify_version_size(current, latest),
             "status": "skipped",
             **_NO_TIMING_FIELDS,
+            "ready_since": ready_since,
             "installable": bool(state.attributes.get("supported_features", 0) & UpdateEntityFeature.INSTALL),
             # Same correction as _async_cache_active's own -- see
             # corrected_release_url's own docstring. Every cache entry gets

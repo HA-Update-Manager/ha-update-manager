@@ -173,19 +173,20 @@ export const TRANSLATIONS = {
     announce_hours_label: "Announcement notice",
     announce_hours_unit: "hours",
     announce_hours_helper: "How long you still have to cancel a scheduled automatic install.",
-    // "Jump" (not "Impact", renamed 2026-08-07, direct user feedback while
-    // reviewing the big->large rename): this fact row shows the size of the
-    // version *jump* itself (small/medium/large, see semver.py), not a
-    // judgment about how impactful/consequential that jump turned out to
-    // be -- same reasoning as dropping "big" for the neutral "large".
-    col_jump: "Jump",
-    // Noun, not "Announced" -- deliberately different label for the
-    // projected-but-not-yet-real case (see projectedAnnouncementTime's own
-    // comment), direct user feedback, 2026-08-01: "Announced" asserts it
-    // already happened, which isn't true yet for a still-"waiting" update.
-    dialog_announcement_label: "Announcement",
-    dialog_current_version: "Installed version",
-    dialog_new_version: "Latest version",
+    // Timeline steps (_buildTimeline) -- Ready to update/Installing reuse
+    // group_ready/installing_section_title below verbatim (must match the
+    // Updates tab's own card names exactly), these two are the only step
+    // labels with no existing equivalent elsewhere.
+    dialog_timeline_update_available: "Update available",
+    dialog_timeline_auto_install: "Auto-install",
+    // Pointer to the Community section further down this same dialog, not
+    // a restatement of it -- shown on the Auto-install step whenever
+    // heldBackByCommunity is true.
+    dialog_timeline_held_back_pointer: "Held back by the community verdict below.",
+    // Shown on the Ready to update step itself, whenever there's a real
+    // community fact to add -- see _buildTimeline's own addCommunityDetail
+    // docstring for why this isn't gated the same way the pointer above is.
+    dialog_timeline_community_healthy: "Trusted vote: no issues reported.",
     dialog_community_verdict_disclaimer:
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
     // Also the "nothing at all" row of the Community section's own fact
@@ -212,6 +213,12 @@ export const TRANSLATIONS = {
       "Already know this update will cause problems, e.g. from the release notes? Report it before installing, so others are warned before they update too.",
     community_vote_healthy: "Mark as healthy",
     community_vote_problematic: "Report as problematic",
+    // Shown instead of community_vote_problematic once you've already voted
+    // problematic on this jump (GitHub issue #7: the button stays visible on
+    // purpose, so a problematic vote's reason/notes/link stay editable, but
+    // showing the exact same label/appearance as before voting gave no sign
+    // the vote had registered, reading as if it had silently failed).
+    community_vote_problematic_update: "Update your report",
     community_vote_submit: "Submit",
     // `updated` (see websocket_api.py's own is_vote_update): a repeat vote
     // on the same version now replaces your earlier one instead of being
@@ -255,8 +262,6 @@ export const TRANSLATIONS = {
     // (2026-07-23) -- the generic fallback, not "unknown".
     dialog_history_auto: "Automatically updated",
     dialog_history_changelog: "View changelog",
-    dialog_history_available_since: "Available since",
-    dialog_history_announced: "Announced",
     dialog_history_installed_at: "Installed",
     dialog_history_method_label: "Install method",
     dialog_history_method_manual: "Manual",
@@ -269,11 +274,6 @@ export const TRANSLATIONS = {
     dialog_upstream_release_notes: (repo) => `${repo}'s own release notes:`,
     dialog_community_heading: "Community",
     list_and: "and",
-    dialog_auto_install_held_back: (names) => `Auto-install held back: ${names} reported this jump as problematic.`,
-    dialog_auto_install_held_back_community: (count) =>
-      count === 1
-        ? "Auto-install held back: 1 person reported this jump as problematic."
-        : `Auto-install held back: ${count} people reported this jump as problematic.`,
     dialog_more_info: "More info",
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
     // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
@@ -467,6 +467,7 @@ export const TRANSLATIONS = {
     // which read as genuinely ambiguous (start or end of that day?).
     when_today: (time) => (time ? `Today ${time}` : "Today"),
     when_tomorrow: (time) => (time ? `Tomorrow ${time}` : "Tomorrow"),
+    when_yesterday: (time) => (time ? `Yesterday ${time}` : "Yesterday"),
     when_weekday: (weekday, time) => (time ? `${weekday} ${time}` : weekday),
     when_date: (date, time) => (time ? `${date}, ${time}` : date),
   },
@@ -532,10 +533,10 @@ export const TRANSLATIONS = {
     announce_hours_label: "Aankondigingstermijn",
     announce_hours_unit: "uur",
     announce_hours_helper: "Hoelang je nog hebt om een geplande automatische installatie te annuleren.",
-    col_jump: "Sprong",
-    dialog_announcement_label: "Aankondiging",
-    dialog_current_version: "Geïnstalleerde versie",
-    dialog_new_version: "Nieuwste versie",
+    dialog_timeline_update_available: "Update beschikbaar",
+    dialog_timeline_auto_install: "Auto-install",
+    dialog_timeline_held_back_pointer: "Tegengehouden door het communityoordeel hieronder.",
+    dialog_timeline_community_healthy: "Vertrouwde stem: geen problemen gemeld.",
     dialog_community_verdict_disclaimer:
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
     community_not_yet_rated: "Niemand heeft nog iets over deze sprong gemeld.",
@@ -553,6 +554,7 @@ export const TRANSLATIONS = {
       "Weet je al dat deze update problemen gaat geven, bijvoorbeeld via de release notes? Meld dat vast voordat je 'm installeert, zodat anderen gewaarschuwd zijn voordat ze zelf updaten.",
     community_vote_healthy: "Markeer als probleemloos",
     community_vote_problematic: "Meld als problematisch",
+    community_vote_problematic_update: "Werk je melding bij",
     community_vote_submit: "Versturen",
     community_vote_confirmed_healthy: (updated, ownRepoHealthyVote) => {
       if (ownRepoHealthyVote) {
@@ -575,8 +577,6 @@ export const TRANSLATIONS = {
     dialog_history_heading: "Geschiedenis",
     dialog_history_auto: "Automatisch geüpdatet",
     dialog_history_changelog: "Changelog bekijken",
-    dialog_history_available_since: "Beschikbaar sinds",
-    dialog_history_announced: "Aangekondigd",
     dialog_history_installed_at: "Geïnstalleerd",
     dialog_history_method_label: "Installatiemethode",
     dialog_history_method_manual: "Handmatig",
@@ -589,15 +589,6 @@ export const TRANSLATIONS = {
     dialog_upstream_release_notes: (repo) => `Eigen release notes van ${repo}:`,
     dialog_community_heading: "Community",
     list_and: "en",
-    // Passive voice ("door X beoordeeld als"), not "X beoordeelde" -- avoids
-    // needing separate singular/plural verb forms for a variable-length,
-    // possibly multi-name subject.
-    dialog_auto_install_held_back: (names) =>
-      `Auto-installatie tegengehouden: deze sprong is door ${names} als problematisch beoordeeld.`,
-    dialog_auto_install_held_back_community: (count) =>
-      count === 1
-        ? "Auto-installatie tegengehouden: 1 persoon heeft deze sprong als problematisch gerapporteerd."
-        : `Auto-installatie tegengehouden: ${count} mensen hebben deze sprong als problematisch gerapporteerd.`,
     dialog_more_info: "Meer info",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
     community_section_title: "Help anderen",
@@ -685,6 +676,7 @@ export const TRANSLATIONS = {
     relative_soon: "zo dadelijk",
     when_today: (time) => (time ? `vandaag ${time}` : "vandaag"),
     when_tomorrow: (time) => (time ? `morgen ${time}` : "morgen"),
+    when_yesterday: (time) => (time ? `gisteren ${time}` : "gisteren"),
     when_weekday: (weekday, time) => (time ? `${weekday} ${time}` : weekday),
     when_date: (date, time) => (time ? `${date}, ${time}` : date),
   },

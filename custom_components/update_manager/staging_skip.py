@@ -36,6 +36,9 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_staging_skip"
 
+_USER_CLEARED_STORAGE_VERSION = 1
+_USER_CLEARED_STORAGE_KEY = f"{DOMAIN}_staging_skip_user_cleared"
+
 
 class StagingSkipManager:
     def __init__(self, hass: HomeAssistant, coordinator: UpdateManagerCoordinator, rollout_manager: RolloutManager) -> None:
@@ -50,6 +53,29 @@ class StagingSkipManager:
         # entity_id -> the to_version *we* skipped it for -- never anyone
         # else's skip, see this module's own docstring.
         self._skipped: dict[str, str] = {}
+        # entity_id -> the exact latest_version a genuine external clear
+        # (confirmed via _pending_clears below, not this module's own
+        # unskip) was observed for -- this module must never auto-skip
+        # that exact entity/version pair again. Direct user feedback,
+        # 2026-08-13: "als ik via onze dialog de HA dialog open en daar
+        # speel met skipped, dan pakken we het niet op. Alsof we onze
+        # postponed skip status altijd maar blijven behouden" -- without
+        # this, _async_evaluate_one's own "waiting" branch has no way to
+        # tell "never skipped yet" apart from "the user just deliberately
+        # un-skipped this", so it re-applied hide_postponed on the very
+        # next pass regardless, silently undoing a real, deliberate user
+        # action within moments. Persisted (unlike self._pending_clears,
+        # deliberately transient) for the same restart-survival reason
+        # self._skipped/coordinator.py's own self._available_since already
+        # are -- a restart must not quietly re-skip something the user
+        # already opted out of. Self-clears the moment latest_version
+        # moves past the cleared version, same reasoning coordinator.py's
+        # own self._force_ready already relies on for itself: a stale
+        # record for an old version simply never matches again.
+        self._user_cleared_store: Store[dict[str, str]] = Store(
+            hass, _USER_CLEARED_STORAGE_VERSION, _USER_CLEARED_STORAGE_KEY
+        )
+        self._user_cleared: dict[str, str] = {}
         # entity_id -> the version _async_evaluate_one suspects (but hasn't
         # yet confirmed) got un-skipped by something other than this module
         # -- see that method's own comment on why a single observed
@@ -93,6 +119,7 @@ class StagingSkipManager:
 
     async def async_load(self) -> None:
         self._skipped = await self._store.async_load() or {}
+        self._user_cleared = await self._user_cleared_store.async_load() or {}
         # id(self)/id(self._skipped): a second StagingSkipManager instance
         # (e.g. a duplicate/leftover config entry) racing this one against
         # the same real entities and the same on-disk store would otherwise
@@ -376,12 +403,30 @@ class StagingSkipManager:
                 if self._pending_clears.get(entity_id) == latest_version:
                     del self._pending_clears[entity_id]
                     del self._skipped[entity_id]
+                    # A *confirmed* external clear (not a transient restore-
+                    # lag false positive, already ruled out by the two-pass
+                    # check above) -- remember it so the check further down
+                    # doesn't just re-skip this same version right back on
+                    # the very next pass, see self._user_cleared's own
+                    # __init__ comment. Saved immediately, same reasoning
+                    # _async_skip's own comment already gives for its own
+                    # per-call save: a restart landing before the batched
+                    # end-of-pass save would otherwise lose this and re-skip
+                    # the user's own explicit choice right after reconnecting.
+                    self._user_cleared[entity_id] = latest_version
+                    await self._user_cleared_store.async_save(self._user_cleared)
                     return True
                 self._pending_clears[entity_id] = latest_version
                 return False
             if skipped_version == latest_version:
                 # Already skipped, but not by us (no matching record) --
                 # someone else's skip, not ours to manage either way.
+                return False
+            if self._user_cleared.get(entity_id) == latest_version:
+                # The user already explicitly cleared this module's own
+                # auto-skip for this exact version once (just above, on an
+                # earlier pass) -- respected here instead of immediately
+                # reapplying hide_postponed and undoing that choice again.
                 return False
             if state is not None and state.attributes.get("auto_update"):
                 # HA's own update.skip service wrapper (homeassistant/
