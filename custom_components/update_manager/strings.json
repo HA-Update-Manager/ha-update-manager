@@ -27,6 +27,9 @@
             },
             "not_installable": {
                 "name": "Not installable"
+            },
+            "needs_manual_action": {
+                "name": "Needs manual action"
             }
         },
         "switch": {

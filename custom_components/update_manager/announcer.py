@@ -122,6 +122,47 @@ def effective_auto_install_state(
     return is_ready, size_enabled, ("rules" if size_enabled else None)
 
 
+def needs_manual_action(
+    *,
+    status: str,
+    version_size: Size,
+    auto_install_excluded: bool,
+    trusted_vote: str | None,
+    community_problematic_count: int,
+    rules: AutoInstallRules,
+    master_enabled: bool,
+) -> bool:
+    """True for a "ready" update that won't be auto-installed -- the exact
+    set install_manager.py's own periodic tick otherwise leaves for a
+    manual Install click. sensor.py's own UpdateManagerNeedsManualAction
+    sensor is this function's only caller, direct user feedback, 2026-08-15:
+    "Ready to update" already exists but mixes in everything auto-install is
+    about to handle on its own, undercutting its value as "how much do I
+    actually need to do myself right now."
+
+    Reuses effective_auto_install_state's own eligibility logic above, not
+    decide_action further down (that one additionally sequences announce/
+    execute timing, irrelevant to this plain yes/no question) -- plus the
+    master pause switch, decide_action's own separate gate: nothing
+    auto-installs at all while paused, regardless of what the rules say, so
+    every "ready" update counts as needing manual action then too.
+    installable isn't a parameter here, same as effective_auto_install_state
+    itself -- callers are expected to already be iterating an
+    installable-only set (e.g. update_status.py's own "ready" bucket, which
+    already excludes not-installable updates before this ever runs)."""
+    if status != "ready":
+        return False
+    size_enabled = size_auto_install_enabled(version_size, rules)
+    _is_ready, auto_install_enabled, _reason = effective_auto_install_state(
+        status=status,
+        size_enabled=size_enabled,
+        auto_install_excluded=auto_install_excluded,
+        trusted_vote=trusted_vote,
+        community_problematic_count=community_problematic_count,
+    )
+    return not (auto_install_enabled and master_enabled)
+
+
 class PendingAnnouncement(NamedTuple):
     entity_id: str
     to_version: str

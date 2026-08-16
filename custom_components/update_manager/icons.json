@@ -15,6 +15,9 @@
             },
             "not_installable": {
                 "default": "mdi:block-helper"
+            },
+            "needs_manual_action": {
+                "default": "mdi:hand-back-right-outline"
             }
         },
         "switch": {

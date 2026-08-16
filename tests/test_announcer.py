@@ -151,6 +151,117 @@ class TestEffectiveAutoInstallState:
         ) == (False, False, None)
 
 
+class TestNeedsManualAction:
+    RULES_ALL_ENABLED = announcer.AutoInstallRules(
+        small_auto_install=True, medium_auto_install=True, large_auto_install=True, announce_wait=WAIT
+    )
+    RULES_ALL_DISABLED = announcer.AutoInstallRules(
+        small_auto_install=False, medium_auto_install=False, large_auto_install=False, announce_wait=WAIT
+    )
+
+    def test_not_ready_is_never_manual_action_regardless_of_rules(self):
+        assert (
+            announcer.needs_manual_action(
+                status="waiting",
+                version_size="small",
+                auto_install_excluded=False,
+                trusted_vote=None,
+                community_problematic_count=0,
+                rules=self.RULES_ALL_DISABLED,
+                master_enabled=True,
+            )
+            is False
+        )
+
+    def test_ready_with_size_auto_install_enabled_is_not_manual(self):
+        # Going to be handled on its own -- not yours to act on.
+        assert (
+            announcer.needs_manual_action(
+                status="ready",
+                version_size="small",
+                auto_install_excluded=False,
+                trusted_vote=None,
+                community_problematic_count=0,
+                rules=self.RULES_ALL_ENABLED,
+                master_enabled=True,
+            )
+            is False
+        )
+
+    def test_ready_with_size_auto_install_disabled_is_manual(self):
+        assert (
+            announcer.needs_manual_action(
+                status="ready",
+                version_size="small",
+                auto_install_excluded=False,
+                trusted_vote=None,
+                community_problematic_count=0,
+                rules=self.RULES_ALL_DISABLED,
+                master_enabled=True,
+            )
+            is True
+        )
+
+    def test_paused_master_switch_makes_everything_ready_manual(self):
+        # Nothing auto-installs at all while paused, regardless of the
+        # per-size rules otherwise saying yes -- same master_enabled gate
+        # decide_action itself uses.
+        assert (
+            announcer.needs_manual_action(
+                status="ready",
+                version_size="small",
+                auto_install_excluded=False,
+                trusted_vote=None,
+                community_problematic_count=0,
+                rules=self.RULES_ALL_ENABLED,
+                master_enabled=False,
+            )
+            is True
+        )
+
+    def test_auto_install_excluded_is_always_manual_even_with_rules_enabled(self):
+        assert (
+            announcer.needs_manual_action(
+                status="ready",
+                version_size="small",
+                auto_install_excluded=True,
+                trusted_vote=None,
+                community_problematic_count=0,
+                rules=self.RULES_ALL_ENABLED,
+                master_enabled=True,
+            )
+            is True
+        )
+
+    def test_trusted_healthy_vote_makes_it_not_manual_even_with_rules_disabled(self):
+        assert (
+            announcer.needs_manual_action(
+                status="ready",
+                version_size="small",
+                auto_install_excluded=False,
+                trusted_vote="healthy",
+                community_problematic_count=0,
+                rules=self.RULES_ALL_DISABLED,
+                master_enabled=True,
+            )
+            is False
+        )
+
+    def test_community_problematic_count_makes_it_manual_even_with_rules_enabled(self):
+        assert (
+            announcer.needs_manual_action(
+                status="ready",
+                version_size="small",
+                auto_install_excluded=False,
+                trusted_vote=None,
+                community_problematic_count=1,
+                rules=self.RULES_ALL_ENABLED,
+                master_enabled=True,
+            )
+            is True
+        )
+
+
 class TestDecideAction:
     def test_not_ready_with_no_existing_announcement_does_nothing(self):
         action = announcer.decide_action(

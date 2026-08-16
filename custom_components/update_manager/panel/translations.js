@@ -290,6 +290,9 @@ export const TRANSLATIONS = {
     community_link: "Link GitHub account",
     community_unlink: "Unlink",
     community_linked_as: (username) => `Linked as @${username}`,
+    community_relink: "Re-link",
+    community_link_expired_as: (username) =>
+      `Your GitHub link (@${username}) is no longer valid. Re-link your account to keep voting.`,
     community_link_instructions: "Go to the page below and enter this code:",
     community_link_waiting: "Waiting for you to approve on GitHub...",
     community_link_timed_out: "The linking code expired before it was approved, try again.",
@@ -408,6 +411,24 @@ export const TRANSLATIONS = {
       `${count} ${count === 1 ? "other person" : "others"} reported this jump as problematic.`,
     community_verdict_others_mixed: (healthyCount, problematicCount) =>
       `${healthyCount} ${healthyCount === 1 ? "other person" : "others"} reported this jump as healthy, ${problematicCount} as problematic.`,
+    // Merged "you + others" sentence, used only when the others are all one
+    // direction (not mixed) -- direct user feedback, 2026-08-15: two
+    // separate rows read as less natural than one sentence once there's
+    // just one number to combine with. Still never silently absorbs a
+    // dissenting vote into the majority's own count (the exact bug the
+    // 2026-07-27 split below was for): agreeing gets "you_and_others_*",
+    // disagreeing gets its own "you_vs_others_*" pair that states both
+    // verdicts explicitly. Mixed others (both healthy and problematic
+    // present) still falls back to the older two-row layout further down --
+    // a 3-way merged sentence read worse than that.
+    community_verdict_you_and_others_healthy: (count) =>
+      `You and ${count} ${count === 1 ? "other" : "others"} reported this jump as healthy.`,
+    community_verdict_you_and_others_problematic: (count) =>
+      `You and ${count} ${count === 1 ? "other" : "others"} reported this jump as problematic.`,
+    community_verdict_you_vs_others_healthy_problematic: (count) =>
+      `You reported this jump as healthy; ${count} ${count === 1 ? "other" : "others"} reported it as problematic.`,
+    community_verdict_you_vs_others_problematic_healthy: (count) =>
+      `You reported this jump as problematic; ${count} ${count === 1 ? "other" : "others"} reported it as healthy.`,
     // Your own vote, shown as its own fact regardless of whether it agrees
     // with everyone else (direct user feedback, 2026-07-22: "I can't see
     // that I voted myself"; redesigned 2026-07-27 to always show, even when
@@ -415,6 +436,9 @@ export const TRANSLATIONS = {
     // the sentence entirely whenever it didn't match the leading direction,
     // see my_votes.py). The wider picture, if any, is the separate
     // aggregate row above/below this, not merged into this same sentence.
+    // (Still used as-is when there are no others at all, or the others are
+    // mixed -- see the merged strings above for the common single-direction
+    // case.)
     community_verdict_you_healthy: "You reported this jump as healthy.",
     community_verdict_you_problematic: "You reported this jump as problematic.",
     // Count+pluralized, matching ha-config-section-updates.ts's own real
@@ -597,6 +621,9 @@ export const TRANSLATIONS = {
     community_link: "GitHub-account koppelen",
     community_unlink: "Ontkoppelen",
     community_linked_as: (username) => `Gekoppeld als @${username}`,
+    community_relink: "Opnieuw koppelen",
+    community_link_expired_as: (username) =>
+      `Je GitHub-koppeling (@${username}) is niet meer geldig. Koppel je account opnieuw om te kunnen blijven stemmen.`,
     community_link_instructions: "Ga naar onderstaande pagina en voer deze code in:",
     community_link_waiting: "Wachten tot je akkoord geeft op GitHub...",
     community_link_timed_out: "De koppelcode is verlopen voordat 'm werd goedgekeurd, probeer het opnieuw.",
@@ -646,6 +673,14 @@ export const TRANSLATIONS = {
       `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als problematisch.`,
     community_verdict_others_mixed: (healthyCount, problematicCount) =>
       `${healthyCount} ${healthyCount === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos, ${problematicCount} als problematisch.`,
+    community_verdict_you_and_others_healthy: (count) =>
+      `Jij en ${count} ${count === 1 ? "ander meldden" : "anderen meldden"} deze sprong als probleemloos.`,
+    community_verdict_you_and_others_problematic: (count) =>
+      `Jij en ${count} ${count === 1 ? "ander meldden" : "anderen meldden"} deze sprong als problematisch.`,
+    community_verdict_you_vs_others_healthy_problematic: (count) =>
+      `Jij meldde deze sprong als probleemloos; ${count} ${count === 1 ? "ander meldde" : "anderen meldden"} 'm als problematisch.`,
+    community_verdict_you_vs_others_problematic_healthy: (count) =>
+      `Jij meldde deze sprong als problematisch; ${count} ${count === 1 ? "ander meldde" : "anderen meldden"} 'm als probleemloos.`,
     community_verdict_you_healthy: "Jij meldde deze sprong als probleemloos.",
     community_verdict_you_problematic: "Jij meldde deze sprong als problematisch.",
     group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,

@@ -56,6 +56,12 @@ def categorize_updates(updates: list[dict[str, Any]]) -> dict[str, list[dict[str
 _CALM_ICONS = {
     "blocked": "mdi:shield-check-outline",
     "not_installable": "mdi:check-circle-outline",
+    # sensor.py's own UpdateManagerNeedsManualActionSensor, not one of the 5
+    # STATUSES above (a different question entirely, see that class's own
+    # comment) -- shares this function purely because "a genuinely dynamic,
+    # count-based icon" is exactly what it also needs, nothing status-bucket
+    # specific about icon_for_status itself.
+    "needs_manual_action": "mdi:check-circle-outline",
 }
 
 

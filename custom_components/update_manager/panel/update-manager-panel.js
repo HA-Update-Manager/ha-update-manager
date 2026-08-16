@@ -5579,6 +5579,42 @@ class UpdateManagerPanel extends HTMLElement {
       actionsContainer.appendChild(unlinkBtn);
     };
 
+    // Distinct from renderLinked (found live, 2026-08-15: a refresh
+    // failure -- see github_auth.py's own link_status docstring --
+    // used to still report plain "linked", so Settings kept showing
+    // "Linked as X" with only Unlink, no way to actually fix it short of
+    // unlinking first and then starting a whole new link from scratch).
+    // Re-link reuses the exact same device-flow start/poll as a fresh
+    // link (renderPending below), just from an already-linked-but-broken
+    // starting point instead of never-linked.
+    const renderExpired = (username) => {
+      statusContainer.innerHTML = "";
+      actionsContainer.innerHTML = "";
+      const expiredText = document.createElement("p");
+      expiredText.textContent = tr.community_link_expired_as(username);
+      statusContainer.appendChild(expiredText);
+      const relinkBtn = document.createElement("ha-progress-button");
+      relinkBtn.appearance = "filled";
+      relinkBtn.label = tr.community_relink;
+      relinkBtn.addEventListener("click", () =>
+        _runProgressAction(relinkBtn, async () => {
+          const result = await this._hass.callWS({ type: "update_manager/github_link_start" });
+          renderPending(result);
+        })
+      );
+      actionsContainer.appendChild(relinkBtn);
+      const unlinkBtn = document.createElement("ha-progress-button");
+      unlinkBtn.appearance = "plain";
+      unlinkBtn.label = tr.community_unlink;
+      unlinkBtn.addEventListener("click", () =>
+        _runProgressAction(unlinkBtn, async () => {
+          await this._hass.callWS({ type: "update_manager/github_unlink" });
+          renderNotLinked();
+        })
+      );
+      actionsContainer.appendChild(unlinkBtn);
+    };
+
     const renderPending = (result) => {
       statusContainer.innerHTML = "";
       actionsContainer.innerHTML = "";
@@ -5622,6 +5658,7 @@ class UpdateManagerPanel extends HTMLElement {
 
     this._hass.callWS({ type: "update_manager/github_link_status" }).then((status) => {
       if (status.status === "linked") renderLinked(status.username);
+      else if (status.status === "expired") renderExpired(status.username);
       else renderNotLinked();
     });
 
@@ -5819,13 +5856,22 @@ class UpdateManagerPanel extends HTMLElement {
       if (isDialogStale() || !result.identifiable) return;
       section.hidden = false;
 
-      // Row 1: your own vote, shown as its own fact whenever you have one --
-      // regardless of whether it agrees with the wider aggregate below
-      // (redesigned 2026-07-27, direct user feedback: a dissenting vote used
-      // to be silently dropped from the sentence entirely). No vote of your
-      // own, but the aggregate has votes: this row is hidden entirely, the
-      // aggregate row below covers it on its own ("N people reported...").
-      // No votes at all, anywhere: this row states that plainly.
+      // Row 1 ("you") + Row 2 ("everyone else"), rendered together by
+      // renderVerdictRows below since 2026-08-15 (was two independent
+      // functions before) -- merged into one sentence when there's a vote
+      // of yours to combine with (this session or before) and the others
+      // are all one direction, kept as two separate rows otherwise (no
+      // vote of yours yet, no others at all, or the others are themselves
+      // mixed). See the translation strings' own comment
+      // (community_verdict_you_and_others_healthy) for why a dissenting
+      // vote still never gets silently folded into the majority's count.
+      // `counts` stays frozen at this one fetch's numbers throughout (the
+      // external aggregate hasn't processed a vote cast in this session
+      // either way) -- same deliberately optimistic principle already used
+      // for the vote confirmation text itself. Rebuilt (not just built once
+      // here) after you cast a vote -- direct user feedback, 2026-07-27,
+      // found by code review: casting a vote used to only update Row 1,
+      // leaving Row 2 stuck on its pre-vote perspective/count.
       const counts = result.verdict || { healthy_count: 0, problematic_count: 0 };
       onLiveVerdict?.({
         healthy_count: counts.healthy_count,
@@ -5834,52 +5880,92 @@ class UpdateManagerPanel extends HTMLElement {
         trusted_voters_matched: result.trusted_voters_matched,
       });
       const myVerdict = result.my_verdict;
-      if (myVerdict) {
-        applyMyVerdictRow(verdictRow, verdictText, tr, myVerdict);
-      } else if (counts.healthy_count === 0 && counts.problematic_count === 0) {
-        verdictText.textContent = tr.community_not_yet_rated;
-      } else {
-        verdictRow.hidden = true;
-      }
-
-      // Row 2: everyone else's votes, if any beyond your own -- both counts
-      // shown when genuinely mixed (see aggregateVerdictText), "others"
-      // perspective when Row 1 above already shows your own vote (these
-      // counts then exclude it), "people" perspective otherwise. Rebuilt
-      // (not just built once here), via updateAggregateRow below, after you
-      // cast a vote -- direct user feedback, 2026-07-27, found by code
-      // review: casting a vote used to only update Row 1, leaving this row
-      // stuck on its pre-vote perspective/count (still "people", still
-      // counting your own just-cast vote in its total) instead of switching
-      // to "others" and excluding it. `counts` itself stays frozen at this
-      // one fetch's numbers throughout (the external aggregate hasn't
-      // processed your vote yet either way) -- same deliberately optimistic
-      // principle already used for the vote confirmation text itself.
       let aggregateRow = null;
-      const updateAggregateRow = (currentMyVerdict) => {
-        const othersHealthy = Math.max(0, counts.healthy_count - (currentMyVerdict === "healthy" ? 1 : 0));
-        const othersProblematic = Math.max(0, counts.problematic_count - (currentMyVerdict === "problematic" ? 1 : 0));
-        const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, currentMyVerdict ? "others" : "people");
-        if (!aggregateText) {
-          if (aggregateRow) aggregateRow.remove();
+      // othersHealthy/othersProblematic (computed inside renderVerdictRows)
+      // always subtract against the *original* myVerdict (the one `counts`
+      // was actually fetched alongside), never currentMyVerdict -- found
+      // live, 2026-08-15: a fresh vote cast in this session (myVerdict
+      // null -> currentMyVerdict "healthy") isn't part of the frozen
+      // `counts` yet at all, so subtracting 1 for it wrongly zeroed out a
+      // pre-existing other person's healthy vote instead of leaving it
+      // alone. currentMyVerdict is still exactly right for deciding
+      // perspective/merging itself (that should flip the moment you've
+      // voted, this session or not).
+      const renderVerdictRows = (currentMyVerdict) => {
+        if (aggregateRow) {
+          aggregateRow.remove();
           aggregateRow = null;
+        }
+        const othersHealthy = Math.max(0, counts.healthy_count - (myVerdict === "healthy" ? 1 : 0));
+        const othersProblematic = Math.max(0, counts.problematic_count - (myVerdict === "problematic" ? 1 : 0));
+
+        if (!currentMyVerdict) {
+          // Haven't voted at all yet: unchanged two-row behavior, "people"
+          // perspective (no "you" row to already exclude yourself from it).
+          if (othersHealthy === 0 && othersProblematic === 0) {
+            verdictText.textContent = tr.community_not_yet_rated;
+            verdictRow.hidden = false;
+            const existingIcon = verdictRow.querySelector("ha-svg-icon");
+            if (existingIcon) existingIcon.remove();
+          } else {
+            verdictRow.hidden = true;
+          }
+          const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, "people");
+          if (aggregateText) {
+            aggregateRow = buildVerdictLineRow(verdictIcon(othersProblematic > 0), aggregateText, tr.dialog_community_verdict_disclaimer);
+            // Right after Row 1, not just appended at infoGroup's current
+            // end -- infoGroup is still empty of everything else at this
+            // point in the build (trusted-vote/other-jumps rows are only
+            // added below), but inserting relative to verdictRow rather
+            // than relying on build order keeps this correct even if that
+            // ordering ever changes.
+            infoGroup.insertBefore(aggregateRow, verdictRow.nextSibling);
+          }
           return;
         }
-        if (aggregateRow) {
-          aggregateRow.querySelector("ha-svg-icon").path = verdictIcon(othersProblematic > 0);
-          aggregateRow.querySelector("span").textContent = aggregateText;
-        } else {
-          aggregateRow = buildVerdictLineRow(verdictIcon(othersProblematic > 0), aggregateText, tr.dialog_community_verdict_disclaimer);
-          // Right after Row 1, not just appended at infoGroup's current end
-          // -- infoGroup is still empty of everything else at this point in
-          // the build (trusted-vote/other-jumps rows are only added below),
-          // but inserting relative to verdictRow rather than relying on
-          // build order keeps this correct even if that ordering ever
-          // changes.
-          infoGroup.insertBefore(aggregateRow, verdictRow.nextSibling);
+
+        // Voted, no others at all: just your own line, nothing to merge.
+        if (othersHealthy === 0 && othersProblematic === 0) {
+          applyMyVerdictRow(verdictRow, verdictText, tr, currentMyVerdict);
+          return;
         }
+
+        // Voted, others themselves mixed: a 3-way merged sentence reads
+        // worse than the existing two-row layout, so this one case still
+        // falls back to it.
+        if (othersHealthy > 0 && othersProblematic > 0) {
+          applyMyVerdictRow(verdictRow, verdictText, tr, currentMyVerdict);
+          const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, "others");
+          aggregateRow = buildVerdictLineRow(verdictIcon(othersProblematic > 0), aggregateText, tr.dialog_community_verdict_disclaimer);
+          infoGroup.insertBefore(aggregateRow, verdictRow.nextSibling);
+          return;
+        }
+
+        // Voted, others all one direction: merge into a single sentence,
+        // agreeing ("you_and_others") or not ("you_vs_others" -- your own
+        // verdict always stated explicitly, never silently absorbed).
+        const othersCount = othersHealthy > 0 ? othersHealthy : othersProblematic;
+        const othersVerdict = othersHealthy > 0 ? "healthy" : "problematic";
+        const text =
+          currentMyVerdict === othersVerdict
+            ? othersVerdict === "healthy"
+              ? tr.community_verdict_you_and_others_healthy(othersCount)
+              : tr.community_verdict_you_and_others_problematic(othersCount)
+            : currentMyVerdict === "healthy"
+            ? tr.community_verdict_you_vs_others_healthy_problematic(othersCount)
+            : tr.community_verdict_you_vs_others_problematic_healthy(othersCount);
+        verdictText.textContent = text;
+        const existingIcon = verdictRow.querySelector("ha-svg-icon");
+        if (existingIcon) existingIcon.remove();
+        const iconEl = document.createElement("ha-svg-icon");
+        // Any problematic verdict in play at all (yours or theirs) wins the
+        // icon -- same "any problematic report wins" rule verdictBadge
+        // itself already uses elsewhere in this file.
+        iconEl.path = verdictIcon(currentMyVerdict === "problematic" || othersVerdict === "problematic");
+        verdictRow.insertBefore(iconEl, verdictText);
+        verdictRow.hidden = false;
       };
-      updateAggregateRow(myVerdict);
+      renderVerdictRows(myVerdict);
 
       // Your own reason (only when you voted problematic and gave one),
       // right under your own vote line -- found by review, 2026-07-29,
@@ -5978,12 +6064,11 @@ class UpdateManagerPanel extends HTMLElement {
         return;
       }
       this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, myVerdict, result.my_reason, (verdict) => {
-        applyMyVerdictRow(verdictRow, verdictText, tr, verdict);
-        updateAggregateRow(verdict);
+        renderVerdictRows(verdict);
         // counts itself stays frozen at the original fetch (see
-        // updateAggregateRow's own comment); a vote cast just now in this
+        // renderVerdictRows's own comment); a vote cast just now in this
         // session isn't reflected in it yet, so its own contribution is
-        // added/removed here the same optimistic way updateAggregateRow
+        // added/removed here the same optimistic way renderVerdictRows
         // already does, relative to that same original myVerdict baseline
         // -- correct regardless of how many times you re-vote in one
         // session, since it's always compared against that one fixed point.

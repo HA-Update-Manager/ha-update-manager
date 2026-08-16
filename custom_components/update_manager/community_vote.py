@@ -31,12 +31,25 @@ async def async_submit_vote(
 ) -> None:
     """Raises on failure (a non-2xx response, a network error): the caller
     (websocket_api.py's own vote handler) turns that into a clear,
-    user-visible error, never a silent no-op."""
+    user-visible error, never a silent no-op.
+
+    No "labels" field here (found live, 2026-08-15) -- community-votes' own
+    process-vote.yml always applies the "vote" label itself afterward
+    regardless (a harmless no-op if it's already there, see that workflow's
+    own comment), and isn't gated on the label being present to begin with
+    (it decides from the body's own shape instead). Sending it here had no
+    effect for a real voter anyway (GitHub's own issue-creation API silently
+    drops labels from anyone without push access, community-votes'
+    process-vote.yml's own issue #36), it only mattered for a repo owner's
+    own test votes (push access does accept it), where the one visible
+    effect was the issue's "labeled" timeline entry crediting the voter
+    instead of github-actions[bot] -- purely cosmetic, and inconsistent
+    with every other voter's own issue."""
     body = build_issue_body(identity, verdict, reason_category, notes, link)
     session = async_get_clientsession(hass)
     async with session.post(
         _ISSUES_URL,
-        json={"title": "[vote]", "body": body, "labels": ["vote"]},
+        json={"title": "[vote]", "body": body},
         headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
         timeout=10,
     ) as response:
