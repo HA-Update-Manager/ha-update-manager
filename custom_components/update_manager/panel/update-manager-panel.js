@@ -6149,12 +6149,23 @@ class UpdateManagerPanel extends HTMLElement {
   // line above this section) -- used to pre-fill the form below instead of
   // handing back a blank one when you're only here to revise it.
   _buildVoteControls(container, tr, entityId, version, allowHealthy, myVerdict, myReason, onVoted) {
-    const showConfirmed = (text) => {
+    // reason (optional): rendered via buildReasonItem right under the
+    // confirmation text, the exact same block "Your own reason" shows once
+    // community-votes' own automation has processed the vote and it comes
+    // back through verdict_for_version -- shown here immediately instead,
+    // from the values just submitted, so a problematic vote's own
+    // category/notes/link don't just vanish into a bare "Thanks for your
+    // vote" until you close and reopen the dialog. Healthy has no such
+    // fields, so its own call site never passes one.
+    const showConfirmed = (text, reason) => {
       container.innerHTML = "";
       const confirmed = document.createElement("p");
       confirmed.className = "dialog-community-confirmed";
       confirmed.textContent = text;
       container.appendChild(confirmed);
+      if (reason) {
+        container.appendChild(buildReasonItem(tr, reason));
+      }
     };
 
     const submitVote = async (verdict, extra) => {
@@ -6286,7 +6297,7 @@ class UpdateManagerPanel extends HTMLElement {
         });
         onVoted?.("problematic");
         const reasonLabel = tr[_VOTE_REASON_LABEL_KEYS[formData.reason_category]];
-        showConfirmed(tr.community_vote_confirmed_problematic(reasonLabel, result.updated));
+        showConfirmed(tr.community_vote_confirmed_problematic(reasonLabel, result.updated), formData);
       })
     );
     formContainer.appendChild(submitBtn);

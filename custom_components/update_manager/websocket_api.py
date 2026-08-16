@@ -1175,9 +1175,22 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
         connection.send_error(msg["id"], "not_identifiable", "This update can't be identified for voting yet")
         return
 
+    # Split into two distinct messages (found live, 2026-08-16): a stored
+    # link that just failed to refresh (maybe transient, maybe not -- this
+    # single attempt can't tell) isn't the same situation as never having
+    # linked at all, and "Link your GitHub account first" read as if the
+    # link had never happened when it had. is_linked checked first, before
+    # attempting the refresh, so it reflects whether a link exists at all,
+    # not whatever this one attempt's outcome was.
+    if not data.github_auth_manager.is_linked:
+        connection.send_error(msg["id"], "not_linked", "Link your GitHub account first")
+        return
+
     access_token = await data.github_auth_manager.async_get_valid_access_token()
     if access_token is None:
-        connection.send_error(msg["id"], "not_linked", "Link your GitHub account first")
+        connection.send_error(
+            msg["id"], "link_broken", "Couldn't refresh your GitHub link. Try voting again, or check Settings if this keeps happening."
+        )
         return
 
     # Checked before submitting, not derived from the vote itself: this is

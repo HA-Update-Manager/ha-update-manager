@@ -84,6 +84,9 @@ _USER_URL = "https://api.github.com/user"
 # flight doesn't get a token that expires mid-request.
 _EXPIRY_SAFETY_MARGIN = timedelta(minutes=2)
 
+# See async_get_valid_access_token's own "error" branch for why this isn't 1.
+_MIN_CONSECUTIVE_REFRESH_FAILURES = 2
+
 LinkStatus = Literal["idle", "pending", "linked", "failed", "expired"]
 
 
@@ -290,25 +293,41 @@ class GitHubAuthManager:
 
         if "error" in payload:
             _LOGGER.warning("GitHub token refresh failed: %s", payload["error"])
-            await self._async_mark_broken()
+            # Only raises the repair issue once this has failed
+            # _MIN_CONSECUTIVE_REFRESH_FAILURES times in a row, not on the
+            # first one -- found live, 2026-08-16: a single
+            # "incorrect_client_credentials" response turned out to be a
+            # one-off GitHub-side hiccup (the very next vote's own refresh
+            # attempt succeeded on its own, no re-link ever needed), yet the
+            # repair issue had already fired immediately. A raw network
+            # exception just above never raises at all for the same
+            # "could easily be transient" reason; this only softens that for
+            # an explicit API error response, still specific enough to be
+            # worth counting rather than ignoring outright.
+            streak = self._data.get("refresh_failure_streak", 0) + 1
+            self._data["refresh_failure_streak"] = streak
+            await self._store.async_save(self._data)
+            if streak >= _MIN_CONSECUTIVE_REFRESH_FAILURES:
+                await self._async_mark_broken()
             return None
 
         now = dt_util.utcnow()
         # Both tokens rotate on every refresh, the old pair stops working
         # the instant this succeeds, so the username is kept as-is (it
         # can't have changed) but both tokens are fully replaced, never
-        # merged with the old record. "broken" (see _async_mark_broken) is
-        # explicitly dropped here too, not just left out of this dict: a
-        # successful refresh recovering from an earlier failed one (a
-        # transient GitHub-side error, not a real 6-month expiry) must clear
-        # it, and the **self._data spread below would otherwise carry a
-        # stale True straight through.
+        # merged with the old record. "broken"/"refresh_failure_streak" are
+        # explicitly cleared here too, not just left out of this dict: a
+        # successful refresh recovering from earlier failures (transient
+        # GitHub-side errors, not a real 6-month expiry) must reset both,
+        # and the **self._data spread below would otherwise carry stale
+        # values straight through.
         self._data = {
             **self._data,
             "access_token": payload["access_token"],
             "refresh_token": payload["refresh_token"],
             **_expiry_fields(payload, now),
             "broken": False,
+            "refresh_failure_streak": 0,
         }
         await self._store.async_save(self._data)
         _async_clear_link_expired_issue(self.hass)
