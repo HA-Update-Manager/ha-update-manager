@@ -20,7 +20,8 @@ auto-install and most of that becomes something you never have to think about ag
 ## Why you'll like it
 
 * **A waiting period sized to the risk.** A small integration bump and a major Core jump don't deserve the
-  same caution, so each gets its own configurable buffer before it counts as ready.
+  same caution, so each gets its own configurable buffer before it counts as ready. Optionally restrict
+  that further to specific weekdays, or even a specific time of day, e.g. only ever ready on Saturdays.
 * **A second opinion before you commit.** See whether others already made your exact version jump safely,
   cast your own vote, and let one person you trust override your own rules the moment they vouch for a
   release.
@@ -92,6 +93,9 @@ Every entity Update Manager creates lives under its own "Update Manager" device.
   `_not_installable` ("Not installable"). Each sensor's state is that status's own count, with the
   affected entities (entity_id, installed/latest version) listed in its attributes: point a
   `numeric_state` trigger at one directly, e.g. to notify when anything becomes Discouraged.
+  `sensor.update_manager_needs_manual_action` is a related but different count: of everything currently
+  "Ready to update", how many won't be auto-installed on their own, i.e. what's actually left for you to
+  install yourself.
 * **Events**, fired on `hass.bus` for the three discrete moments an automation might want to react to:
 
   | Event | Fired when | Data |
@@ -159,8 +163,10 @@ every 15 minutes.
 * **An update still auto-installed despite a negative vote I saw**: check the vote was on this exact
   version jump (see Known limitations), and that no trusted voter's "healthy" vote was in play (it always
   wins, see "How auto-install decides").
-* **A repair notification says my GitHub link has expired**: re-link it from the Settings tab; it clears
-  on its own once you do.
+* **A repair notification says my GitHub link has expired**: only appears once refreshing has failed twice
+  in a row, not a single blip. Re-link it from the Settings tab, or just wait: the next successful refresh
+  (e.g. the next time you vote) clears it on its own too, no re-link needed if it turns out to have been
+  temporary.
 * **A repair issue says "An update seems stuck"**: an install has been running noticeably longer than
   usual without finishing (evidence-based when the entity reports progress, a flat duration otherwise).
   This doesn't cancel the install, which may still finish on its own; it only stops that one entity from
