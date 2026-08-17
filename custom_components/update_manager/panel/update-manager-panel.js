@@ -4193,6 +4193,19 @@ class UpdateManagerPanel extends HTMLElement {
     }
     const tr = this._tr;
     const dialog = this._dialogEl;
+    // Same "one shared scrollable element, wiped and rebuilt in place"
+    // problem this._scrollPositions/_scrollContainer already solved for the
+    // three tabs, found live 2026-08-16 in this dialog too: _afterDialogAction
+    // and a live-verdict disagreement both rebuild this exact dialog in
+    // place (see their own comments) by calling this method again for the
+    // same entity while it's already open, which used to snap the scroll
+    // back to the top every time, losing your place in the release notes or
+    // community section. Only meaningful to restore for a same-entity
+    // rebuild, not a genuinely fresh open (dialog.bodyContainer is
+    // ha-dialog's own real scrollable element, confirmed against its real
+    // source -- not this method's own `body`, which is only slotted into it).
+    const isRebuildOfSameEntity = this._dialogEntityId === entityId && dialog.open;
+    const previousScrollTop = isRebuildOfSameEntity && dialog.bodyContainer ? dialog.bodyContainer.scrollTop : 0;
     // Tracks which entity the dialog is currently showing -- lets an
     // in-flight release-notes fetch (see below) recognize itself as stale
     // if the dialog closes or gets reopened for a different entity before
@@ -5168,6 +5181,15 @@ class UpdateManagerPanel extends HTMLElement {
     actions.appendChild(openBtn);
 
     dialog.appendChild(actions);
+
+    // Restored right after the synchronous content lands, not inside the
+    // setTimeout below -- an already-open dialog being rebuilt has nothing
+    // to wait for (that delay is only there to avoid pop-in on a genuinely
+    // fresh open). Sections that fetch their own data asynchronously
+    // (release notes, community verdict) can still append more content
+    // after this and shift things slightly -- same accepted trade-off the
+    // 150ms delay below already makes for those, not worth chasing further.
+    if (isRebuildOfSameEntity && dialog.bodyContainer) dialog.bodyContainer.scrollTop = previousScrollTop;
 
     // A short, fixed delay before actually showing the dialog -- direct
     // user feedback, 2026-08-01: every dialog visibly shifted layout right

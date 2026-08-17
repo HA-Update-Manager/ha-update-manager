@@ -30,7 +30,7 @@ auto-install and most of that becomes something you never have to think about ag
 * **Auto-install that still asks first.** A cancellable countdown announces what's coming and when, with
   an automatic backup when the update supports one, and a master switch to pause all of it in one click.
 * **Release notes worth reading.** Real GitHub notes, compiled across every version a jump skips over, plus
-  a wrapped add-on's own upstream notes (Zigbee2MQTT, Mealie, Matterbridge) alongside the short version.
+  a wrapped app's own upstream notes (Zigbee2MQTT, Mealie, Matterbridge) alongside the short version.
 * **A panel that feels like it's always been there.** Live progress, a full History audit trail, and an
   autosaving Settings tab, built from Home Assistant's own components so it looks and behaves like part of
   the app, not a separate thing bolted on.
@@ -142,7 +142,7 @@ every 15 minutes.
 * Staging rules apply per update *size* (small/medium/large), not per individual entity: an entity can be
   excluded entirely, but can't get its own, different waiting period.
 * Voting only works for entities identifiable as a HACS integration, Home Assistant Core/Supervisor/OS,
-  a recognized Zigbee device model, or a Supervisor add-on.
+  a recognized Zigbee device model, or an app.
 * Voting requires linking a GitHub account (a quick one-time device-flow step); reading verdicts doesn't.
 * A vote (and the community block) applies to the *exact* version jump. A negative verdict on 1.0.0 to
   1.0.1 has no bearing on a direct 1.0.0 to 1.0.2 jump: those are tracked as entirely separate votes.
