@@ -260,7 +260,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     )
 
     @callback
-    def _on_install(entity_id: str, old_version: str, new_version: str, new_state: State) -> None:
+    def _on_install(entity_id: str, old_version: str, new_version: str, new_state: State, retroactive: bool) -> None:
         # Evaluated synchronously, right here, not inside the task below:
         # was_auto_installed() consumes (pops) install_manager's own record
         # of what it just dispatched, so it must be read at the moment this
@@ -292,7 +292,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         # install_manager.py's own service calls have no user_id either
         # (backend code, not a logged-in session), which would otherwise
         # misread as "external" too.
-        install_method = "auto" if context is not None else ("manual" if new_state.context.user_id else "external")
+        #
+        # `retroactive` (found by code review, 2026-08-18): the three-real-
+        # cases verification above only covered a genuinely live detection.
+        # A transition first noticed by coordinator.py's own startup sweep
+        # or periodic recheck reads whatever the *current* state happens to
+        # be, at a moment with no guaranteed relationship to when the
+        # install actually happened (possibly across a restart) -- its
+        # context.user_id is not the original install's context, and reads
+        # empty the same way a real external update would. Falls back to
+        # the older, safe "manual" default in that case rather than
+        # guessing "external" from an untrustworthy signal.
+        if context is not None:
+            install_method = "auto"
+        elif retroactive:
+            install_method = "manual"
+        else:
+            install_method = "manual" if new_state.context.user_id else "external"
         cached = coordinator.cache.get(entity_id)
         hass.async_create_task(
             install_log.async_log_install(
@@ -345,6 +361,58 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # async_log_install would append to (and then save) an empty in-memory
     # list, silently wiping out every previously-logged install.
     coordinator.async_add_install_listener(_on_install)
+
+    async def _async_apply_entity_rename(old_entity_id: str, new_entity_id: str) -> None:
+        """Relabels every persisted/live entity_id reference this
+        integration holds, across all 6 of its stateful managers, after a
+        real HA entity registry rename -- found live, 2026-08-18: every one
+        of this integration's own storage keys is keyed directly by
+        entity_id, and a rename silently orphaned all of it (history, skip/
+        vote/verdict state, in-flight rollout/stall tracking) with no
+        repair mechanism. MyVotesManager needs no call here -- confirmed
+        keyed by jump_key (version/identity derived), never entity_id."""
+        await asyncio.gather(
+            install_log.async_rename_entity(old_entity_id, new_entity_id),
+            community_verdict_manager.async_rename_entity(old_entity_id, new_entity_id),
+            coordinator.async_rename_entity(old_entity_id, new_entity_id),
+            install_manager.async_rename_entity(old_entity_id, new_entity_id),
+            rollout_manager.async_rename_entity(old_entity_id, new_entity_id),
+            staging_skip_manager.async_rename_entity(old_entity_id, new_entity_id),
+        )
+        # excluded_entities lives in the config entry's own options (a
+        # user's Settings-tab picker choice), not in one of the Store-backed
+        # managers above -- found by code review, 2026-08-18: without this,
+        # a rename silently dropped the entity out of its own auto-install
+        # exclusion, re-enabling auto-install for it without the user ever
+        # touching that setting. Persisted through entry.options (not
+        # coordinator.excluded_entities directly) so it goes through the
+        # exact same apply path every other options change already does --
+        # update_listener -> async_apply_options -> coordinator.async_update_rules.
+        excluded = list(entry.options.get(CONF_EXCLUDED_ENTITIES, []))
+        if old_entity_id in excluded:
+            excluded = [new_entity_id if e == old_entity_id else e for e in excluded]
+            hass.config_entries.async_update_entry(
+                entry, options={**entry.options, CONF_EXCLUDED_ENTITIES: excluded}
+            )
+
+    @callback
+    def _on_entity_registry_updated(event) -> None:
+        # old_entity_id is only present on the event when entity_id itself
+        # changed, not on a plain name/area edit -- confirmed against real
+        # homeassistant/helpers/entity_registry.py source, so this can't
+        # misfire on an unrelated registry update.
+        old_entity_id = event.data.get("old_entity_id")
+        if event.data.get("action") != "update" or not old_entity_id:
+            return
+        new_entity_id = event.data["entity_id"]
+        if not new_entity_id.startswith("update."):
+            return
+        hass.async_create_task(_async_apply_entity_rename(old_entity_id, new_entity_id))
+
+    entry.async_on_unload(
+        hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, _on_entity_registry_updated)
+    )
+
     # The other three loads have no such ordering dependency on
     # coordinator.async_start() -- gathered together with it, not awaited
     # in front of it, so they still overlap with the coordinator's own

@@ -42,6 +42,7 @@ from .const import (
     localized_strings,
 )
 from .coordinator import UpdateManagerCoordinator
+from .entity_rename import relabel_key
 from .rollout_manager import RolloutManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -324,6 +325,27 @@ class InstallManager:
         self._cancelled[entity_id] = to_version
         await self._async_remove(entity_id)
         await self._async_save()
+
+    async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
+        """Relabels this entity's pending/cancelled/in-flight auto-install
+        state after a live HA entity registry rename -- see __init__.py's
+        own EVENT_ENTITY_REGISTRY_UPDATED listener. PendingAnnouncement/
+        AutoInstallContext are both NamedTuples, hence _replace() rather
+        than mutating entity_id in place."""
+        # Popped directly, not via relabel_key -- PendingAnnouncement's own
+        # nested entity_id field needs _replace() either way, so
+        # relabel_key's own reinsert-at-new-key step would just be
+        # immediately overwritten (found by code review, 2026-08-18: dead
+        # work, no bug, but pointless).
+        pending = self._pending.pop(old_entity_id, None)
+        if pending is not None:
+            self._pending[new_entity_id] = pending._replace(entity_id=new_entity_id)
+        cancelled_moved = relabel_key(self._cancelled, old_entity_id, new_entity_id) is not None
+        if pending is not None or cancelled_moved:
+            await self._async_save()
+        # AutoInstallContext carries no entity_id field of its own (only
+        # ever looked up via this dict's own key) -- just move it.
+        relabel_key(self._recently_executed, old_entity_id, new_entity_id)
 
     async def _async_tick(self, now: datetime) -> None:
         # Every entity the coordinator currently tracks, plus any entity

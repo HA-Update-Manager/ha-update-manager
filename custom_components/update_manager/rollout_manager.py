@@ -50,6 +50,7 @@ from homeassistant.util import dt as dt_util
 from .announcer import AutoInstallContext
 from .const import DOMAIN, localized_strings
 from .coordinator import UpdateManagerCoordinator
+from .entity_rename import relabel_key
 from .install_tiers import TIER_RANK, tier_for_entity
 from .zigbee import device_for_entity, is_zigbee_entity, zigbee_network_id
 
@@ -722,6 +723,38 @@ class RolloutManager:
         self._async_clear_stuck_issue(entity_id)
         await self._async_retry_tier_blocked()
 
+    async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
+        """Relabels every entity_id reference this module holds after a
+        live HA entity registry rename -- see __init__.py's own
+        EVENT_ENTITY_REGISTRY_UPDATED listener. self._queues is keyed by
+        group_key, not entity_id, so its entries are scanned and rewritten
+        in place (_QueuedEntry uses __slots__, directly settable) rather
+        than moved via a dict-key pop. The old entity's stuck-repair issue
+        (if any) is deleted outright, not relabeled -- _async_clear_stuck_issue
+        is the existing helper for that, and the next stall-check simply
+        recreates a fresh one under the new entity_id if still warranted."""
+        # self._queues is keyed by group_key, not entity_id, so its own
+        # entries need a scan-and-rewrite rather than relabel_key's plain
+        # dict-key move -- an inherent difference in shape, not one this
+        # helper can absorb.
+        changed = False
+        for entries in self._queues.values():
+            for entry in entries:
+                if entry.entity_id == old_entity_id:
+                    entry.entity_id = new_entity_id
+                    changed = True
+
+        blocked = relabel_key(self._tier_blocked, old_entity_id, new_entity_id)
+        if blocked is not None:
+            blocked.entity_id = new_entity_id
+            changed = True
+
+        if changed:
+            await self._async_save()
+
+        relabel_key(self._in_flight, old_entity_id, new_entity_id)
+        self._async_clear_stuck_issue(old_entity_id)
+
     async def async_cancel_queued(self, entity_id: str) -> bool:
         """The panel's own Cancel button for a request that's genuinely
         waiting its turn, not yet dispatched -- whichever of the two ways
@@ -807,7 +840,15 @@ class RolloutManager:
             await self._async_save()
 
     @callback
-    def _on_install_completed(self, entity_id: str, old_version: str, new_version: str, new_state: State) -> None:
+    def _on_install_completed(
+        self, entity_id: str, old_version: str, new_version: str, new_state: State, retroactive: bool
+    ) -> None:
+        # retroactive unused here -- this module only cares that an install
+        # completed at all (to advance/clean up queue state), not whether
+        # it was detected live or caught up after the fact (see
+        # coordinator.py's own InstallListener/_fire_install_listeners for
+        # why that distinction exists at all, __init__.py's own _on_install
+        # is the one listener that actually needs it).
         self._in_flight.pop(entity_id, None)
         self._async_clear_stuck_issue(entity_id)
         # A later retry (a manual click, or another auto-install cycle

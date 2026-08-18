@@ -1687,6 +1687,15 @@ class UpdateManagerPanel extends HTMLElement {
     // _stateWithRememberedPercentage below.
     this._lastKnownPercentage = new Map();
     this._installLog = null;
+    // Whether _loadOlderHistory's own "before" call has already run for the
+    // currently-loaded this._installLog -- reset on every _loadAll refresh,
+    // since that replaces this._installLog with a fresh default (recent)
+    // page again. See _buildHistoryList's own "Toon oudere geschiedenis"
+    // button and _openDetailDialog's own historyEntry-not-found fallback.
+    this._installLogOlderLoaded = false;
+    // Guards against a double-click/racing-callers duplicate fetch -- see
+    // _loadOlderHistory's own comment.
+    this._installLogLoadingOlder = false;
     this._settings = null;
     this._defaults = null;
     this._dialogEntityId = null;
@@ -1913,6 +1922,11 @@ class UpdateManagerPanel extends HTMLElement {
         ])
       );
       this._installLog = logResp.entries.slice().reverse();
+      // Also true (not just after a real "load older" fetch) when the
+      // backend's own default page already covers everything -- a quiet
+      // instance where nothing falls outside DEFAULT_PAGE_POLICY has
+      // nothing left to fetch, so the button below has no reason to show.
+      this._installLogOlderLoaded = !logResp.has_more;
       this._settings = settingsResp.options;
       this._defaults = settingsResp.defaults;
       if (!this._formData) {
@@ -3589,6 +3603,52 @@ class UpdateManagerPanel extends HTMLElement {
   // its own plain-text heading: a real ha-card per group (like the
   // Updates tab's status groups) would be one card per row *inside* another
   // card, which HA's own design language doesn't do.
+  // The default install_log fetch (_loadAll) only returns recent entries
+  // plus each entity's own per-entity floor -- see websocket_api.py's own
+  // DEFAULT_PAGE_POLICY -- so HA's ~4MB websocket message ceiling can never
+  // be approached by one response. This fetches everything older, once, in
+  // a single follow-up call: either the History tab's own "Toon oudere
+  // geschiedenis" button, or _openDetailDialog's own historyEntry-not-found
+  // fallback below.
+  async _loadOlderHistory() {
+    // _installLogLoadingOlder closes a real race: without it, a double-
+    // click on the button, or the button racing with _openDetailDialog's
+    // own historyEntry-not-found fallback (both call this method), could
+    // both pass the _installLogOlderLoaded check while the first call is
+    // still awaiting its own response -- two identical websocket round-
+    // trips, then two .then handlers each concatenating the same older
+    // entries onto this._installLog, producing duplicate History rows.
+    if (this._installLogOlderLoaded || this._installLogLoadingOlder || !this._hass) return;
+    this._installLogLoadingOlder = true;
+    try {
+      // `all: true` returns the exact complement of the default page
+      // already loaded (see websocket_api.py's own _handle_install_log),
+      // not a date-cursor query -- a cursor anchored to "the oldest entry
+      // currently loaded" had a real gap (found by code review,
+      // 2026-08-18): a different entity's own older per-entity-floor pick
+      // could sit newer than that cursor while still never having been
+      // sent in either response, permanently unreachable.
+      const resp = await this._hass.callWS({ type: "update_manager/install_log", all: true });
+      // A plain concat would NOT stay newest-first overall: the complement
+      // can include an entry newer than some entry already loaded (e.g.
+      // another entity's own much-older per-entity-floor pick that WAS in
+      // the default page) -- each side is individually sorted, but
+      // interleaved wrong relative to each other. Re-sorting the merged
+      // result is simpler and safer than hand-merging two sorted arrays,
+      // and cheap: at most MAX_ENTRIES entries, done once.
+      this._installLog = this._installLog
+        .concat(resp.entries.slice().reverse())
+        .sort((a, b) => (a.installed_at < b.installed_at ? 1 : a.installed_at > b.installed_at ? -1 : 0));
+      this._installLogOlderLoaded = true;
+      this._renderContent();
+    } catch (err) {
+      // Best-effort -- the button stays visible either way, so the user
+      // can just try again.
+    } finally {
+      this._installLogLoadingOlder = false;
+    }
+  }
+
   _buildHistoryList() {
     const tr = this._tr;
     if (!this._installLog.length) {
@@ -3643,6 +3703,17 @@ class UpdateManagerPanel extends HTMLElement {
       });
       outer.appendChild(items);
     });
+    if (!this._installLogOlderLoaded) {
+      const loadOlderWrap = document.createElement("div");
+      loadOlderWrap.className = "history-load-older";
+      const loadOlderBtn = document.createElement("ha-button");
+      loadOlderBtn.appearance = "filled";
+      loadOlderBtn.size = "s";
+      loadOlderBtn.textContent = tr.history_load_older;
+      loadOlderBtn.addEventListener("click", () => this._loadOlderHistory());
+      loadOlderWrap.appendChild(loadOlderBtn);
+      outer.appendChild(loadOlderWrap);
+    }
     return outer;
   }
 
@@ -4678,6 +4749,22 @@ class UpdateManagerPanel extends HTMLElement {
 
     }
 
+    // The default install_log page (see _loadAll) only carries recent
+    // entries plus each entity's own per-entity floor -- opening this
+    // dialog the normal way (no historyEntry, just an entity's row
+    // clicked) used to silently show that partial slice with no
+    // indication more history existed (found by code review, 2026-08-18).
+    // Backfilling in the background on every open, not just reactively for
+    // a specific missing historyEntry (see defaultExpandIndex below),
+    // keeps this section always complete once it resolves -- this fetch
+    // only ever happens once per panel session, guarded by
+    // _installLogOlderLoaded, so opening a dialog is not a repeated cost.
+    if (!this._installLogOlderLoaded) {
+      this._loadOlderHistory().then(() => {
+        if (!isDialogStale()) this._openDetailDialog(entityId, historyEntry, communityOverride);
+      });
+    }
+
     // Skipped entirely when there's no history at all, not shown with an
     // empty-state message -- direct user feedback: a heading for a section
     // with nothing under it just added noise, especially for a purely
@@ -4724,10 +4811,14 @@ class UpdateManagerPanel extends HTMLElement {
       // construction, not a case needing its own handling here.
       const defaultExpandIndex = (() => {
         if (historyEntry) {
+          // If this isn't found because the backfill above hasn't resolved
+          // yet, that same backfill's own .then() already reopens this
+          // dialog once it does -- no separate retry needed here.
           const i = entries.findIndex(
             (e) => e.installed_at === historyEntry.installed_at && e.to_version === historyEntry.to_version
           );
-          return i !== -1 ? i : 0;
+          if (i !== -1) return i;
+          return 0;
         }
         return u ? -1 : 0;
       })();
@@ -7161,6 +7252,14 @@ class UpdateManagerPanel extends HTMLElement {
         font-size: var(--ha-font-size-l, 18px); font-weight: var(--ha-font-weight-medium, 500);
         max-width: 600px; margin: 0 auto var(--ha-space-2, 8px);
       }
+      /* "Toon oudere geschiedenis" -- same 600px centered column as the
+         cards/headings above it. It's the last element on this tab when
+         shown, so it needs its own margin-bottom (History's trailing page
+         space normally comes from the last .history-section-items' own
+         margin-bottom, see the shared page-grid comment further below --
+         without this, that space landed above the button instead of below
+         it, the button then sitting flush against the bottom edge). */
+      .history-load-older { max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); text-align: center; }
 
       /* Detail dialog. ha-dialog was rewritten upstream to wrap a
          WebAwesome <wa-dialog> -- confirmed against a current stable

@@ -34,6 +34,7 @@ from .const import (
     DOMAIN,
     WEEKDAY_READY_OPTION_KEYS,
 )
+from .entity_rename import relabel_key
 from .hacs_identity import corrected_release_url
 from .postponement_schedule import DayRule, EMPTY_SCHEDULE, PostponementSchedule, next_allowed_ready
 from .semver import classify_version_size
@@ -207,7 +208,7 @@ _STARTUP_QUERY_STAGGER = 0.05
 # configurable wait granularity (whole days) so it doesn't visibly lag.
 _RECHECK_INTERVAL = timedelta(minutes=15)
 
-InstallListener = Callable[[str, str, str, State], None]
+InstallListener = Callable[[str, str, str, State, bool], None]
 
 
 def rules_from_options(options: dict) -> StagingRules:
@@ -473,7 +474,7 @@ class UpdateManagerCoordinator:
         for entity_id in self.hass.states.async_entity_ids("update"):
             state = self.hass.states.get(entity_id)
             if state is not None:
-                self._check_and_advance_installed_baseline(entity_id, state)
+                self._check_and_advance_installed_baseline(entity_id, state, retroactive=True)
             await self._async_refresh_one(entity_id)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
 
@@ -487,7 +488,7 @@ class UpdateManagerCoordinator:
         self._fire_listeners()
 
     @callback
-    def _check_and_advance_installed_baseline(self, entity_id: str, state: State) -> None:
+    def _check_and_advance_installed_baseline(self, entity_id: str, state: State, *, retroactive: bool) -> None:
         """Compares `state`'s own installed_version against the persisted
         restart-recovery baseline (self._last_installed_version), fires the
         install listeners if they genuinely disagree, then advances the
@@ -512,15 +513,27 @@ class UpdateManagerCoordinator:
         placeholder must never look like a real "from" version, and must
         never poison the baseline for next time either.
 
-        Same call shape as the live path (listener(entity_id, old, new,
-        state)) for a retroactive/self-healing fire, so install_log.py's
-        own listener doesn't need to know this ever happened any
-        differently. For a fresh restart specifically, coordinator.cache is
-        always empty for this entity_id at this point (rebuilt from scratch
-        every restart, no entry yet), so the listener's own available_since
-        naturally comes back None -- an honest "we don't know", not a
-        guess, since HA genuinely wasn't running to observe when this
-        update actually became available.
+        `retroactive` (required, no default -- every caller must decide
+        deliberately) is False only for _async_refresh_one's own call: that
+        path always runs moments after something happening right now (a
+        live state_changed event, or an explicit on-demand refresh), so
+        `state`'s own context is still the genuine, trustworthy one for
+        whatever just happened. True for the startup sweep and periodic
+        recheck: both read whatever the *current* state happens to be, at a
+        moment with no guaranteed relationship to when the transition being
+        detected actually occurred (possibly across a restart) -- found by
+        code review, 2026-08-18: __init__.py's own _on_install used to
+        trust state.context.user_id for its "manual" vs "external"
+        classification regardless of which path fired it, misclassifying a
+        genuinely manual install as "external" whenever it was only
+        detected this retroactive way (context.user_id reads as empty on a
+        state that's been sitting since before/across a restart, same as a
+        real external update would). For a fresh restart specifically,
+        coordinator.cache is always empty for this entity_id at this point
+        (rebuilt from scratch every restart, no entry yet), so the
+        listener's own available_since naturally comes back None -- an
+        honest "we don't know", not a guess, since HA genuinely wasn't
+        running to observe when this update actually became available.
 
         Known limitation, found by code review, 2026-07-27: for the same
         restart reason, __init__.py's own _on_install always logs this as a
@@ -542,19 +555,21 @@ class UpdateManagerCoordinator:
             return
         old_installed = self._last_installed_version.get(entity_id)
         if old_installed and old_installed != _PLACEHOLDER_INSTALLED_VERSION and old_installed != new_installed:
-            self._fire_install_listeners(entity_id, old_installed, new_installed, state)
+            self._fire_install_listeners(entity_id, old_installed, new_installed, state, retroactive)
         if old_installed != new_installed:
             self._last_installed_version[entity_id] = new_installed
             self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
 
-    def _fire_install_listeners(self, entity_id: str, old_installed: str, new_installed: str, state: State) -> None:
+    def _fire_install_listeners(
+        self, entity_id: str, old_installed: str, new_installed: str, state: State, retroactive: bool
+    ) -> None:
         """The one place every install listener actually gets called, shared
         by the live path (_handle_state_changed) and the shared
         _check_and_advance_installed_baseline above -- found by review,
         these previously each had their own identical `for listener in
         list(self._install_listeners): listener(...)` loop."""
         for listener in list(self._install_listeners):
-            listener(entity_id, old_installed, new_installed, state)
+            listener(entity_id, old_installed, new_installed, state, retroactive)
 
     def _fire_listeners(self) -> None:
         """The one place every plain (no-argument) listener actually gets
@@ -697,7 +712,7 @@ class UpdateManagerCoordinator:
         for entity_id in list(self.cache):
             state = self.hass.states.get(entity_id)
             if state is not None:
-                self._check_and_advance_installed_baseline(entity_id, state)
+                self._check_and_advance_installed_baseline(entity_id, state, retroactive=True)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
         self._recompute_all(now)
         self._fire_listeners()
@@ -791,6 +806,39 @@ class UpdateManagerCoordinator:
         await self._force_ready_store.async_save(self._force_ready)
         await self.async_refresh_one(entity_id)
 
+    async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
+        """Relabels every entity_id-keyed record this coordinator holds --
+        self.cache (live, unpersisted) and the three persisted stores --
+        after a live HA entity registry rename. See __init__.py's own
+        EVENT_ENTITY_REGISTRY_UPDATED listener. Relabels self.cache
+        directly (rather than relying solely on the async_refresh_one call
+        below) so the cache is correct immediately even if the entity's
+        live state under the new entity_id hasn't caught up yet at the
+        exact instant this event fires."""
+        cache_entry = relabel_key(self.cache, old_entity_id, new_entity_id)
+        if cache_entry is not None:
+            cache_entry["entity_id"] = new_entity_id
+
+        if relabel_key(self._available_since, old_entity_id, new_entity_id) is not None:
+            await self._available_since_store.async_save(self._available_since)
+
+        if relabel_key(self._last_installed_version, old_entity_id, new_entity_id) is not None:
+            self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
+
+        if relabel_key(self._force_ready, old_entity_id, new_entity_id) is not None:
+            await self._force_ready_store.async_save(self._force_ready)
+
+        # Only refresh if the new entity_id's state is already live --
+        # found by code review, 2026-08-18: _async_refresh_one's own
+        # None-state branch pops (and persists the deletion of) everything
+        # just relabeled above the moment hass.states.get(new_entity_id) is
+        # still None, which can genuinely happen if this event fires before
+        # the entity's live state has republished under its new id. Safe to
+        # skip entirely here -- a later real state_changed event (or the
+        # periodic recheck) picks it up correctly once the state exists.
+        if self.hass.states.get(new_entity_id) is not None:
+            await self.async_refresh_one(new_entity_id)
+
     async def _async_refresh_one(self, entity_id: str) -> None:
         state = self.hass.states.get(entity_id)
         if state is None:
@@ -808,7 +856,7 @@ class UpdateManagerCoordinator:
         # docstring for the full reasoning (placeholder/falsy exclusion,
         # comparison-before-advance ordering) -- shared with async_start's
         # own startup sweep and _async_periodic_recheck.
-        self._check_and_advance_installed_baseline(entity_id, state)
+        self._check_and_advance_installed_baseline(entity_id, state, retroactive=False)
 
         # HA's own update entities are always exactly "on" (an update is
         # available) or "off" -- "off" normally means genuinely up to

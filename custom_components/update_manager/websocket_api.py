@@ -67,6 +67,7 @@ from .core_blog_notes import (
 from .device_identity import resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
+from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
 from .install_manager import auto_install_rules_from_options
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
 from .semver import strip_version_prefix
@@ -628,11 +629,52 @@ async def _handle_core_announcement(hass: HomeAssistant, connection: websocket_a
 
 @callback
 @websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required("type"): "update_manager/install_log"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/install_log",
+        # Set by the panel's own "load older history" click, or by the
+        # detail dialog's own backfill -- see update-manager-panel.js's own
+        # _loadOlderHistory. True asks for everything the default page below
+        # left out.
+        vol.Optional("all"): bool,
+    }
+)
 def _handle_install_log(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    # install_log.entries itself always stays the full, unpaginated,
+    # oldest-first list -- only this websocket *response* is ever sliced,
+    # so the two other reversed(data.install_log.entries) consumers in this
+    # file (_release_url_for_version/_from_version_for_version) are
+    # unaffected by anything below.
     data = _get_data(hass)
-    entries = data.install_log.entries if data else []
-    connection.send_result(msg["id"], {"entries": entries})
+    all_entries = data.install_log.entries if data else []
+    # Default (unpaginated) page: recent entries unioned with each entity's
+    # own per-entity floor, reusing install_log_retention.py's same policy
+    # shape (just a shorter window, see DEFAULT_PAGE_POLICY's own comment)
+    # so a rarely-updating entity's history is never missing on first load
+    # just because it's older than the recent window.
+    keep = entries_to_keep_full_notes(all_entries, DEFAULT_PAGE_POLICY, dt_util.utcnow())
+    if msg.get("all"):
+        # The complement of the default page's own `keep` set, not a date
+        # cursor -- found by code review, 2026-08-18: a date cutoff anchored
+        # to "the oldest entry the client currently has loaded" has a real
+        # gap, since a different entity's own per-entity-floor pick can be
+        # far older than that cutoff while still not being part of the
+        # default page itself (excluded there for being outside *its own*
+        # entity's floor and freshness window). Those entries -- newer than
+        # the client's oldest-loaded cursor, yet never sent in either
+        # response -- were permanently unreachable under the old scheme.
+        # The complement can't have that gap: it's defined as "everything
+        # not already in `keep`", by construction, regardless of dates.
+        entries = [entry for i, entry in enumerate(all_entries) if i not in keep]
+        has_more = False
+    else:
+        # has_more tells the panel whether its own "Toon oudere
+        # geschiedenis" button has anything to actually fetch -- on a quiet
+        # instance where every entry already fits this page, showing that
+        # button would be a dead end.
+        entries = [all_entries[i] for i in sorted(keep)]
+        has_more = len(entries) < len(all_entries)
+    connection.send_result(msg["id"], {"entries": entries, "has_more": has_more})
 
 
 @websocket_api.require_admin

@@ -472,6 +472,11 @@ export const TRANSLATIONS = {
     history_section_this_week: "This week",
     history_section_this_month: "This month",
     history_section_earlier: "Earlier",
+    // The History tab's own click-to-load button, shown until the older
+    // history has been fetched once (see _loadOlderHistory) -- keeps the
+    // default page small so a single websocket response never risks HA's
+    // ~4MB message ceiling as the log grows.
+    history_load_older: "Show older history",
     loading: "Loading…",
     load_error_title: "Couldn't load Update Manager",
     // home-assistant-js-websocket's own ERR_CONNECTION_LOST case (see
@@ -700,6 +705,7 @@ export const TRANSLATIONS = {
     history_section_this_week: "Deze week",
     history_section_this_month: "Deze maand",
     history_section_earlier: "Eerder",
+    history_load_older: "Toon oudere geschiedenis",
     loading: "Laden…",
     load_error_title: "Kon Update Manager niet laden",
     load_error_connection_lost: "Verbinding met Home Assistant is verbroken. Herlaad de pagina zodra die terug is.",

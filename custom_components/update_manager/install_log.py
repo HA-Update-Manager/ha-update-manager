@@ -19,6 +19,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .install_log_retention import DEFAULT_POLICY, apply_release_notes_retention, enforce_byte_backstop
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,6 +30,12 @@ STORAGE_KEY = f"{DOMAIN}_install_log"
 # churn -- generous enough that the future panel will have plenty of history
 # to show without needing to worry about pruning itself.
 MAX_ENTRIES = 1000
+
+# Absolute backstop on the store's own serialized size, on top of the
+# release-notes retention policy (install_log_retention.py) that normally
+# keeps this file well under 2 MB even on a busy instance -- see that
+# module's own DEGRADED_POLICIES for what happens if this is ever reached.
+_MAX_STORE_BYTES = 8 * 1024 * 1024
 
 
 async def _async_release_notes(hass: HomeAssistant, entity_id: str, supported_features: int) -> str | None:
@@ -129,4 +136,19 @@ class InstallLog:
         )
         if len(self._entries) > MAX_ENTRIES:
             del self._entries[: len(self._entries) - MAX_ENTRIES]
+        now = dt_util.utcnow()
+        apply_release_notes_retention(self._entries, DEFAULT_POLICY, now)
+        enforce_byte_backstop(self._entries, now, _MAX_STORE_BYTES)
         await self._store.async_save(self._entries)
+
+    async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
+        """Relabels every existing entry's entity_id after a live HA entity
+        registry rename, so this entity's history doesn't silently split in
+        two -- see __init__.py's own EVENT_ENTITY_REGISTRY_UPDATED listener."""
+        changed = False
+        for entry in self._entries:
+            if entry.get("entity_id") == old_entity_id:
+                entry["entity_id"] = new_entity_id
+                changed = True
+        if changed:
+            await self._store.async_save(self._entries)

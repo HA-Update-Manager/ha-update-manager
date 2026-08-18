@@ -29,6 +29,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
+from .entity_rename import relabel_key
 from .rollout_manager import RolloutManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -221,6 +222,29 @@ class StagingSkipManager:
         self._pending_clears.pop(entity_id, None)
         if self._skipped.pop(entity_id, None) is not None:
             await self._store.async_save(self._skipped)
+
+    async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
+        """Relabels every entity_id-keyed record this module holds after a
+        live HA entity registry rename -- see __init__.py's own
+        EVENT_ENTITY_REGISTRY_UPDATED listener. self._skipped's own mutation
+        is held under self._lock (found by code review, 2026-08-18): a
+        rename fires as an independent, unpredictably-timed task, and
+        without this lock it could race _async_evaluate_one's own bare
+        `del self._skipped[entity_id]` after an await point -- a KeyError
+        there propagates through its caller's asyncio.gather (no
+        return_exceptions=True) and aborts that entire evaluation pass."""
+        async with self._lock:
+            if relabel_key(self._skipped, old_entity_id, new_entity_id) is not None:
+                await self._store.async_save(self._skipped)
+
+        if relabel_key(self._user_cleared, old_entity_id, new_entity_id) is not None:
+            await self._user_cleared_store.async_save(self._user_cleared)
+
+        relabel_key(self._pending_clears, old_entity_id, new_entity_id)
+
+        if old_entity_id in self._auto_update_warned:
+            self._auto_update_warned.discard(old_entity_id)
+            self._auto_update_warned.add(new_entity_id)
 
     async def async_update_enabled(self, enabled: bool) -> None:
         """Applies a newly-saved setting in place, no reload needed -- same

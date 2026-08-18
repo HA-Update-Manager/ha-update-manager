@@ -69,6 +69,7 @@ from .community_verdict_payload import (
 )
 from .const import DOMAIN
 from .device_identity import resolve_full_identity
+from .entity_rename import relabel_key
 from .hacs_identity import ResolvedIdentity
 
 _LOGGER = logging.getLogger(__name__)
@@ -256,6 +257,14 @@ class CommunityVerdictManager:
         # HTTP re-fetch next time, never a wrong user-visible decision, so
         # this is safe to debounce.
         self._store.async_delay_save(lambda: self._cache, 1.0)
+
+    async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
+        """Relabels this entity's cached verdict after a live HA entity
+        registry rename -- see __init__.py's own
+        EVENT_ENTITY_REGISTRY_UPDATED listener."""
+        if relabel_key(self._cache, old_entity_id, new_entity_id) is None:
+            return
+        await self._store.async_save(self._cache)
 
     async def async_get_verdict(
         self,
