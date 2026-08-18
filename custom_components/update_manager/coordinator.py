@@ -348,7 +348,7 @@ class UpdateManagerCoordinator:
         # time we saw it (any refresh, not just an install) -- persisted
         # (unlike self.cache) precisely so a restart has something to
         # compare the live post-restart value against, see
-        # _async_recover_install_across_restart. Installing HA Core itself
+        # _check_and_advance_installed_baseline. Installing HA Core itself
         # (and likely Supervisor/OS) always requires a full HA restart, so
         # the before/after installed_version transition happens *across*
         # that restart boundary -- _handle_state_changed only ever compares
@@ -471,7 +471,9 @@ class UpdateManagerCoordinator:
         self._unsub_recheck = async_track_time_interval(self.hass, self._async_periodic_recheck, _RECHECK_INTERVAL)
 
         for entity_id in self.hass.states.async_entity_ids("update"):
-            self._recover_install_across_restart(entity_id)
+            state = self.hass.states.get(entity_id)
+            if state is not None:
+                self._check_and_advance_installed_baseline(entity_id, state)
             await self._async_refresh_one(entity_id)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
 
@@ -485,60 +487,70 @@ class UpdateManagerCoordinator:
         self._fire_listeners()
 
     @callback
-    def _recover_install_across_restart(self, entity_id: str) -> None:
-        """Retroactively fires the install listeners for an install that
-        completed entirely while HA was down (see self._last_installed_version's
-        own comment for why _handle_state_changed's live event comparison
-        can never catch this on its own). Must run before _async_refresh_one
-        for this same entity_id -- that call is what advances
-        self._last_installed_version to the current value, so this needs to
-        compare against the old persisted value first.
+    def _check_and_advance_installed_baseline(self, entity_id: str, state: State) -> None:
+        """Compares `state`'s own installed_version against the persisted
+        restart-recovery baseline (self._last_installed_version), fires the
+        install listeners if they genuinely disagree, then advances the
+        baseline to match -- in that order, so the comparison always sees
+        the *previous* baseline, never one this same call already
+        overwrote. Three callers, all needing exactly this: async_start's
+        own startup sweep (an install that completed entirely while HA was
+        down), _async_refresh_one (the live event/on-demand-refresh path),
+        and _async_periodic_recheck (a self-healing safety net, catching
+        anything the other two ever miss -- a dropped/coalesced event, or
+        some future integration's own bogus-placeholder quirk, added
+        2026-08-18 after finding _handle_state_changed's own live-path
+        comparison had never gotten the same placeholder protection this
+        one always had).
+
+        Both a falsy value and _PLACEHOLDER_INSTALLED_VERSION are excluded
+        from *both* sides of the comparison and from ever being written as
+        the new baseline (see that constant's own comment for the confirmed
+        Zigbee2MQTT restart quirk, and an empty-string ESPHome one found
+        live 2026-08-18: a Home Assistant Voice PE briefly reporting no
+        installed_version at all while genuinely unavailable) -- a bogus
+        placeholder must never look like a real "from" version, and must
+        never poison the baseline for next time either.
 
         Same call shape as the live path (listener(entity_id, old, new,
-        state)), so install_log.py's own listener doesn't need to know
-        this ever happened any differently. coordinator.cache is always
-        empty for this entity_id at this point (rebuilt from scratch every
-        restart, no entry yet), so the listener's own available_since
-        naturally comes back None here -- an honest "we don't know", not a
+        state)) for a retroactive/self-healing fire, so install_log.py's
+        own listener doesn't need to know this ever happened any
+        differently. For a fresh restart specifically, coordinator.cache is
+        always empty for this entity_id at this point (rebuilt from scratch
+        every restart, no entry yet), so the listener's own available_since
+        naturally comes back None -- an honest "we don't know", not a
         guess, since HA genuinely wasn't running to observe when this
         update actually became available.
 
         Known limitation, found by code review, 2026-07-27: for the same
-        reason, __init__.py's own _on_install always logs this as a manual
-        install, never an auto-install, even if install_manager.py's own
-        InstallManager actually dispatched it right before the restart --
-        was_auto_installed() reads InstallManager._recently_executed, an
-        in-memory-only dict that can't survive a restart any more than
-        this coordinator's own un-persisted cache can. Today this is only
-        ever *actually* wrong for a non-Core/Supervisor/OS entity that's
-        both auto-install-eligible in this integration's own rules and
-        happens to need a restart before its own installed_version updates
+        restart reason, __init__.py's own _on_install always logs this as a
+        manual install, never an auto-install, even if install_manager.py's
+        own InstallManager actually dispatched it right before the restart
+        -- was_auto_installed() reads InstallManager._recently_executed, an
+        in-memory-only dict that can't survive a restart any more than this
+        coordinator's own un-persisted cache can. Today this is only ever
+        *actually* wrong for a non-Core/Supervisor/OS entity that's both
+        auto-install-eligible in this integration's own rules and happens
+        to need a restart before its own installed_version updates
         (Core/Supervisor/OS themselves are hard-excluded from auto-install
         entirely, so "manual" is always correct for them regardless) --
         narrow enough, and persisting dispatch records across a restart
         invasive enough, that this is left as a documented gap rather than
         fixed here."""
-        state = self.hass.states.get(entity_id)
-        if state is None:
-            return
         new_installed = state.attributes.get("installed_version")
-        # _PLACEHOLDER_INSTALLED_VERSION excluded the same way
-        # _async_refresh_one's own baseline-advance does (see that
-        # constant's own comment for the confirmed Zigbee2MQTT restart
-        # quirk this guards against) -- without it, a device that hasn't
-        # synced its real firmware version back yet would fire a bogus
-        # "install" event claiming the device regressed from its real
-        # previous version down to the placeholder.
         if not new_installed or new_installed == _PLACEHOLDER_INSTALLED_VERSION:
             return
         old_installed = self._last_installed_version.get(entity_id)
-        if old_installed is not None and old_installed != new_installed:
+        if old_installed and old_installed != _PLACEHOLDER_INSTALLED_VERSION and old_installed != new_installed:
             self._fire_install_listeners(entity_id, old_installed, new_installed, state)
+        if old_installed != new_installed:
+            self._last_installed_version[entity_id] = new_installed
+            self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
 
     def _fire_install_listeners(self, entity_id: str, old_installed: str, new_installed: str, state: State) -> None:
         """The one place every install listener actually gets called, shared
-        by the live path (_handle_state_changed) and the restart-recovery
-        path (_recover_install_across_restart above) -- found by review,
+        by the live path (_handle_state_changed) and the shared
+        _check_and_advance_installed_baseline above -- found by review,
         these previously each had their own identical `for listener in
         list(self._install_listeners): listener(...)` loop."""
         for listener in list(self._install_listeners):
@@ -671,8 +683,22 @@ class UpdateManagerCoordinator:
                 entity_id, self.excluded_entities
             )
 
-    @callback
-    def _async_periodic_recheck(self, now: datetime) -> None:
+    async def _async_periodic_recheck(self, now: datetime) -> None:
+        # Self-healing safety net (added 2026-08-18): re-derives the
+        # restart-recovery baseline from live state for every currently-
+        # tracked entity, not just once at startup or reactively on a live
+        # state_changed event -- catches anything those two ever miss (a
+        # dropped/coalesced event, some future integration's own bogus-
+        # placeholder quirk not yet seen). Cheap (an in-memory state read
+        # + dict compare per entity, no recorder queries), staggered the
+        # same modest amount async_start's own startup sweep already uses
+        # to stay gentle on a large instance, even though this now repeats
+        # every _RECHECK_INTERVAL rather than running once.
+        for entity_id in list(self.cache):
+            state = self.hass.states.get(entity_id)
+            if state is not None:
+                self._check_and_advance_installed_baseline(entity_id, state)
+            await asyncio.sleep(_STARTUP_QUERY_STAGGER)
         self._recompute_all(now)
         self._fire_listeners()
 
@@ -713,7 +739,24 @@ class UpdateManagerCoordinator:
 
         old_installed = old_state.attributes.get("installed_version") if old_state else None
         new_installed = new_state.attributes.get("installed_version") if new_state else None
-        if old_installed is not None and new_installed is not None and old_installed != new_installed:
+        # Falsy-checked, not just `is not None` -- found live, 2026-08-18:
+        # a Home Assistant Voice PE (ESPHome) device briefly reported an
+        # empty string as its own installed_version before its real
+        # firmware version synced, which this `is not None` check let
+        # straight through, logging a bogus "from_version": "" install-log
+        # entry. Also excludes _PLACEHOLDER_INSTALLED_VERSION now, the
+        # Zigbee2MQTT-specific "-1" quirk _check_and_advance_installed_baseline's
+        # own read/write already guard against -- that protection only ever
+        # covered the restart-recovery/periodic-recheck paths, this live
+        # path had the exact same exposure the whole time, just never hit
+        # by it before.
+        if (
+            old_installed
+            and new_installed
+            and old_installed != _PLACEHOLDER_INSTALLED_VERSION
+            and new_installed != _PLACEHOLDER_INSTALLED_VERSION
+            and old_installed != new_installed
+        ):
             self._fire_install_listeners(entity_id, old_installed, new_installed, new_state)
 
         old_latest = old_state.attributes.get("latest_version") if old_state else None
@@ -766,31 +809,14 @@ class UpdateManagerCoordinator:
                 self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
             return
 
-        # Advances the restart-recovery baseline (see
-        # _recover_install_across_restart) to whatever's live right now,
-        # regardless of "on"/"off"/skipped below -- this only cares about
-        # installed_version itself, not whether an update is pending.
-        # Delay-saved, not awaited immediately: this runs on every relevant
-        # state change, not just installs, and a lost write only costs a
-        # duplicate retroactive fire after a crash landing in that exact
-        # window, not a wrong user-visible decision (same risk already
-        # accepted for community_verdict.py's own cache).
-        live_installed = state.attributes.get("installed_version")
-        # _PLACEHOLDER_INSTALLED_VERSION excluded explicitly, not just
-        # falsy-checked (see that constant's own comment) -- a plain
-        # `if live_installed:` treats that non-empty string as a real
-        # version, permanently poisoning this restart-recovery baseline
-        # with it; the next restart then sees a real version where this
-        # persisted placeholder was expected, concludes an install
-        # silently completed while HA was down, and fires a bogus
-        # install-log entry for it.
-        if (
-            live_installed
-            and live_installed != _PLACEHOLDER_INSTALLED_VERSION
-            and self._last_installed_version.get(entity_id) != live_installed
-        ):
-            self._last_installed_version[entity_id] = live_installed
-            self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
+        # Restart-recovery baseline advance + self-healing install
+        # detection, regardless of "on"/"off"/skipped below -- this only
+        # cares about installed_version itself, not whether an update is
+        # pending. See _check_and_advance_installed_baseline's own
+        # docstring for the full reasoning (placeholder/falsy exclusion,
+        # comparison-before-advance ordering) -- shared with async_start's
+        # own startup sweep and _async_periodic_recheck.
+        self._check_and_advance_installed_baseline(entity_id, state)
 
         # HA's own update entities are always exactly "on" (an update is
         # available) or "off" -- "off" normally means genuinely up to

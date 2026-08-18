@@ -320,7 +320,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # that call's own bulk scan can now retroactively fire this exact
     # listener, synchronously, inline, for an install that completed
     # entirely while HA was down (see coordinator.py's own
-    # _recover_install_across_restart), not only from a later live
+    # _check_and_advance_installed_baseline), not only from a later live
     # state_changed event like before. install_log.async_load() had to be
     # pulled out of the gather below and awaited on its own first for this
     # reason: if it hadn't finished loading yet, _on_install's own
