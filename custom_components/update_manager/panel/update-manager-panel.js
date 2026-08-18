@@ -2621,6 +2621,27 @@ class UpdateManagerPanel extends HTMLElement {
   _updateDialogProgress() {
     if (!this._dialogEntityId) return;
     const state = entityState(this._hass, this._dialogEntityId);
+    // entity_id is this panel's own identity for "which entity is this
+    // dialog about" throughout -- there's no unique_id tracking on this
+    // side at all (see this._dialogEntityId's own uses). A rename (e.g.
+    // via HA's own more-info dialog, reachable from this same dialog's own
+    // "Open" button) makes the old entity_id vanish from hass.states
+    // entirely, with nothing here to notice or follow it to its new id.
+    // Found live, 2026-08-19: this dialog stayed open underneath, showing
+    // stale content, until whatever next tried to rebuild it (e.g.
+    // reopening after the more-info dialog closes) failed to find
+    // anything for the old entity_id and rendered empty/broken instead.
+    // Closing outright here is a deliberate, proportionate choice over
+    // trying to make this panel follow the entity to its new id live
+    // (which would need its own entity-registry subscription, a real new
+    // capability this panel doesn't have today) -- a rename mid-dialog is
+    // rare, and failing safely (closed, with an explanation) beats a
+    // broken-looking dialog.
+    if (state === undefined && this._dialogLastState !== undefined) {
+      this._dialogEl.open = false;
+      this._showToast(this._tr.dialog_entity_renamed_toast);
+      return;
+    }
     if (state === this._dialogLastState) return;
     const wasInstalling = updateIsInstalling(this._dialogLastState);
     this._dialogLastState = state;
