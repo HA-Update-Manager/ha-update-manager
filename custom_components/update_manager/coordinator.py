@@ -189,6 +189,32 @@ def excluded_entities_from_options(options: dict) -> frozenset[str]:
 def trusted_voters_from_options(options: dict) -> list[str]:
     return list(options.get(CONF_TRUSTED_VOTERS, []))
 
+
+def _migrate_entity_id_keys_to_unique_id(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+    """One-time upgrade for data persisted before _available_since/
+    _last_installed_version/_force_ready switched from entity_id keys to
+    unique_id keys (see UpdateManagerCoordinator._stable_key's own
+    docstring for why -- found live, 2026-08-19: a renamed entity's
+    available_since silently reset to "now" despite async_rename_entity's
+    own careful relabeling, a race this re-keying removes outright rather
+    than trying to out-synchronize). Only re-keys an entry whose key still
+    looks like an entity_id (starts with "update.") -- an already-migrated,
+    unique_id-keyed entry is left alone, so this is safe to run
+    unconditionally on every load, not a true one-shot. An entity that no
+    longer exists at all has no stable key left to migrate to and is
+    dropped -- a stale record for a gone entity has no use anyway."""
+    registry = er.async_get(hass)
+    migrated: dict[str, Any] = {}
+    for key, value in data.items():
+        if key.startswith("update."):
+            entry = registry.async_get(key)
+            if entry is None or not entry.unique_id:
+                continue
+            migrated[entry.unique_id] = value
+        else:
+            migrated[key] = value
+    return migrated
+
 # Brief pause between recorder history lookups during the initial bulk
 # scan at startup -- a large instance can have 100+ update entities, and
 # firing that many recorder queries back to back right at startup (already
@@ -448,15 +474,18 @@ class UpdateManagerCoordinator:
             self._last_installed_store.async_load(),
             self._force_ready_store.async_load(),
         )
-        self._available_since = available_since or {}
-        self._last_installed_version = last_installed_version or {}
+        self._available_since = _migrate_entity_id_keys_to_unique_id(self.hass, available_since or {})
+        self._last_installed_version = _migrate_entity_id_keys_to_unique_id(self.hass, last_installed_version or {})
         # Pre-{"version", "at"} records on disk are a bare version string
         # (this field's own shape before it gained "at") -- migrated in
         # place to the current shape, "at" left absent rather than guessed.
-        self._force_ready = {
-            entity_id: ({"version": record} if isinstance(record, str) else record)
-            for entity_id, record in (force_ready or {}).items()
-        }
+        self._force_ready = _migrate_entity_id_keys_to_unique_id(
+            self.hass,
+            {
+                entity_id: ({"version": record} if isinstance(record, str) else record)
+                for entity_id, record in (force_ready or {}).items()
+            },
+        )
 
         # Subscribe *before* the initial bulk scan, not after -- found via
         # live testing on a real instance (some pending updates never
@@ -486,6 +515,31 @@ class UpdateManagerCoordinator:
         # happened to fire it, up to _RECHECK_INTERVAL after a fresh
         # restart.
         self._fire_listeners()
+
+    def _stable_key(self, entity_id: str) -> str:
+        """The key self._available_since/self._last_installed_version/
+        self._force_ready are actually stored under: an entity's own
+        unique_id when the entity registry has one, entity_id itself as a
+        fallback for the rare entity with no registry entry at all.
+        unique_id survives an entity_id rename, entity_id doesn't -- found
+        live, 2026-08-19: a renamed entity's available_since silently
+        reset to "now" despite async_rename_entity's own careful
+        relabeling of these dicts, because the entity's own independent,
+        live refresh for its brand-new entity_id could race that relabel
+        and win (a slower recorder-based "first time seen" lookup finding
+        nothing yet for a key that's seconds old, then overwriting the
+        correctly-relabeled value once it finally resolves). Keying by
+        unique_id removes the relabeling -- and therefore the race -- for
+        these three structures entirely: the key never changes, so there's
+        nothing left to relabel. self.cache stays entity_id-keyed (see
+        async_rename_entity below); it has no such "trust what's cached,
+        only recompute if missing" pattern (see _async_cache_active, which
+        unconditionally overwrites it on every refresh), so it self-heals
+        on the next refresh regardless, and it's read directly by entity_id
+        from several other files, too wide a blast radius to re-key for a
+        bug that structure was never actually at risk of."""
+        entry = er.async_get(self.hass).async_get(entity_id)
+        return entry.unique_id if entry is not None and entry.unique_id else entity_id
 
     @callback
     def _check_and_advance_installed_baseline(self, entity_id: str, state: State, *, retroactive: bool) -> None:
@@ -553,11 +607,12 @@ class UpdateManagerCoordinator:
         new_installed = state.attributes.get("installed_version")
         if not new_installed or new_installed == _PLACEHOLDER_INSTALLED_VERSION:
             return
-        old_installed = self._last_installed_version.get(entity_id)
+        key = self._stable_key(entity_id)
+        old_installed = self._last_installed_version.get(key)
         if old_installed and old_installed != _PLACEHOLDER_INSTALLED_VERSION and old_installed != new_installed:
             self._fire_install_listeners(entity_id, old_installed, new_installed, state, retroactive)
         if old_installed != new_installed:
-            self._last_installed_version[entity_id] = new_installed
+            self._last_installed_version[key] = new_installed
             self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
 
     def _fire_install_listeners(
@@ -802,31 +857,23 @@ class UpdateManagerCoordinator:
         override doesn't itself produce a real state_changed event the way
         a genuine update.skip call does, so nothing else would otherwise
         tell this coordinator to look again."""
-        self._force_ready[entity_id] = {"version": to_version, "at": dt_util.utcnow().isoformat()}
+        self._force_ready[self._stable_key(entity_id)] = {"version": to_version, "at": dt_util.utcnow().isoformat()}
         await self._force_ready_store.async_save(self._force_ready)
         await self.async_refresh_one(entity_id)
 
     async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
-        """Relabels every entity_id-keyed record this coordinator holds --
-        self.cache (live, unpersisted) and the three persisted stores --
-        after a live HA entity registry rename. See __init__.py's own
-        EVENT_ENTITY_REGISTRY_UPDATED listener. Relabels self.cache
-        directly (rather than relying solely on the async_refresh_one call
-        below) so the cache is correct immediately even if the entity's
-        live state under the new entity_id hasn't caught up yet at the
-        exact instant this event fires."""
+        """Relabels self.cache after a live HA entity registry rename --
+        see __init__.py's own EVENT_ENTITY_REGISTRY_UPDATED listener.
+        self._available_since/_last_installed_version/_force_ready need no
+        relabeling at all anymore (see _stable_key's own docstring): they're
+        keyed by unique_id, which a rename never changes. self.cache stays
+        entity_id-keyed, relabeled directly here (rather than relying
+        solely on the async_refresh_one call below) so it's correct
+        immediately even if the entity's live state under the new
+        entity_id hasn't caught up yet at the exact instant this fires."""
         cache_entry = relabel_key(self.cache, old_entity_id, new_entity_id)
         if cache_entry is not None:
             cache_entry["entity_id"] = new_entity_id
-
-        if relabel_key(self._available_since, old_entity_id, new_entity_id) is not None:
-            await self._available_since_store.async_save(self._available_since)
-
-        if relabel_key(self._last_installed_version, old_entity_id, new_entity_id) is not None:
-            self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
-
-        if relabel_key(self._force_ready, old_entity_id, new_entity_id) is not None:
-            await self._force_ready_store.async_save(self._force_ready)
 
         # Only refresh if the new entity_id's state is already live --
         # found by code review, 2026-08-18: _async_refresh_one's own
@@ -843,9 +890,20 @@ class UpdateManagerCoordinator:
         state = self.hass.states.get(entity_id)
         if state is None:
             self.cache.pop(entity_id, None)
-            if self._available_since.pop(entity_id, None) is not None:
+            # _stable_key's own registry lookup usually can't resolve
+            # entity_id here anymore -- for a rename, the registry already
+            # only knows the *new* entity_id (so this correctly no-ops,
+            # nothing under the old entity_id string to pop from a dict
+            # that's keyed by unique_id); for a genuine removal, the
+            # registry entry is often gone too by this point, same no-op.
+            # A removed entity's own record can end up orphaned here as a
+            # result (never popped, since there's no way left to resolve
+            # its unique_id) -- accepted as a minor, low-severity tradeoff,
+            # not the bug this re-keying exists to fix.
+            key = self._stable_key(entity_id)
+            if self._available_since.pop(key, None) is not None:
                 await self._available_since_store.async_save(self._available_since)
-            if self._last_installed_version.pop(entity_id, None) is not None:
+            if self._last_installed_version.pop(key, None) is not None:
                 self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
             return
 
@@ -939,19 +997,20 @@ class UpdateManagerCoordinator:
         time this entity/version pair is ever seen, then remembers that
         result from here on: a one-time backfill, not a lookup repeated
         on every refresh."""
-        record = self._available_since.get(entity_id)
+        key = self._stable_key(entity_id)
+        record = self._available_since.get(key)
         if record is not None and record.get("version") == latest_version:
             parsed = dt_util.parse_datetime(record.get("since", ""))
             if parsed is not None:
                 return parsed
 
         available_since = await _async_available_since(self.hass, entity_id, latest_version)
-        self._available_since[entity_id] = {"version": latest_version, "since": available_since.isoformat()}
+        self._available_since[key] = {"version": latest_version, "since": available_since.isoformat()}
         await self._available_since_store.async_save(self._available_since)
         return available_since
 
     def _is_force_ready(self, entity_id: str, latest: str) -> bool:
-        record = self._force_ready.get(entity_id)
+        record = self._force_ready.get(self._stable_key(entity_id))
         return record is not None and record.get("version") == latest
 
     def _staging_result(
@@ -1089,7 +1148,7 @@ class UpdateManagerCoordinator:
         if status == "waiting":
             return None
         if self._is_force_ready(entity_id, latest):
-            record = self._force_ready.get(entity_id) or {}
+            record = self._force_ready.get(self._stable_key(entity_id)) or {}
             return record.get("at")
         wait = wait_for_size(rules, size)
         if wait is None:
