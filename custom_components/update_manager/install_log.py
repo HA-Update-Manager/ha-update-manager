@@ -73,12 +73,20 @@ class InstallLog:
         *,
         release_url: str | None,
         supported_features: int,
-        auto_installed: bool,
+        install_method: str,
         auto_install_reason: str | None = None,
         trusted_voter_usernames: list[str] | None = None,
         announced_at: str | None = None,
         available_since: str | None = None,
     ) -> None:
+        # "auto_installed" kept as its own bool key too (derived, not a
+        # second independent input) -- existing readers (sensor.py,
+        # diagnostics.py, the panel, the EVENT_INSTALLED event) already
+        # depend on it, and backup_used's own gate right below needs a
+        # plain bool anyway. install_method is the new, more specific
+        # source of truth callers pass in -- see __init__.py's own
+        # _on_install for how "auto"/"manual"/"external" gets decided.
+        auto_installed = install_method == "auto"
         release_notes = await _async_release_notes(self._hass, entity_id, supported_features)
         self._entries.append(
             {
@@ -89,6 +97,7 @@ class InstallLog:
                 "release_url": release_url,
                 "release_notes": release_notes,
                 "auto_installed": auto_installed,
+                "install_method": install_method,
                 # Only ever set for an auto-install: install_manager.py's own
                 # _async_execute unconditionally sets `backup: True` on the
                 # dispatched update.install call whenever the entity's

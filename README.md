@@ -101,11 +101,13 @@ Every entity Update Manager creates lives under its own "Update Manager" device.
   | Event | Fired when | Data |
   | --- | --- | --- |
   | `update_manager_announced` | An auto-install countdown starts | `entity_id`, `from_version`, `to_version`, `execute_at` |
-  | `update_manager_installed` | An install completes, auto or manual alike | `entity_id`, `from_version`, `to_version`, `auto_installed`, `auto_install_reason`, `trusted_voter_usernames` |
+  | `update_manager_installed` | An install completes, auto or manual alike | `entity_id`, `from_version`, `to_version`, `auto_installed`, `install_method`, `auto_install_reason`, `trusted_voter_usernames` |
   | `update_manager_install_failed` | An auto-install's `update.install` call raised | `entity_id`, `to_version` |
 
   Ongoing status (which updates are currently Ready/Postponed/etc.) is already covered by the sensors
-  above; these events are only for the moments in between.
+  above; these events are only for the moments in between. `install_method` is one of `auto`, `manual`,
+  or `external` (an entity that updated itself outside Home Assistant entirely, only noticed here after
+  the fact, e.g. a device with its own separate auto-update setting).
 
 **Example: send yourself a notification for every scheduled auto-install**, the same message the built-in
 persistent notification already shows, just on your phone instead:
@@ -159,6 +161,10 @@ every 15 minutes.
 
 * **A pending update isn't showing as "ready" yet**: staging recomputes every 15 minutes, so it can lag
   the exact wait-days boundary by up to that long.
+* **A History entry says "Install method: External"**: this update happened outside Home Assistant
+  entirely (a device or app with its own separate auto-update setting, e.g. a UniFi switch's own
+  firmware auto-upgrade), and was only noticed here once it already had a newer version. Not something
+  Update Manager or a person did through Home Assistant.
 * **No vote controls show for an entity**: it likely isn't identifiable for voting (see Known limitations).
 * **An update still auto-installed despite a negative vote I saw**: check the vote was on this exact
   version jump (see Known limitations), and that no trusted voter's "healthy" vote was in play (it always

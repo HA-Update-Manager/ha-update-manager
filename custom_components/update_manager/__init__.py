@@ -276,6 +276,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         reason = context.reason if context else None
         trusted_voter_usernames = context.trusted_voter_usernames if context else None
         announced_at = context.announced_at.isoformat() if context and context.announced_at else None
+        # "manual" vs "external" (found live, 2026-08-18, confirmed against
+        # three real cases in Home Assistant's own Logbook before building
+        # this: a genuine human-triggered install always carries a
+        # resolvable context.user_id, propagated synchronously from the
+        # update.install service call all the way to this exact state --
+        # confirmed against core.py's own source too, not guessed. An
+        # entity that updated itself outside Home Assistant entirely (a
+        # UniFi switch's own auto-update, a Home Assistant Voice PE and a
+        # Zigbee device both silently reporting an already-newer version)
+        # never went through that service call at all, so user_id is
+        # always empty there -- same "Via Update"/no attribution shown in
+        # the Logbook itself for exactly these three real cases. Only
+        # checked once "auto" (our own dispatch) is already ruled out --
+        # install_manager.py's own service calls have no user_id either
+        # (backend code, not a logged-in session), which would otherwise
+        # misread as "external" too.
+        install_method = "auto" if context is not None else ("manual" if new_state.context.user_id else "external")
         cached = coordinator.cache.get(entity_id)
         hass.async_create_task(
             install_log.async_log_install(
@@ -290,7 +307,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
                 # there's no later recompute to fix a wrong value.
                 release_url=corrected_release_url(entity_id, new_state.attributes.get("release_url"), new_version),
                 supported_features=new_state.attributes.get("supported_features", 0),
-                auto_installed=context is not None,
+                install_method=install_method,
                 auto_install_reason=reason,
                 trusted_voter_usernames=trusted_voter_usernames,
                 announced_at=announced_at,
@@ -310,6 +327,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
                 "from_version": old_version,
                 "to_version": new_version,
                 "auto_installed": context is not None,
+                "install_method": install_method,
                 "auto_install_reason": reason,
                 "trusted_voter_usernames": trusted_voter_usernames or [],
             },

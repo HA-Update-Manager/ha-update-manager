@@ -265,6 +265,11 @@ export const TRANSLATIONS = {
     dialog_history_installed_at: "Installed",
     dialog_history_method_label: "Install method",
     dialog_history_method_manual: "Manual",
+    // Distinct from Manual since 2026-08-18: no resolvable person behind
+    // this at all (unlike Manual, where a real Home Assistant user's own
+    // context.user_id was found) -- an entity that updated itself outside
+    // Home Assistant entirely, only noticed here after the fact.
+    dialog_history_method_external: "External",
     dialog_history_method_rules: "Automatic, your own rules",
     dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
     dialog_history_backup_label: "Backup",
@@ -604,6 +609,7 @@ export const TRANSLATIONS = {
     dialog_history_installed_at: "Geïnstalleerd",
     dialog_history_method_label: "Installatiemethode",
     dialog_history_method_manual: "Handmatig",
+    dialog_history_method_external: "Extern",
     dialog_history_method_rules: "Automatisch, je eigen regels",
     dialog_history_method_trusted: (names) => `Automatisch, vertrouwde stem van ${names}`,
     dialog_history_backup_label: "Back-up",

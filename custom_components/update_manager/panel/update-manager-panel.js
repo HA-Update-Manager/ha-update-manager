@@ -810,7 +810,16 @@ function joinUsernames(tr, usernames) {
 // fallback covers that older case specifically, distinct from a genuine manual
 // install.
 function installMethodText(tr, entry) {
-  if (!entry.auto_installed) return tr.dialog_history_method_manual;
+  if (!entry.auto_installed) {
+    // install_method (added 2026-08-18): absent on any entry logged before
+    // this existed, which stays "Manual" exactly as it always has --
+    // "External" only for a real, confirmed-live distinction (a resolvable
+    // context.user_id vs none at all, see __init__.py's own _on_install),
+    // never guessed for older entries with no data to base it on.
+    return entry.install_method === "external"
+      ? tr.dialog_history_method_external
+      : tr.dialog_history_method_manual;
+  }
   if (entry.auto_install_reason === "trusted_voter") {
     return tr.dialog_history_method_trusted(joinUsernames(tr, entry.trusted_voter_usernames || []));
   }

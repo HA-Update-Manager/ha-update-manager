@@ -739,26 +739,18 @@ class UpdateManagerCoordinator:
 
         old_installed = old_state.attributes.get("installed_version") if old_state else None
         new_installed = new_state.attributes.get("installed_version") if new_state else None
-        # Falsy-checked, not just `is not None` -- found live, 2026-08-18:
-        # a Home Assistant Voice PE (ESPHome) device briefly reported an
-        # empty string as its own installed_version before its real
-        # firmware version synced, which this `is not None` check let
-        # straight through, logging a bogus "from_version": "" install-log
-        # entry. Also excludes _PLACEHOLDER_INSTALLED_VERSION now, the
-        # Zigbee2MQTT-specific "-1" quirk _check_and_advance_installed_baseline's
-        # own read/write already guard against -- that protection only ever
-        # covered the restart-recovery/periodic-recheck paths, this live
-        # path had the exact same exposure the whole time, just never hit
-        # by it before.
-        if (
-            old_installed
-            and new_installed
-            and old_installed != _PLACEHOLDER_INSTALLED_VERSION
-            and new_installed != _PLACEHOLDER_INSTALLED_VERSION
-            and old_installed != new_installed
-        ):
-            self._fire_install_listeners(entity_id, old_installed, new_installed, new_state)
-
+        # No compare-and-fire here anymore (found live, 2026-08-18, right
+        # after adding it back below): this used to duplicate every real
+        # install into two identical History entries a couple milliseconds
+        # apart, one from here and one from _check_and_advance_installed_
+        # baseline (via _async_refresh_one, scheduled a few lines down and
+        # *always* reached whenever installed_version actually changed --
+        # see old_key/new_key below, they can never compare equal in that
+        # case). That shared helper already has the exact same falsy/
+        # placeholder guard this block used to have inline (see its own
+        # docstring), so it alone is enough; this function's only job now
+        # is deciding whether anything worth a fresh recompute happened at
+        # all.
         old_latest = old_state.attributes.get("latest_version") if old_state else None
         new_latest = new_state.attributes.get("latest_version") if new_state else None
         old_key = (old_state.state, old_installed, old_latest) if old_state else None
