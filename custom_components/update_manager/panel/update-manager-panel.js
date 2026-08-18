@@ -560,6 +560,40 @@ function aggregateVerdictText(tr, healthyCount, problematicCount, perspective) {
   return null;
 }
 
+// The timeline's own one-line version of _buildCommunitySection's "you vs
+// others" merge (see that section's own renderVerdictRows for the full,
+// multi-row version, kept separate rather than shared -- renderVerdictRows
+// is tightly coupled to that section's own persistent DOM rows/live-vote-
+// rebuild mechanism, not a plain string in, string out shape this could
+// call into without dragging that along). Only has room for a single line
+// here, so a 3-way-mixed others count (both healthy and problematic others
+// exist) falls back to just your own verdict, same "answer the question
+// this compact spot exists to answer" reasoning -- the fuller others
+// breakdown still lives in the Community section itself. myVerdict null
+// (never voted) falls through to the same plain aggregate text as before.
+function myAwareCommunityVerdictText(tr, myVerdict, healthyCount, problematicCount) {
+  const othersHealthy = Math.max(0, healthyCount - (myVerdict === "healthy" ? 1 : 0));
+  const othersProblematic = Math.max(0, problematicCount - (myVerdict === "problematic" ? 1 : 0));
+
+  if (!myVerdict) return aggregateVerdictText(tr, othersHealthy, othersProblematic, "people");
+
+  if (othersHealthy === 0 && othersProblematic === 0) {
+    return myVerdict === "healthy" ? tr.community_verdict_you_healthy : tr.community_verdict_you_problematic;
+  }
+  if (othersHealthy > 0 && othersProblematic > 0) {
+    return myVerdict === "healthy" ? tr.community_verdict_you_healthy : tr.community_verdict_you_problematic;
+  }
+  const othersCount = othersHealthy > 0 ? othersHealthy : othersProblematic;
+  const othersVerdict = othersHealthy > 0 ? "healthy" : "problematic";
+  return myVerdict === othersVerdict
+    ? othersVerdict === "healthy"
+      ? tr.community_verdict_you_and_others_healthy(othersCount)
+      : tr.community_verdict_you_and_others_problematic(othersCount)
+    : myVerdict === "healthy"
+    ? tr.community_verdict_you_vs_others_healthy_problematic(othersCount)
+    : tr.community_verdict_you_vs_others_problematic_healthy(othersCount);
+}
+
 // Row 1's own "you voted" rendering (see _buildCommunitySection), shared
 // between the initial verdict_for_version fetch (my_verdict already set)
 // and a vote just cast in this same dialog session (see _buildVoteControls'
@@ -4012,7 +4046,12 @@ class UpdateManagerPanel extends HTMLElement {
         addDetailWithIcon(step, verdictIcon(false), tr.dialog_timeline_community_healthy);
         return;
       }
-      const text = aggregateVerdictText(tr, communityHealthyCount, communityProblematicCount, "people");
+      // "you"-aware (myAwareCommunityVerdictText), not the plain
+      // aggregateVerdictText this used before -- direct user feedback,
+      // 2026-08-19: it showed the anonymous "1 person reported..." right
+      // next to a correctly "you"-aware confirmation elsewhere in the same
+      // dialog, for the exact same vote.
+      const text = myAwareCommunityVerdictText(tr, communityMyVerdict, communityHealthyCount, communityProblematicCount);
       // Same "any problematic report wins the icon" rule verdictBadge
       // itself already applies (isProblematic = problematic_count > 0,
       // regardless of how many healthy votes also exist) -- not
@@ -4415,6 +4454,15 @@ class UpdateManagerPanel extends HTMLElement {
     // rebuild this whole communityOverride mechanism already does for the
     // other two.
     const communityOtherJumps = communityOverride ? communityOverride.other_jumps || [] : [];
+    // Same no-cached-fallback shape as communityOtherJumps just above --
+    // only ever known once the live fetch resolves. Used so the timeline's
+    // own community-verdict line (see addCommunityDetail) can say "You
+    // reported..." instead of a generic "1 person reported..." when that
+    // one person is the viewer -- direct user feedback, 2026-08-19: it
+    // showed the anonymous count right next to a correctly "you"-aware
+    // confirmation elsewhere in the same dialog, reading as if they
+    // disagreed about the same fact.
+    const communityMyVerdict = communityOverride ? communityOverride.my_verdict : undefined;
     const heldBackByCommunity =
       showPendingUpdate &&
       effectiveTrustedVote !== "healthy" &&
@@ -5871,6 +5919,7 @@ class UpdateManagerPanel extends HTMLElement {
         trusted_vote: result.trusted_vote,
         trusted_voters_matched: result.trusted_voters_matched,
         other_jumps: result.other_jumps || [],
+        my_verdict: result.my_verdict,
       });
 
       if (result.my_verdict === "problematic") {
@@ -5897,6 +5946,7 @@ class UpdateManagerPanel extends HTMLElement {
           trusted_vote: result.trusted_vote,
           trusted_voters_matched: result.trusted_voters_matched,
           other_jumps: result.other_jumps || [],
+          my_verdict: verdict,
         });
       });
     })();
