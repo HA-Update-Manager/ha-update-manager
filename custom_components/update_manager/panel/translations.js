@@ -55,10 +55,6 @@ export const TRANSLATIONS = {
     refresh: "Refresh",
     checking_updates_toast: "Checking for updates…",
     refreshed_toast: "Update Manager refreshed",
-    // _updateDialogProgress's own closed-dialog fallback -- shown when the
-    // entity this dialog was open for got renamed (or removed) while it
-    // was open, and this panel has no way to follow it to its new id.
-    dialog_entity_renamed_toast: "This entity was renamed or removed. Reopen it from the list to see current details.",
     // "Update all" button's own click confirmation (see _updateAllInGroup)
     // -- fired immediately, before the actual dispatch/reload work, direct
     // user feedback: clicking it didn't show anything happening right away.
@@ -517,7 +513,6 @@ export const TRANSLATIONS = {
     refresh: "Vernieuwen",
     checking_updates_toast: "Bezig met controleren op updates…",
     refreshed_toast: "Update Manager ververst",
-    dialog_entity_renamed_toast: "Deze entiteit is hernoemd of verwijderd. Open 'm opnieuw vanuit de lijst voor actuele details.",
     update_all_started_toast: (count) => (count === 1 ? "1 update wordt geïnstalleerd…" : `${count} updates worden geïnstalleerd…`),
     menu_show_skipped_updates: "Overgeslagen updates tonen",
     menu_show_not_installable_updates: "Niet-installeerbare updates tonen",

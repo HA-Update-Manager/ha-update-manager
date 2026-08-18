@@ -2635,11 +2635,16 @@ class UpdateManagerPanel extends HTMLElement {
     // trying to make this panel follow the entity to its new id live
     // (which would need its own entity-registry subscription, a real new
     // capability this panel doesn't have today) -- a rename mid-dialog is
-    // rare, and failing safely (closed, with an explanation) beats a
-    // broken-looking dialog.
+    // rare enough that failing silently-but-safely beats a broken-looking
+    // dialog. this._dialogLastState is updated here too (not just left for
+    // the block below), a real bug found live: ha-dialog's own "closed"
+    // event (which clears this._dialogEntityId, see _ensureShell) only
+    // fires after its own close animation, so several more hass pushes
+    // can land in that window -- without updating it here, each one
+    // re-triggered this exact branch again.
     if (state === undefined && this._dialogLastState !== undefined) {
+      this._dialogLastState = state;
       this._dialogEl.open = false;
-      this._showToast(this._tr.dialog_entity_renamed_toast);
       return;
     }
     if (state === this._dialogLastState) return;
