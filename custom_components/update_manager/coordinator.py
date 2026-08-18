@@ -955,7 +955,7 @@ class UpdateManagerCoordinator:
                     # Skip button) -- surface it distinctly instead of
                     # treating it identically to nothing pending at all,
                     # see the panel's own "Skipped" group.
-                    self._cache_skipped(entity_id, state, current, latest)
+                    await self._cache_skipped(entity_id, state, current, latest)
                 return
             self.cache.pop(entity_id, None)
             return
@@ -1414,21 +1414,25 @@ class UpdateManagerCoordinator:
 
         await asyncio.gather(*(_refresh_one(entity_id, cached) for entity_id, cached in list(self.cache.items())))
 
-    def _cache_skipped(self, entity_id: str, state: State, current: str, latest: str) -> None:
+    async def _cache_skipped(self, entity_id: str, state: State, current: str, latest: str) -> None:
         # No staging computation here (state itself is "off", not "on" --
-        # never ran through _async_cache_active), so no remaining_seconds/
-        # real available_since either; available_since falls back to
-        # whatever was last known, or now if this entity's never been
-        # cached before, same conservative default _async_available_since
-        # itself falls back to.
+        # never ran through _async_cache_active), but available_since is
+        # still a real, persisted fact (self._available_since), not
+        # something only self.cache would know -- same authoritative
+        # lookup _async_cache_active itself uses. Found live, 2026-08-19:
+        # this used to carry over self.cache's own previous value instead,
+        # which is unpersisted and empty on every restart, so a skipped
+        # update's available_since silently reset to "now" after every
+        # single restart, unconditionally, nothing to do with renaming.
         previous = self.cache.get(entity_id)
-        available_since = previous["available_since"] if previous else dt_util.utcnow().isoformat()
-        # Same carry-over as available_since just above (and the same
-        # already-accepted imprecision: neither checks previous's own
-        # latest_version still matches) -- a skipped entity never runs
-        # through _resolve_ready_since (no staging computation here at
-        # all), so whatever it last resolved to is the closest real fact
-        # still available, None if it never had one.
+        available_since = (await self._async_get_available_since(entity_id, latest)).isoformat()
+        # ready_since has no equivalent persisted store of its own to fall
+        # back on the way available_since just above now does -- a skipped
+        # entity never runs through _resolve_ready_since (no staging
+        # computation here at all), so whatever it last resolved to is the
+        # closest real fact still available, None if it never had one.
+        # Same already-accepted imprecision as before (neither checks
+        # previous's own latest_version still matches).
         ready_since = previous.get("ready_since") if previous else None
         self.cache[entity_id] = {
             "entity_id": entity_id,
