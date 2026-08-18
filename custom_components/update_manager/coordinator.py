@@ -1418,14 +1418,30 @@ class UpdateManagerCoordinator:
         # No staging computation here (state itself is "off", not "on" --
         # never ran through _async_cache_active), but available_since is
         # still a real, persisted fact (self._available_since), not
-        # something only self.cache would know -- same authoritative
-        # lookup _async_cache_active itself uses. Found live, 2026-08-19:
+        # something only self.cache would know. Found live, 2026-08-19:
         # this used to carry over self.cache's own previous value instead,
         # which is unpersisted and empty on every restart, so a skipped
         # update's available_since silently reset to "now" after every
         # single restart, unconditionally, nothing to do with renaming.
+        #
+        # Read-only, unlike _async_cache_active's own
+        # _async_get_available_since call -- deliberately never falls
+        # through to a fresh recorder lookup here. Found live, 2026-08-19,
+        # a second time: that fallback (history.get_significant_states, via
+        # a recorder executor job) hung the Skip/Unskip websocket handlers
+        # outright when the recorder's own executor pool was busy, since
+        # both handlers await this whole refresh before ever sending a
+        # response -- an infinite spinner, not just a slow one. A skipped
+        # entity has no staging/wait-period computation to feed at all
+        # (see this method's own docstring above), so a precise, first-time
+        # answer isn't worth that risk here the way it is for a genuinely
+        # pending update.
         previous = self.cache.get(entity_id)
-        available_since = (await self._async_get_available_since(entity_id, latest)).isoformat()
+        record = self._available_since.get(self._stable_key(entity_id))
+        if record is not None and record.get("version") == latest:
+            available_since = record["since"]
+        else:
+            available_since = previous["available_since"] if previous else dt_util.utcnow().isoformat()
         # ready_since has no equivalent persisted store of its own to fall
         # back on the way available_since just above now does -- a skipped
         # entity never runs through _resolve_ready_since (no staging
