@@ -6250,6 +6250,24 @@ class UpdateManagerPanel extends HTMLElement {
           const trusted = trustedUsernames.includes(reason.username);
           infoGroup.appendChild(buildReasonItem(tr, reason, { trusted }));
         });
+        // result.problematic_reasons is already capped server-side
+        // (MAX_PROBLEMATIC_REASONS, community_verdict_payload.py), most
+        // recent first, with no signal of its own about how many were left
+        // out -- direct user feedback, 2026-08-19: it silently showed 5
+        // even when counts.problematic_count said there were more, no
+        // indication anything was missing. counts.problematic_count is the
+        // real, uncapped total, so the gap between the two is exactly how
+        // many aren't shown (my own reason, if any, is excluded from both
+        // sides the same way -- see problematic_reasons_from_payload's own
+        // exclude_username, so this stays correct whether or not I voted).
+        const othersProblematicTotal = Math.max(0, counts.problematic_count - (myVerdict === "problematic" ? 1 : 0));
+        const hiddenReasonsCount = othersProblematicTotal - result.problematic_reasons.length;
+        if (hiddenReasonsCount > 0) {
+          const more = document.createElement("p");
+          more.className = "hint";
+          more.textContent = tr.community_problematic_reasons_more(hiddenReasonsCount);
+          infoGroup.appendChild(more);
+        }
       }
 
       const status = await this._hass.callWS({ type: "update_manager/github_link_status" });

@@ -208,6 +208,10 @@ export const TRANSLATIONS = {
     community_other_jumps_heading: "Other jumps to this version",
     community_other_jump_line: (fromVersion, badgeTitle) => `From ${fromVersion}: ${badgeTitle}`,
     community_problematic_reasons_heading: "Reported reasons",
+    // Shown right after the (server-side-capped) reasons list whenever
+    // more exist than were sent -- see _buildCommunitySection's own
+    // hiddenReasonsCount.
+    community_problematic_reasons_more: (count) => (count === 1 ? "+1 more" : `+${count} more`),
     community_report_toggle: "Report a known issue",
     community_report_intro:
       "Already know this update will cause problems, e.g. from the release notes? Report it before installing, so others are warned before they update too.",
@@ -583,6 +587,7 @@ export const TRANSLATIONS = {
     community_other_jumps_heading: "Andere sprongen naar deze versie",
     community_other_jump_line: (fromVersion, badgeTitle) => `Van ${fromVersion}: ${badgeTitle}`,
     community_problematic_reasons_heading: "Gerapporteerde redenen",
+    community_problematic_reasons_more: (count) => (count === 1 ? "+1 meer" : `+${count} meer`),
     community_report_toggle: "Meld een bekend probleem",
     community_report_intro:
       "Weet je al dat deze update problemen gaat geven, bijvoorbeeld via de release notes? Meld dat vast voordat je 'm installeert, zodat anderen gewaarschuwd zijn voordat ze zelf updaten.",
