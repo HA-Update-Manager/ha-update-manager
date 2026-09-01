@@ -183,10 +183,6 @@ export const TRANSLATIONS = {
     // a restatement of it -- shown on the Auto-install step whenever
     // heldBackByCommunity is true.
     dialog_timeline_held_back_pointer: "Held back by the community verdict below.",
-    // Shown on the Ready to update step itself, whenever there's a real
-    // community fact to add -- see _buildTimeline's own addCommunityDetail
-    // docstring for why this isn't gated the same way the pointer above is.
-    dialog_timeline_community_healthy: "Trusted vote: no issues reported.",
     dialog_community_verdict_disclaimer:
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
     // Also the "nothing at all" row of the Community section's own fact
@@ -195,15 +191,14 @@ export const TRANSLATIONS = {
     // pairing, which read as a non-answer with no clear next step.
     community_not_yet_rated: "No one's reported on this jump yet.",
     community_vote_link_prompt: "Link your GitHub account in Settings to vote.",
-    // Surfaces whether a configured trusted voter is among the people who
-    // voted on this exact jump -- direct user feedback, 2026-07-27: "dat
-    // zie ik niet terug", after a trusted voter's own vote didn't show up
-    // anywhere even though it's exactly what changes auto-install behavior
-    // for this jump (see announcer.py's own effective_auto_install_state).
-    // "Trusted vote:" prefix, not "Trusted voter(s)": names can be one or
-    // several, this avoids needing a separate singular/plural form.
-    community_trusted_vote_healthy: (names) => `Trusted vote: ${names} reported this jump as healthy.`,
-    community_trusted_vote_problematic: (names) => `Trusted vote: ${names} reported this jump as problematic.`,
+    // Marks a reason in the reported-reasons list as coming from a
+    // configured trusted voter (see buildReasonItem) -- direct user
+    // feedback, 2026-07-27: "dat zie ik niet terug", after a trusted
+    // voter's own vote didn't show up anywhere even though it's exactly
+    // what changes auto-install behavior for this jump (see announcer.py's
+    // own effective_auto_install_state). The trusted voter is also named
+    // directly in the merged verdict sentence itself now (see
+    // community_verdict_named_healthy/problematic), not a separate line.
     community_trusted_voter_label: "Trusted voter",
     community_other_jumps_heading: "Other jumps to this version",
     community_other_jump_line: (fromVersion, badgeTitle) => `From ${fromVersion}: ${badgeTitle}`,
@@ -397,59 +392,42 @@ export const TRANSLATIONS = {
     // jump. "...to finish" (not just the bare name) -- direct user
     // feedback, 2026-08-09: read ambiguously on its own.
     rollout_queue_waiting: (name) => `Waiting for ${name} to finish`,
-    // Community-verdict fact rows (see _buildCommunitySection, and
-    // aggregateVerdictText for how these four get picked), read-only slice
-    // added 2026-07-22: https://github.com/HA-Update-Manager/community-votes.
-    // Redesigned 2026-07-27, direct user feedback: rather than one sentence
-    // that silently drops whichever count loses (problematic used to always
-    // win, even when e.g. 2 people said healthy and only 1 said
-    // problematic), "people"/"others" perspective + a "_mixed" variant show
-    // both numbers whenever both exist.
+    // Community-verdict fact rows (see communityVerdictLines for how these
+    // get picked), read-only slice added 2026-07-22:
+    // https://github.com/HA-Update-Manager/community-votes. Redesigned
+    // 2026-07-27, direct user feedback: rather than one sentence that
+    // silently drops whichever count loses (problematic used to always win,
+    // even when e.g. 2 people said healthy and only 1 said problematic), a
+    // "_mixed" variant shows both numbers whenever both exist. Used
+    // whenever nobody named (you, a trusted voter) is in this direction --
+    // see community_verdict_named_healthy/problematic below for the
+    // attributed version.
     community_verdict_healthy: (count) =>
       `${count} ${count === 1 ? "person" : "people"} reported this jump as healthy.`,
     community_verdict_problematic: (count) =>
       `${count} ${count === 1 ? "person" : "people"} reported this jump as problematic.`,
     community_verdict_mixed: (healthyCount, problematicCount) =>
       `${healthyCount} reported this jump as healthy, ${problematicCount} as problematic.`,
-    // "others" perspective: used instead of the three above whenever a
-    // separate "You reported..." row (below) is already shown, so these
-    // counts exclude your own vote instead of restating it.
-    community_verdict_others_healthy: (count) =>
-      `${count} ${count === 1 ? "other person" : "others"} reported this jump as healthy.`,
-    community_verdict_others_problematic: (count) =>
-      `${count} ${count === 1 ? "other person" : "others"} reported this jump as problematic.`,
-    community_verdict_others_mixed: (healthyCount, problematicCount) =>
-      `${healthyCount} ${healthyCount === 1 ? "other person" : "others"} reported this jump as healthy, ${problematicCount} as problematic.`,
-    // Merged "you + others" sentence, used only when the others are all one
-    // direction (not mixed) -- direct user feedback, 2026-08-15: two
-    // separate rows read as less natural than one sentence once there's
-    // just one number to combine with. Still never silently absorbs a
-    // dissenting vote into the majority's own count (the exact bug the
-    // 2026-07-27 split below was for): agreeing gets "you_and_others_*",
-    // disagreeing gets its own "you_vs_others_*" pair that states both
-    // verdicts explicitly. Mixed others (both healthy and problematic
-    // present) still falls back to the older two-row layout further down --
-    // a 3-way merged sentence read worse than that.
-    community_verdict_you_and_others_healthy: (count) =>
-      `You and ${count} ${count === 1 ? "other" : "others"} reported this jump as healthy.`,
-    community_verdict_you_and_others_problematic: (count) =>
-      `You and ${count} ${count === 1 ? "other" : "others"} reported this jump as problematic.`,
-    community_verdict_you_vs_others_healthy_problematic: (count) =>
-      `You reported this jump as healthy; ${count} ${count === 1 ? "other" : "others"} reported it as problematic.`,
-    community_verdict_you_vs_others_problematic_healthy: (count) =>
-      `You reported this jump as problematic; ${count} ${count === 1 ? "other" : "others"} reported it as healthy.`,
-    // Your own vote, shown as its own fact regardless of whether it agrees
-    // with everyone else (direct user feedback, 2026-07-22: "I can't see
-    // that I voted myself"; redesigned 2026-07-27 to always show, even when
-    // your vote is the dissenting one -- it used to silently disappear from
-    // the sentence entirely whenever it didn't match the leading direction,
-    // see my_votes.py). The wider picture, if any, is the separate
-    // aggregate row above/below this, not merged into this same sentence.
-    // (Still used as-is when there are no others at all, or the others are
-    // mixed -- see the merged strings above for the common single-direction
-    // case.)
-    community_verdict_you_healthy: "You reported this jump as healthy.",
-    community_verdict_you_problematic: "You reported this jump as problematic.",
+    // The bare word used as the first item in communityDirectionSentence's
+    // own name list ("You, @colfin and 2 others reported...") -- always
+    // capitalized, it's always the first named item when present.
+    community_you_label: "You",
+    // The trailing "N others" item in that same name list, once at least
+    // one named actor (you or a trusted voter) is already in it -- direct
+    // user feedback, 2026-08-19: "others" must never appear on its own,
+    // only ever after someone's actually been named.
+    community_n_others: (count) => (count === 1 ? "1 other" : `${count} others`),
+    // Redesigned 2026-08-19, direct user feedback: one merged sentence per
+    // direction, named actors first (you, then trusted voters by @name),
+    // then a trailing "and N others" -- replaces the old separate "you
+    // row"/"trusted-vote row"/"others" split, and no longer silently omits
+    // a direction just because a trusted voter picked the other one.
+    // `names` arrives already Oxford-joined (oxfordJoin/communityDirectionSentence).
+    // `count` (the direction's total, named + remaining) is unused here --
+    // "reported" doesn't conjugate by number in English -- but is passed
+    // through for languages that do (see the Dutch block below).
+    community_verdict_named_healthy: (names) => `${names} reported this jump as healthy.`,
+    community_verdict_named_problematic: (names) => `${names} reported this jump as problematic.`,
     // Count+pluralized, matching ha-config-section-updates.ts's own real
     // title_skipped/title_not_installable convention (confirmed against its
     // source: both are passed {count} and pluralize the same way
@@ -574,15 +552,10 @@ export const TRANSLATIONS = {
     dialog_timeline_update_available: "Update beschikbaar",
     dialog_timeline_auto_install: "Auto-install",
     dialog_timeline_held_back_pointer: "Tegengehouden door het communityoordeel hieronder.",
-    dialog_timeline_community_healthy: "Vertrouwde stem: geen problemen gemeld.",
     dialog_community_verdict_disclaimer:
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
     community_not_yet_rated: "Niemand heeft nog iets over deze sprong gemeld.",
     community_vote_link_prompt: "Koppel je GitHub-account in Instellingen om te stemmen.",
-    community_trusted_vote_healthy: (names) =>
-      `Vertrouwde stem: deze sprong is door ${names} als probleemloos beoordeeld.`,
-    community_trusted_vote_problematic: (names) =>
-      `Vertrouwde stem: deze sprong is door ${names} als problematisch beoordeeld.`,
     community_trusted_voter_label: "Vertrouwde stemmer",
     community_other_jumps_heading: "Andere sprongen naar deze versie",
     community_other_jump_line: (fromVersion, badgeTitle) => `Van ${fromVersion}: ${badgeTitle}`,
@@ -683,22 +656,14 @@ export const TRANSLATIONS = {
       `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als problematisch.`,
     community_verdict_mixed: (healthyCount, problematicCount) =>
       `${healthyCount} ${healthyCount === 1 ? "persoon meldt" : "mensen melden"} deze sprong als probleemloos, ${problematicCount} als problematisch.`,
-    community_verdict_others_healthy: (count) =>
-      `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos.`,
-    community_verdict_others_problematic: (count) =>
-      `${count} ${count === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als problematisch.`,
-    community_verdict_others_mixed: (healthyCount, problematicCount) =>
-      `${healthyCount} ${healthyCount === 1 ? "andere persoon meldt" : "anderen melden"} deze sprong als probleemloos, ${problematicCount} als problematisch.`,
-    community_verdict_you_and_others_healthy: (count) =>
-      `Jij en ${count} ${count === 1 ? "ander meldden" : "anderen meldden"} deze sprong als probleemloos.`,
-    community_verdict_you_and_others_problematic: (count) =>
-      `Jij en ${count} ${count === 1 ? "ander meldden" : "anderen meldden"} deze sprong als problematisch.`,
-    community_verdict_you_vs_others_healthy_problematic: (count) =>
-      `Jij meldde deze sprong als probleemloos; ${count} ${count === 1 ? "ander meldde" : "anderen meldden"} 'm als problematisch.`,
-    community_verdict_you_vs_others_problematic_healthy: (count) =>
-      `Jij meldde deze sprong als problematisch; ${count} ${count === 1 ? "ander meldde" : "anderen meldden"} 'm als probleemloos.`,
-    community_verdict_you_healthy: "Jij meldde deze sprong als probleemloos.",
-    community_verdict_you_problematic: "Jij meldde deze sprong als problematisch.",
+    community_you_label: "Jij",
+    community_n_others: (count) => (count === 1 ? "1 ander" : `${count} anderen`),
+    // count (het totaal voor deze richting, genoemd + rest) bepaalt hier wel
+    // de vervoeging -- "meldde" bij precies 1 (alleen "Jij", niemand anders),
+    // "meldden" zodra er meer dan 1 is (Engels vervoegt "reported" niet mee,
+    // zie dat blok voor waarom count daar ongebruikt is).
+    community_verdict_named_healthy: (names, count) => `${names} ${count === 1 ? "meldde" : "meldden"} deze sprong als probleemloos.`,
+    community_verdict_named_problematic: (names, count) => `${names} ${count === 1 ? "meldde" : "meldden"} deze sprong als problematisch.`,
     group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,
     group_not_installable: (count) =>
       `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,

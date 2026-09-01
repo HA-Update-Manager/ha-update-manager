@@ -540,78 +540,116 @@ function timerBadge(tr, u, settings, hass) {
 // showing both numbers when genuinely mixed instead of silently dropping
 // the minority one -- direct user feedback, 2026-07-27 (found live: 2
 // healthy + 1 problematic used to only ever surface as "1... problematic",
-// the 2 healthy votes invisible). `perspective` picks the wording: "people"
-// when there's no separate "you" row already distinguishing your own vote
-// (the badge tooltip below, the dialog's other-jumps rows, or the dialog's
-// own aggregate row when you haven't voted yourself), "others" when there
-// is one and these counts already exclude you.
-function aggregateVerdictText(tr, healthyCount, problematicCount, perspective) {
-  // A closed, fixed set of six translation functions (2 perspectives x 3
-  // shapes) -- an explicit lookup, not a dynamically-built tr[...] property
-  // name: found by review, a typo'd key there would fail silently (calling
-  // undefined) instead of at a lint/reference-check level.
-  const strings =
-    perspective === "others"
-      ? { mixed: tr.community_verdict_others_mixed, problematic: tr.community_verdict_others_problematic, healthy: tr.community_verdict_others_healthy }
-      : { mixed: tr.community_verdict_mixed, problematic: tr.community_verdict_problematic, healthy: tr.community_verdict_healthy };
-  if (healthyCount > 0 && problematicCount > 0) return strings.mixed(healthyCount, problematicCount);
-  if (problematicCount > 0) return strings.problematic(problematicCount);
-  if (healthyCount > 0) return strings.healthy(healthyCount);
+// the 2 healthy votes invisible). No "you"/trusted-voter attribution at
+// all: the only two remaining callers (verdictBadge's own tooltip, the
+// other-jumps rows) are always about a *different* jump than whichever one
+// the dialog itself is currently open for, so there's no "you" to name in
+// the first place -- see communityVerdictLines below for the attributed,
+// per-direction version used everywhere the primary jump's own verdict is
+// shown.
+function aggregatePlainVerdictText(tr, healthyCount, problematicCount) {
+  if (healthyCount > 0 && problematicCount > 0) return tr.community_verdict_mixed(healthyCount, problematicCount);
+  if (problematicCount > 0) return tr.community_verdict_problematic(problematicCount);
+  if (healthyCount > 0) return tr.community_verdict_healthy(healthyCount);
   return null;
 }
 
-// The timeline's own one-line version of _buildCommunitySection's "you vs
-// others" merge (see that section's own renderVerdictRows for the full,
-// multi-row version, kept separate rather than shared -- renderVerdictRows
-// is tightly coupled to that section's own persistent DOM rows/live-vote-
-// rebuild mechanism, not a plain string in, string out shape this could
-// call into without dragging that along). Only has room for a single line
-// here, so a 3-way-mixed others count (both healthy and problematic others
-// exist) falls back to just your own verdict, same "answer the question
-// this compact spot exists to answer" reasoning -- the fuller others
-// breakdown still lives in the Community section itself. myVerdict null
-// (never voted) falls through to the same plain aggregate text as before.
-function myAwareCommunityVerdictText(tr, myVerdict, healthyCount, problematicCount) {
-  const othersHealthy = Math.max(0, healthyCount - (myVerdict === "healthy" ? 1 : 0));
-  const othersProblematic = Math.max(0, problematicCount - (myVerdict === "problematic" ? 1 : 0));
-
-  if (!myVerdict) return aggregateVerdictText(tr, othersHealthy, othersProblematic, "people");
-
-  if (othersHealthy === 0 && othersProblematic === 0) {
-    return myVerdict === "healthy" ? tr.community_verdict_you_healthy : tr.community_verdict_you_problematic;
+// One merged sentence for a single verdict direction (healthy or
+// problematic) -- direct user feedback, 2026-08-19: named actors (you,
+// configured trusted voters) always come first, everyone else folds into a
+// trailing "N others" count, and "others" only ever appears when a named
+// actor in this exact direction is already in the sentence -- an anonymous
+// "3 others" implies "others than someone already named"; with nobody
+// named, it's just "3 people" (aggregatePlainVerdictText's own wording).
+// Returns null when this direction has no votes at all -- a direction
+// with zero votes never gets a line, not even an empty one.
+function communityDirectionSentence(tr, direction, count, myVerdict, trustedVote, trustedVotersMatched) {
+  if (count <= 0) return null;
+  const named = [];
+  if (myVerdict === direction) named.push(tr.community_you_label);
+  if (trustedVote === direction) {
+    for (const username of trustedVotersMatched || []) named.push(`@${username}`);
   }
-  if (othersHealthy > 0 && othersProblematic > 0) {
-    return myVerdict === "healthy" ? tr.community_verdict_you_healthy : tr.community_verdict_you_problematic;
+  if (named.length === 0) {
+    return direction === "healthy" ? tr.community_verdict_healthy(count) : tr.community_verdict_problematic(count);
   }
-  const othersCount = othersHealthy > 0 ? othersHealthy : othersProblematic;
-  const othersVerdict = othersHealthy > 0 ? "healthy" : "problematic";
-  return myVerdict === othersVerdict
-    ? othersVerdict === "healthy"
-      ? tr.community_verdict_you_and_others_healthy(othersCount)
-      : tr.community_verdict_you_and_others_problematic(othersCount)
-    : myVerdict === "healthy"
-    ? tr.community_verdict_you_vs_others_healthy_problematic(othersCount)
-    : tr.community_verdict_you_vs_others_problematic_healthy(othersCount);
+  const remaining = Math.max(0, count - named.length);
+  const items = remaining > 0 ? [...named, tr.community_n_others(remaining)] : named;
+  const names = oxfordJoin(tr, items);
+  // count passed through too, not just names -- Dutch conjugates the verb
+  // by number ("meldde" vs "meldden"), which the pre-joined names string
+  // alone can't tell apart (English's own "reported" doesn't conjugate, so
+  // this is a no-op there).
+  return direction === "healthy" ? tr.community_verdict_named_healthy(names, count) : tr.community_verdict_named_problematic(names, count);
 }
 
-// Row 1's own "you voted" rendering (see _buildCommunitySection), shared
-// between the initial verdict_for_version fetch (my_verdict already set)
-// and a vote just cast in this same dialog session (see _buildVoteControls'
-// own onVoted callback) -- direct user feedback, 2026-07-27: casting a vote
-// used to leave this row exactly as it was before ("No one's reported on
-// this jump yet."), reading as a flat contradiction sitting right next to
-// the vote confirmation ("Marked as healthy...") that appears right below
-// it. Idempotent (removes any icon this row already has before inserting
-// the new one): a vote can be changed more than once in the same dialog
-// session.
-function applyMyVerdictRow(verdictRow, verdictText, tr, verdict) {
-  verdictText.textContent = verdict === "problematic" ? tr.community_verdict_you_problematic : tr.community_verdict_you_healthy;
-  const existingIcon = verdictRow.querySelector("ha-svg-icon");
-  if (existingIcon) existingIcon.remove();
-  const iconEl = document.createElement("ha-svg-icon");
-  iconEl.path = verdictIcon(verdict === "problematic");
-  verdictRow.insertBefore(iconEl, verdictText);
-  verdictRow.hidden = false;
+// Both directions at once, healthy first -- the one shared source every
+// community-verdict surface in this file (the timeline's own Ready-to-
+// update/Skipped steps, and _buildCommunitySection's History card) now
+// renders from, replacing the old "trusted-healthy silently hides any
+// problematic reports" shortcut entirely -- direct user feedback,
+// 2026-08-19: both directions must always render independently, the full
+// picture, regardless of which one a trusted voter happened to pick.
+function communityVerdictLines(tr, healthyCount, problematicCount, myVerdict, trustedVote, trustedVotersMatched) {
+  const lines = [];
+  const healthyText = communityDirectionSentence(tr, "healthy", healthyCount, myVerdict, trustedVote, trustedVotersMatched);
+  if (healthyText) lines.push({ direction: "healthy", icon: verdictIcon(false), text: healthyText });
+  const problematicText = communityDirectionSentence(tr, "problematic", problematicCount, myVerdict, trustedVote, trustedVotersMatched);
+  if (problematicText) lines.push({ direction: "problematic", icon: verdictIcon(true), text: problematicText });
+  return lines;
+}
+
+// problematic_reasons is already capped server-side (MAX_PROBLEMATIC_REASONS,
+// community_verdict_payload.py), most recent first, with no signal of its
+// own about how many were left out -- the real, uncapped problematicCount
+// minus however many the (possibly-capped) reasons list already includes is
+// exactly how many aren't shown. My own reason, if any, is already excluded
+// from both sides the same way (problematic_reasons_from_payload's own
+// exclude_username), so this stays correct whether or not I voted. Shared
+// by the timeline and _buildCommunitySection -- found by review, 2026-08-19:
+// this exact calculation used to be written out inline at each call site.
+function hiddenProblematicReasonsCount(problematicCount, myVerdict, reasons) {
+  const othersTotal = Math.max(0, problematicCount - (myVerdict === "problematic" ? 1 : 0));
+  return Math.max(0, othersTotal - reasons.length);
+}
+
+// Adjusts counts.healthy_count/problematic_count for a vote just cast in
+// this session, relative to oldVerdict (whatever previously counted toward
+// these same numbers, if anything). Shared by both onVoted closures
+// (_openDetailDialog's own addReportControls, and _buildCommunitySection),
+// found by review, 2026-08-24: each had its own independent copy of this
+// same subtract-then-add arithmetic, neither floored against ever going
+// negative if the server's own counts and oldVerdict were ever transiently
+// out of step (a vote retracted between fetch and render, or two tabs
+// racing each other).
+function optimisticVoteCounts(counts, oldVerdict, newVerdict) {
+  const adjust = (direction, count) =>
+    Math.max(0, count - (oldVerdict === direction ? 1 : 0) + (newVerdict === direction ? 1 : 0));
+  return {
+    healthy_count: adjust("healthy", counts.healthy_count),
+    problematic_count: adjust("problematic", counts.problematic_count),
+  };
+}
+
+// What a community-verdict detail block needs to show: the merged healthy/
+// problematic sentence line(s), your own reason under a problematic vote,
+// every other problematic voter's own reason (each flagged as trusted or
+// not), and how many more exist beyond that list. Shared by the timeline's
+// own addCommunityDetail and _buildCommunitySection's own renderInfo, found
+// by review, 2026-08-24: both worked this same decision out independently,
+// differing only in which DOM helpers they then called with it. Decides
+// *what* to show, never *how*: each caller still renders these facts
+// with its own DOM primitives (a timeline step's addDetail/addDetailWithIcon,
+// or infoGroup's own buildVerdictLineRow/hint paragraphs).
+function communityDetailPlan(tr, counts, myVerdict, myReason, trustedVote, trustedVotersMatched, problematicReasons) {
+  const reasons = problematicReasons || [];
+  const trustedUsernames = trustedVotersMatched || [];
+  return {
+    lines: communityVerdictLines(tr, counts.healthy_count, counts.problematic_count, myVerdict, trustedVote, trustedVotersMatched),
+    myReason: myReason || null,
+    reasons: reasons.map((reason) => ({ reason, trusted: trustedUsernames.includes(reason.username) })),
+    hiddenCount: hiddenProblematicReasonsCount(counts.problematic_count, myVerdict, reasons),
+  };
 }
 
 // The shared "icon + one line of text" row shape every fact in the
@@ -677,10 +715,10 @@ function buildReasonItem(tr, reason, { trusted } = {}) {
 // signal for the common "nobody's voted yet" case. The pill's own icon/
 // digit stay single-number (problematic leads, asymmetric safety) -- a
 // badge can't show two counts -- but the hover tooltip gets the fuller
-// "both counts when mixed" treatment via aggregateVerdictText.
+// "both counts when mixed" treatment via aggregatePlainVerdictText.
 function verdictBadge(tr, verdict) {
   if (!verdict || (verdict.healthy_count === 0 && verdict.problematic_count === 0)) return null;
-  const title = aggregateVerdictText(tr, verdict.healthy_count, verdict.problematic_count, "people");
+  const title = aggregatePlainVerdictText(tr, verdict.healthy_count, verdict.problematic_count);
   const isProblematic = verdict.problematic_count > 0;
   return { icon: verdictIcon(isProblematic), text: String(isProblematic ? verdict.problematic_count : verdict.healthy_count), title };
 }
@@ -768,19 +806,13 @@ function buildReleaseUrlLinkRow(tr, releaseUrl) {
 // linkUrl is given -- both describe the same repo, only the tag differs,
 // so there's nothing to correct there.
 //
-// headingExtra, when given, is appended into the heading itself (styled as
-// a flex row via .release-notes-heading, so it lands top-right) -- the
-// pending-update dialog's own "report a known issue" button (see
-// _openDetailDialog's own reportButton), never passed by History's two
-// call sites, which render exactly as before.
-function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl, headingExtra) {
+function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl) {
   container.insertBefore(document.createElement("hr"), before);
   const heading = document.createElement("h3");
   heading.className = "release-notes-heading";
   const headingText = document.createElement("span");
   headingText.textContent = tr.dialog_release_notes_heading;
   heading.appendChild(headingText);
-  if (headingExtra) heading.appendChild(headingExtra);
   container.insertBefore(heading, before);
   if (notes) {
     const markdown = document.createElement("ha-markdown");
@@ -825,14 +857,21 @@ function buildEmptyStateCard(text) {
   return card;
 }
 
+// "X", "X and Y", "X, Y and Z" -- Oxford "and" join for a list of already-
+// formatted display strings, not just usernames (see communityDirectionSentence,
+// which mixes "You" and "@name" entries with a trailing "N others" count in
+// the same list). `tr.list_and` (not a hardcoded "and"): this joins
+// arbitrary language-specific text, not a fixed-language list.
+function oxfordJoin(tr, items) {
+  if (items.length <= 1) return items[0] || "";
+  return `${items.slice(0, -1).join(", ")} ${tr.list_and} ${items[items.length - 1]}`;
+}
+
 // "@a", "@a and @b", "@a, @b and @c" -- used wherever more than one trusted
 // username can be named at once (the History facts block, the auto-install
-// pill's own tooltip, the pending-update "held back" alert). `tr.list_and`
-// (not a hardcoded "and"): this joins usernames, not a fixed-language list.
+// pill's own tooltip, the pending-update "held back" alert).
 function joinUsernames(tr, usernames) {
-  const named = usernames.map((u) => `@${u}`);
-  if (named.length <= 1) return named[0] || "";
-  return `${named.slice(0, -1).join(", ")} ${tr.list_and} ${named[named.length - 1]}`;
+  return oxfordJoin(tr, usernames.map((u) => `@${u}`));
 }
 
 // One install_log entry -> its own "how was this installed" sentence, shared
@@ -1139,6 +1178,14 @@ function updateButtonIsDisabled(state) {
 }
 function updateIsInstalling(state) {
   return !!(state && state.attributes && state.attributes.in_progress);
+}
+
+// The one fact _checkForNewUpdateEntities actually needs to notice changing
+// for a given update.* entity: whether it currently claims an update is
+// available at all, and if so, to which version. Shared by that method and
+// _loadAll's own snapshot so both always agree on what "changed" means.
+function updateEntitySignature(state) {
+  return state.state + '|' + (state.attributes.latest_version || '');
 }
 
 // The Updates list row's own trailing indicator while installing (see
@@ -1800,6 +1847,18 @@ class UpdateManagerPanel extends HTMLElement {
     return this._subpageEl && this._subpageEl.shadowRoot && this._subpageEl.shadowRoot.querySelector(".content");
   }
 
+  // this._dialogEl (a real ha-adaptive-dialog) has no bodyContainer of its
+  // own: it renders either a nested ha-dialog or a nested ha-bottom-sheet
+  // depending on the current viewport (confirmed against both components'
+  // real source), and only that inner element owns the actual scrollable
+  // .body div, one shadow root deeper. Both inner components use the same
+  // .body class, so querying whichever one is currently rendered works
+  // either way.
+  _dialogScrollContainer() {
+    const inner = this._dialogEl && this._dialogEl.shadowRoot && this._dialogEl.shadowRoot.querySelector("ha-dialog, ha-bottom-sheet");
+    return inner && inner.shadowRoot && inner.shadowRoot.querySelector(".body");
+  }
+
   // Set by HA's panel resolver on every navigation under this panel's own
   // URL (e.g. /update-manager/history) -- the same mechanism every other
   // HA settings page uses, see hass-router-page.ts/compute-route.ts.
@@ -2005,64 +2064,79 @@ class UpdateManagerPanel extends HTMLElement {
       this._loadError = err === WS_ERR_CONNECTION_LOST ? LOAD_ERROR_CONNECTION_LOST : (err && err.message) || String(err);
     }
     // Snapshot of every update.* entity_id hass currently considers
-    // *available* (state !== "unavailable"/"unknown") -- not merely
-    // present, and not just the ones update_manager/updates actually
-    // returned (an excluded/hard-excluded entity legitimately never
-    // appears in this._updates, but still belongs in this snapshot -- see
+    // *available* (state !== "unavailable"/"unknown"), mapped to a short
+    // signature of the one fact that actually matters here (its own
+    // state, "on" or "off", plus latest_version) -- not merely present,
+    // and not just the ones update_manager/updates actually returned (an
+    // excluded/hard-excluded entity legitimately never appears in
+    // this._updates, but still belongs in this snapshot, see
     // _checkForNewUpdateEntities's own comment for both distinctions).
     // Taken even on a failed load (this._hass is still valid then) so a
     // reconnect-triggered retry doesn't immediately look "new" again.
     if (this._hass) {
-      this._knownAvailableUpdateEntityIds = new Set(
+      this._knownUpdateEntitySignatures = new Map(
         Object.entries(this._hass.states)
           .filter(([id, s]) => id.startsWith("update.") && s.state !== "unavailable" && s.state !== "unknown")
-          .map(([id]) => id)
+          .map(([id, s]) => [id, updateEntitySignature(s)])
       );
     }
   }
 
   // Right after a Home Assistant restart, update.* entities (Zigbee2MQTT's
   // own in particular) can take anywhere from seconds to minutes to report
-  // in, well after this panel's own first _loadAll() already ran -- direct
+  // in, well after this panel's own first _loadAll() already ran, direct
   // user feedback: "het duurt ook even na het herstarten voor alle update
   // entities beschikbaar komen... update manager toont die ook niet direct,
   // pas na een refresh". Root cause: every other reactive check in this
   // class (_updateInstallProgress in particular) only ever iterates
-  // this._updates, the *already-known* list from the last _loadAll() --
+  // this._updates, the *already-known* list from the last _loadAll(), so
   // an entity that didn't exist yet at that point is invisible to a loop
-  // that never looks past what it already has, so nothing here ever
-  // noticed a brand new one arriving. There's no server-pushed update
-  // channel to lean on instead (websocket_api.py's own commands are all
-  // plain request/response, no subscribe), so this fills that gap from the
-  // client side: every hass push (already firing constantly, see set hass)
-  // is compared against the snapshot _loadAll() itself maintains, and a
-  // full reload is triggered the moment a genuinely new *available*
-  // update.* id shows up.
+  // that never looks past what it already has. There's no server-pushed
+  // update channel to lean on instead (websocket_api.py's own commands are
+  // all plain request/response, no subscribe), so this fills that gap from
+  // the client side: every hass push (already firing constantly, see set
+  // hass) is compared against the snapshot _loadAll() itself maintains,
+  // and a full reload is triggered the moment something update_manager/
+  // updates itself would need to be asked about again shows up.
   //
-  // Checked by *availability*, not merely by entity_id presence -- found
-  // live, 2026-08-10, right after the entity_id-only
-  // version of this shipped, still missing MQTT-backed entities that took
-  // a while to actually report in:
-  // Home Assistant registers an MQTT-backed entity's own entity_id in
-  // hass.states well before Zigbee2MQTT actually reconnects and reports
-  // real data, sitting at state "unavailable" in the meantime -- so the
-  // entity_id itself was never actually "new" by the time this panel first
-  // loaded, only its *availability* was, and the plain key-presence check
-  // never once fired for it.
+  // Compares each entity's own updateEntitySignature, not just whether its
+  // id is already known, direct user feedback, 2026-08-25: an update
+  // entity that was already tracked (already up to date, "off") getting a
+  // genuinely new update ("on") while the Updates tab was already open
+  // stayed invisible until a manual refresh, the exact same "nothing here
+  // noticed it" gap this method was originally built to close, just for an
+  // existing entity's own status changing instead of a whole new entity
+  // appearing. A plain id-presence check can't tell "off" from "on" for an
+  // id it already has a record of; comparing the signature instead catches
+  // both this case and a newer latest_version replacing an already-shown
+  // one, in addition to the original brand-new-entity case below.
+  //
+  // Checked by *availability*, not merely by entity_id presence, found
+  // live, 2026-08-10, right after the entity_id-only version of this
+  // shipped, still missing MQTT-backed entities that took a while to
+  // actually report in: Home Assistant registers an MQTT-backed entity's
+  // own entity_id in hass.states well before Zigbee2MQTT actually
+  // reconnects and reports real data, sitting at state "unavailable" in
+  // the meantime, so the entity_id itself was never actually "new" by the
+  // time this panel first loaded, only its *availability* was, and the
+  // plain key-presence check never once fired for it.
   //
   // Compared against *every available* update.* entity hass knows, not
-  // just this._updates's own ids -- an entity update_manager itself
-  // excludes (const.py's own excluded_entities/hard-excluded list) would
-  // otherwise never make it into this._updates at all, and so would look
-  // "new" again on literally every single push forever, reloading in an
-  // endless loop.
+  // just this._updates's own ids: an entity update_manager itself excludes
+  // (const.py's own excluded_entities/hard-excluded list) would otherwise
+  // never make it into this._updates at all, and so would look "new"
+  // again on literally every single push forever, reloading in an endless
+  // loop. Its own signature, once recorded, is stable the same way any
+  // other entity's is, so this reload-once-then-settle behavior holds for
+  // it too.
   _checkForNewUpdateEntities() {
     if (!this._hass || this._reloadingForNewEntities) return;
-    if (!this._knownAvailableUpdateEntityIds) return;
+    if (!this._knownUpdateEntitySignatures) return;
     for (const id in this._hass.states) {
-      if (!id.startsWith("update.") || this._knownAvailableUpdateEntityIds.has(id)) continue;
+      if (!id.startsWith("update.")) continue;
       const state = this._hass.states[id];
       if (state.state === "unavailable" || state.state === "unknown") continue;
+      if (this._knownUpdateEntitySignatures.get(id) === updateEntitySignature(state)) continue;
       this._reloadingForNewEntities = true;
       this._loadAll().then(() => {
         this._reloadingForNewEntities = false;
@@ -2516,10 +2590,52 @@ class UpdateManagerPanel extends HTMLElement {
     this._contentEl = content;
 
     // Built once and reused, not recreated per click -- the per-entity
-    // detail dialog (see _openDetailDialog): a real ha-dialog, matching how
-    // every other HA dialog closes (scrim click, Escape) without wiring
-    // that up by hand.
-    const dialog = document.createElement("ha-dialog");
+    // detail dialog (see _openDetailDialog): a real ha-adaptive-dialog,
+    // matching how every other HA dialog closes (scrim click, Escape)
+    // without wiring that up by hand, and matching HA's own current mobile
+    // treatment (a bottom sheet, not the plain ha-dialog's fullscreen
+    // fallback) since ha-more-info-dialog uses the same component. Given
+    // allow-mode-change so this reused element re-checks the current
+    // viewport on every open instead of freezing whatever mode it first
+    // mounted in.
+    const dialog = document.createElement("ha-adaptive-dialog");
+    dialog.setAttribute("allow-mode-change", "");
+    // Also set unconditionally by ha-more-info-dialog.ts, not guessed:
+    // without it, ha-bottom-sheet's own wa-drawer body part isn't a flex
+    // column, so its handle/header/content/footer just stack as one plain
+    // block instead of a fixed header and footer around an independently
+    // scrolling middle section, and the sheet's own max-height clips that
+    // whole stack rather than only the scrollable middle, which is what a
+    // half-open-looking, cut-off sheet on mobile turned out to be.
+    dialog.flexContent = true;
+    // Root cause confirmed live, 2026-08-24, after four earlier height-
+    // focused fixes all failed to actually fix this: the sheet's own
+    // height was fine, it was sitting shifted down by a stray transform
+    // (a different leftover pixel value observed each time, not a fixed
+    // miscalculation). Confirmed against ha-bottom-sheet.ts's own real
+    // source: its swipe-to-dismiss drag sets a `--dialog-transform` custom
+    // property on itself while dragging, and only its own two "snap back,
+    // stay open" branches (_animateSnapBack) ever clear it again; both of
+    // its "close by swiping down" branches (_handleTouchEnd) set
+    // _drawerOpen = false directly, leaving --dialog-transform (and
+    // whatever offset it held at that instant) sitting on the host
+    // element indefinitely. HA's own usage seems to get away with this,
+    // probably because a fresh more-info dialog is a new element each
+    // time with no leftover inline style to inherit, but this project's
+    // own dialog is deliberately built once and reused for every open
+    // (see this method's own docstring), which is exactly what makes a
+    // swipe-closed-down session's own leftover residue carry over and
+    // visibly offset the next open, until some later, unrelated
+    // interaction happens to hit one of the two branches that clears it.
+    // Cleared explicitly, ourselves, right before every open, since this
+    // component's own source has no such guarantee on our behalf.
+    dialog.addEventListener("opened", () => {
+      const bottomSheet = this._dialogEl.shadowRoot && this._dialogEl.shadowRoot.querySelector("ha-bottom-sheet");
+      if (bottomSheet) {
+        bottomSheet.style.removeProperty("--dialog-transform");
+        bottomSheet.style.removeProperty("--dialog-transition");
+      }
+    });
     dialog.addEventListener("closed", () => {
       dialog.open = false;
       this._dialogEntityId = null;
@@ -2671,7 +2787,7 @@ class UpdateManagerPanel extends HTMLElement {
     // capability this panel doesn't have today) -- a rename mid-dialog is
     // rare enough that failing silently-but-safely beats a broken-looking
     // dialog. this._dialogLastState is updated here too (not just left for
-    // the block below), a real bug found live: ha-dialog's own "closed"
+    // the block below), a real bug found live: the dialog's own "closed"
     // event (which clears this._dialogEntityId, see _ensureShell) only
     // fires after its own close animation, so several more hass pushes
     // can land in that window -- without updating it here, each one
@@ -3777,27 +3893,30 @@ class UpdateManagerPanel extends HTMLElement {
     return outer;
   }
 
-  // A real ha-dialog (built once, see _ensureShell), repopulated per click
-  // -- not HA's native more-info, which has no notion of Update Manager's
-  // own staging status, pending-install countdown/cancel, or per-entity
-  // install history (direct user feedback/idea: a custom detail page or
-  // dialog per update entity). A button at the
-  // bottom still opens the real more-info, for the entity's raw attributes
-  // and its own native controls.
+  // A real ha-adaptive-dialog (built once, see _ensureShell), repopulated
+  // per click, not HA's native more-info, which has no notion of Update
+  // Manager's own staging status, pending-install countdown/cancel, or
+  // per-entity install history (direct user feedback/idea: a custom detail
+  // page or dialog per update entity). A button at the bottom still opens
+  // the real more-info, for the entity's raw attributes and its own native
+  // controls.
   //
   // Structure verified against HA's own more-info dialogs, not guessed:
-  // the header bar is title-only (ha-dialog's headerTitle -- confirmed
-  // against ha-more-info-dialog.ts, whose own header has no icon either),
+  // the header bar is title-only (headerTitle, same property name on
+  // ha-adaptive-dialog, confirmed against ha-more-info-dialog.ts, whose own
+  // header has no icon either),
   // the icon lives in the content area instead (confirmed against
   // ha-more-info-state-header.ts's layout), status uses ha-alert (real
   // color/left-border treatment, not a plain paragraph), and version facts
   // use the same key/value ".row" pattern more-info-update.ts itself uses.
-  // communityOverride ({ healthy_count, problematic_count, other_jumps, trusted_vote, trusted_voters_matched }),
-  // when given, replaces u.community_verdict/u.trusted_vote/u.trusted_voters_matched
-  // (the coordinator's own cache, up to an hour old) for this one build --
-  // see the reportButton call below, which re-invokes this whole method
-  // with its own live verdict_for_version fetch once it disagrees with
-  // what's currently shown. Found by review,
+  // communityOverride ({ healthy_count, problematic_count, other_jumps,
+  // problematic_reasons, my_reason, my_verdict, trusted_vote,
+  // trusted_voters_matched, identifiable }), when given, replaces
+  // u.community_verdict/u.trusted_vote/u.trusted_voters_matched (the
+  // coordinator's own cache, up to an hour old) for this one build -- see
+  // applyLiveVerdict below, which re-invokes this whole method with its
+  // own live verdict_for_version fetch once it disagrees with what's
+  // currently shown. Found by review,
   // 2026-08-08: heldBackByCommunity (and the Cancel button/"will update
   // automatically" alert it gates) used to be computed once, purely from
   // that stale cache, and never revisited -- casting a vote in this same
@@ -3870,8 +3989,14 @@ class UpdateManagerPanel extends HTMLElement {
       heldBackByCommunity,
       communityHealthyCount,
       communityProblematicCount,
+      communityMyVerdict,
+      communityMyReason,
       communityOtherJumps,
+      communityProblematicReasons,
+      communityIdentifiable,
       effectiveTrustedVote,
+      effectiveTrustedVotersMatched,
+      applyLiveVerdict,
     }
   ) {
     const wrap = document.createElement("div");
@@ -3933,6 +4058,23 @@ class UpdateManagerPanel extends HTMLElement {
       steps.push(step);
       return content;
     };
+    // The step's own shared action row -- every button belonging to this
+    // step (its own primary action, plus the report/update-report toggle,
+    // see addReportControls) lands in this one row together, main action
+    // first -- direct user feedback, 2026-08-19: a top-right title-row
+    // placement (tried first) "gaat helemaal niet goed", reverted in favor
+    // of this, closer to how it looked before the community content moved
+    // in. Created lazily, on first use, so a step with only one action (or
+    // none at all) never gets an empty row.
+    const getActionsRow = (content) => {
+      let row = content.querySelector(".step-actions");
+      if (!row) {
+        row = document.createElement("div");
+        row.className = "step-actions";
+        content.appendChild(row);
+      }
+      return row;
+    };
     const addDetail = (content, text) => {
       const detail = document.createElement("div");
       detail.className = "step-detail";
@@ -3960,26 +4102,33 @@ class UpdateManagerPanel extends HTMLElement {
       detail.appendChild(span);
       content.appendChild(detail);
     };
-    // Same construction (ha-progress-button, the --wa-color-on-normal
-    // override, appearance = "plain") every action button in this dialog
-    // already used before this method existed, just placed in a step's
-    // own .step-content instead of an alert's action slot. appearance
-    // overridable per call -- direct user feedback, 2026-08-14: "Ready"
-    // (Force ready) and "Report a known issue" (_buildReportButton) should
-    // swap which one reads as the more inviting, filled action; every
-    // other action here (Cancel auto-install, Leave queue, Unskip) stays
-    // plain, the default.
+    // Same construction (ha-progress-button, appearance = "plain") every
+    // action button in this dialog already used before this method
+    // existed, placed in the step's own shared action row (getActionsRow
+    // above) -- main action first, since every call site calls this before
+    // addReportControls (see that function's own comment). No
+    // --wa-color-on-normal override (found by review, 2026-08-19, direct
+    // user feedback -- "zwarte tekst?! Dat doet ha nooit"): that override
+    // was only ever a real fix for a button sitting inside ha-alert's own
+    // tinted slot="action" (see 8082810's own commit message -- HA's
+    // legacy --mdc-theme-primary convention that slot expects, which this
+    // project's actual ha-progress-button never reads, so it fell back to
+    // plain link-blue regardless of the alert color underneath it), copied
+    // here unquestioned when the old alert stack became this timeline
+    // (2026-08-14) -- these buttons haven't sat inside a colored alert
+    // since, so the override just forced HA's normal blue plain-button
+    // text to a flat, disabled-looking neutral color for no reason anymore.
+    // appearance overridable per call -- direct user feedback, 2026-08-14:
+    // "Ready" (Force ready) should read as the more inviting, filled
+    // action; every other action built through this helper (Cancel
+    // auto-install, Unskip) stays plain, the default.
     const addAction = (content, label, onClick, { appearance = "plain" } = {}) => {
-      const actions = document.createElement("div");
-      actions.className = "step-actions";
       const btn = document.createElement("ha-progress-button");
-      if (appearance === "plain") btn.style.setProperty("--wa-color-on-normal", "var(--primary-text-color)");
       btn.appearance = appearance;
       btn.label = label;
       btn.disabled = updateIsInstalling(this._dialogLastState);
       btn.addEventListener("click", () => _runProgressAction(btn, onClick));
-      actions.appendChild(btn);
-      content.appendChild(actions);
+      getActionsRow(content).appendChild(btn);
       this._dialogActionButtons.push(btn);
     };
 
@@ -4008,70 +4157,129 @@ class UpdateManagerPanel extends HTMLElement {
     // below, unrelated to this timing question).
     const mergeAvailableAndReady = u.status !== "waiting" && u.status !== "skipped" && u.available_since && u.available_since === u.ready_since;
 
-    // The community verdict's own summary sentence (never the vote buttons
-    // themselves) on whichever step currently represents "Ready to update"
-    // (merged-in or its own step, upcoming or done) -- direct user
-    // feedback, 2026-08-13: the *fact* belongs at the decision point,
-    // "always", not just the one narrow case (auto-install actually held
-    // back) Step 3's own pointer below already covered; the *actions*
-    // (reporting an issue, confirming healthy once installed) belong
-    // elsewhere -- "report a known issue" next to Release notes (you'd
-    // actually notice a problem while reading them, and it only makes
-    // sense before installing at all), "confirm healthy" only makes sense
-    // once you've actually lived with it, so that one stays with the
-    // History tab's own per-entry section, same as it already was. This
-    // sentence is genuinely the whole content-vs-action split logically
-    // indelen asks for, not a stand-in for the fuller section. Never shown
-    // on the "skipped" step (that's its own distinct rendering, unrelated
-    // to whether this jump would otherwise be worth installing). Silent
-    // (no detail line at all) whenever there's genuinely nothing to say
-    // yet (not yet rated) -- same "only real facts, never guessed" rule
-    // every other step detail in this method already follows.
+    // The community verdict's own full picture -- summary sentence(s),
+    // reported reasons, and the report/update-report action -- on whichever
+    // step currently represents "Ready to update" (merged-in or its own
+    // step, upcoming or done), and on the "Skipped" step too. Direct user
+    // feedback, 2026-08-19: everything that used to live in a separate,
+    // compact widget next to Release notes (_buildReportButton, now
+    // removed) or the standalone History-only Community section belongs
+    // right here instead -- the fact and the action to report an issue
+    // both belong at the exact decision point, not scattered across the
+    // dialog. Also shown on the "skipped" step now (see that branch's own
+    // call below), unlike before this change.
     //
-    // effectiveTrustedVote checked first, ahead of the general aggregate --
-    // a configured trusted voter's own "healthy" is a deliberate override
-    // (see heldBackByCommunity's own use of it): it's the reason
-    // auto-install proceeds even over other problematic reports, so it
-    // earns its own, more specific sentence instead of being folded into
-    // the plain count. Everything else reuses aggregateVerdictText
-    // verbatim -- the exact same "N people reported..." sentence the
-    // Community section itself already uses, not a reinvented, less
-    // complete version of it. Found live, 2026-08-13: an earlier version
-    // of this only ever checked effectiveTrustedVote/
-    // communityProblematicCount, missing an ordinary non-trusted healthy
-    // vote -- and a genuinely mixed verdict -- entirely, showing nothing
-    // for either.
+    // communityVerdictLines renders both directions independently, with no
+    // suppression -- direct user feedback, 2026-08-19: a trusted voter's
+    // own "healthy" used to hide any other, non-trusted "problematic"
+    // reports outright (heldBackByCommunity, just below this method's own
+    // scope, still uses effectiveTrustedVote to decide whether auto-install
+    // actually proceeds -- that's a real, deliberate override of *behavior*;
+    // hiding the other reports from *view* was never intentional, just a
+    // side effect of the old single-sentence shortcut).
+    // Handed to addReportControls below so its own toggle can hide this
+    // element while its edit form is open -- direct user feedback,
+    // 2026-08-19: shown together, the two read as duplicated (same
+    // category/notes/link visible twice) even though they're conceptually
+    // different (this one is community-votes' own last-confirmed record on
+    // GitHub, the form is your own local, still-editable draft, which only
+    // happen to already match). Rather than conflate the two into one
+    // element, they simply take turns occupying the same spot -- view mode
+    // shows the confirmed record, edit mode shows the draft, never both.
+    let myReasonEl = null;
     const addCommunityDetail = (step) => {
-      if (effectiveTrustedVote === "healthy") {
-        addDetailWithIcon(step, verdictIcon(false), tr.dialog_timeline_community_healthy);
-        return;
+      const plan = communityDetailPlan(
+        tr,
+        { healthy_count: communityHealthyCount, problematic_count: communityProblematicCount },
+        communityMyVerdict,
+        communityMyReason,
+        effectiveTrustedVote,
+        effectiveTrustedVotersMatched,
+        communityProblematicReasons
+      );
+      for (const line of plan.lines) {
+        addDetailWithIcon(step, line.icon, line.text);
+        if (line.direction !== "problematic") continue;
+        // Your own reason (only when you voted problematic and gave one),
+        // right under the merged verdict line -- same "attached to your
+        // own vote, not buried unattributed in the generic list" reasoning
+        // _buildCommunitySection already used for this.
+        if (plan.myReason) {
+          myReasonEl = buildReasonItem(tr, plan.myReason);
+          step.appendChild(myReasonEl);
+        }
+        if (plan.reasons.length) {
+          addDetail(step, tr.community_problematic_reasons_heading);
+          for (const { reason, trusted } of plan.reasons) {
+            step.appendChild(buildReasonItem(tr, reason, { trusted }));
+          }
+          if (plan.hiddenCount > 0) addDetail(step, tr.community_problematic_reasons_more(plan.hiddenCount));
+        }
       }
-      // "you"-aware (myAwareCommunityVerdictText), not the plain
-      // aggregateVerdictText this used before -- direct user feedback,
-      // 2026-08-19: it showed the anonymous "1 person reported..." right
-      // next to a correctly "you"-aware confirmation elsewhere in the same
-      // dialog, for the exact same vote.
-      const text = myAwareCommunityVerdictText(tr, communityMyVerdict, communityHealthyCount, communityProblematicCount);
-      // Same "any problematic report wins the icon" rule verdictBadge
-      // itself already applies (isProblematic = problematic_count > 0,
-      // regardless of how many healthy votes also exist) -- not
-      // re-derived independently, the exact same asymmetric-safety
-      // priority this whole feature already uses everywhere else.
-      if (text) addDetailWithIcon(step, verdictIcon(communityProblematicCount > 0), text);
     };
 
-    // "Other jumps landing on this same destination version" -- moved here
-    // from the old standalone Community section (see _buildReportButton's
-    // own comment for the full relocation), one addDetailWithIcon line per
-    // jump (capped at MAX_OTHER_JUMPS server-side already, see
-    // other_jumps_from_payload) plus its own leading (icon-less, it's a
-    // section label not a verdict) heading line, reusing
-    // verdictBadge/community_other_jump_line verbatim -- the exact same
-    // per-jump sentence and icon the old section already used. Nothing at
-    // all when communityOtherJumps is still empty (either genuinely no
-    // other jumps yet, or _buildReportButton's own live fetch hasn't
-    // resolved yet) -- same "only real facts" rule as addCommunityDetail
-    // just above.
+    // The report/update-report action itself, moved here from the old
+    // compact _buildReportButton widget (see that method's own removal
+    // comment) -- same hidden-until-identifiable gate it used (an
+    // unidentifiable jump, e.g. a Zigbee device firmware update with no
+    // resolvable release_url, gets no report action at all, same as
+    // before). allowHealthy is always false here (Journey A, not yet
+    // installed) -- see _buildVoteControls's own docstring for why a
+    // "confirm healthy" button never belongs before actually installing
+    // anything. Its own toggle button joins this step's shared action row
+    // (getActionsRow) -- direct user feedback, 2026-08-19, "alle acties in
+    // dezelfde rij" -- always called after this step's own main action (see
+    // every call site below), so it lands second/last in that row. The
+    // form itself (revealed by the toggle) stays a separate element right
+    // here in the step's own content instead, below the row -- only the
+    // button belongs in the shared row, not the whole revisable form.
+    // onVoted rebuilds this whole dialog with an optimistic override
+    // (applyLiveVerdict, see _openDetailDialog's own comment) -- a full
+    // rebuild instead of _buildCommunitySection's own in-place re-render,
+    // since this step's own DOM has no persistent handle back to itself
+    // the way that section's closure does.
+    const addReportControls = (step) => {
+      if (!communityIdentifiable) return;
+      // dialog-vote, same class _buildCommunitySection's own controlsContainer
+      // uses -- found by review, 2026-08-19: without it, none of that
+      // class's own field spacing (ha-form's own margin-top once it isn't
+      // the form's first child, full-width form fields) applied here, only
+      // in Journey B.
+      const formWrap = document.createElement("div");
+      formWrap.className = "dialog-vote";
+      step.appendChild(formWrap);
+      this._buildVoteControls(
+        formWrap, tr, entityId, u.latest_version, false, communityMyVerdict, communityMyReason,
+        (verdict, reason) => {
+          applyLiveVerdict({
+            ...optimisticVoteCounts(
+              { healthy_count: communityHealthyCount, problematic_count: communityProblematicCount },
+              communityMyVerdict,
+              verdict
+            ),
+            trusted_vote: effectiveTrustedVote,
+            trusted_voters_matched: effectiveTrustedVotersMatched,
+            other_jumps: communityOtherJumps,
+            problematic_reasons: communityProblematicReasons,
+            my_verdict: verdict,
+            my_reason: verdict === "problematic" ? reason : null,
+            identifiable: true,
+          });
+        },
+        getActionsRow(step),
+        myReasonEl
+      );
+    };
+
+    // "Other jumps landing on this same destination version" -- one
+    // addDetailWithIcon line per jump (capped at MAX_OTHER_JUMPS
+    // server-side already, see other_jumps_from_payload) plus its own
+    // leading (icon-less, it's a section label not a verdict) heading
+    // line, reusing verdictBadge/community_other_jump_line verbatim.
+    // Nothing at all when communityOtherJumps is still empty (either
+    // genuinely no other jumps yet, or _openDetailDialog's own live
+    // verdict fetch hasn't resolved yet) -- same "only real facts" rule as
+    // addCommunityDetail just above.
     const addOtherJumpsDetail = (step) => {
       if (!communityOtherJumps || !communityOtherJumps.length) return;
       addDetail(step, tr.community_other_jumps_heading);
@@ -4090,6 +4298,7 @@ class UpdateManagerPanel extends HTMLElement {
       addDetail(step, `${u.installed_version} → ${u.latest_version} (${size})`);
       addCommunityDetail(step);
       addOtherJumpsDetail(step);
+      addReportControls(step);
     } else {
       // Step 1: Update available. Fixed icon (ICON_UPDATE) regardless of
       // waiting/done -- direct user feedback, 2026-08-12: no two steps
@@ -4166,10 +4375,23 @@ class UpdateManagerPanel extends HTMLElement {
       // unlocks" reasoning already applied to Force ready above.
       if (u.status === "skipped") {
         const step = addStep("var(--primary-color)", ICON_CANCEL, tr.status_skipped, null);
+        // Community content + report action now shown here too (direct
+        // user feedback, 2026-08-19: an already-skipped update had no way
+        // at all to see or report a community verdict before this, even
+        // though it's exactly the same jump every other step already
+        // covers). Unskip -- this step's own primary, expected action --
+        // comes right after the facts, before the report toggle: direct
+        // user feedback, 2026-08-19, "eerst de hoofdactie, daarna pas de
+        // report-toggle als secundaire optie" (tried facts-then-report-
+        // then-action first, read as burying the actual point of the step
+        // under an optional aside).
+        addCommunityDetail(step);
+        addOtherJumpsDetail(step);
         addAction(step, tr.dialog_unskip, async () => {
           await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
           await this._afterDialogAction(entityId);
         });
+        addReportControls(step);
       } else if (u.status === "waiting") {
         const step = addStep(null, ICON_CHECK_CIRCLE, tr.group_ready, absoluteWhen(tr, u.ready_at, this._hass), { notEnabled: true });
         addCommunityDetail(step);
@@ -4177,7 +4399,9 @@ class UpdateManagerPanel extends HTMLElement {
         // Force ready unlocks this step specifically (skips straight to
         // "ready"), not "Update available" above it -- direct user
         // feedback, 2026-08-12: the button belongs on the step it
-        // actually unlocks.
+        // actually unlocks. Comes before addReportControls, same "hoofdactie
+        // eerst" ordering as the "skipped" branch above -- see that
+        // branch's own comment.
         addAction(
           step,
           tr.dialog_force_ready,
@@ -4200,11 +4424,13 @@ class UpdateManagerPanel extends HTMLElement {
           // do".
           { appearance: "filled" }
         );
+        addReportControls(step);
       } else {
         const readySince = (u.pending_install && u.pending_install.announced_at) || u.ready_since;
         const step = addStep("var(--success-color)", ICON_CHECK_CIRCLE, tr.group_ready, readySince ? absoluteWhen(tr, readySince, this._hass) : null);
         addCommunityDetail(step);
         addOtherJumpsDetail(step);
+        addReportControls(step);
       }
     }
 
@@ -4346,11 +4572,12 @@ class UpdateManagerPanel extends HTMLElement {
     // same entity while it's already open, which used to snap the scroll
     // back to the top every time, losing your place in the release notes or
     // community section. Only meaningful to restore for a same-entity
-    // rebuild, not a genuinely fresh open (dialog.bodyContainer is
-    // ha-dialog's own real scrollable element, confirmed against its real
-    // source -- not this method's own `body`, which is only slotted into it).
+    // rebuild, not a genuinely fresh open (this._dialogScrollContainer() is
+    // the real scrollable element one shadow root inside the dialog, not
+    // this method's own `body`, which is only slotted into it).
     const isRebuildOfSameEntity = this._dialogEntityId === entityId && dialog.open;
-    const previousScrollTop = isRebuildOfSameEntity && dialog.bodyContainer ? dialog.bodyContainer.scrollTop : 0;
+    const dialogScrollEl = isRebuildOfSameEntity ? this._dialogScrollContainer() : null;
+    const previousScrollTop = dialogScrollEl ? dialogScrollEl.scrollTop : 0;
     // Tracks which entity the dialog is currently showing -- lets an
     // in-flight release-notes fetch (see below) recognize itself as stale
     // if the dialog closes or gets reopened for a different entity before
@@ -4433,6 +4660,16 @@ class UpdateManagerPanel extends HTMLElement {
     // of them, before dialog.open was ever reached -- no History dialog
     // could open at all.
     const effectiveTrustedVote = communityOverride ? communityOverride.trusted_vote : showPendingUpdate ? u.trusted_vote : undefined;
+    // Same shape as effectiveTrustedVote just above -- coordinator.py's own
+    // cache already carries this (community_verdict.py's own
+    // peek_cached_trusted_vote), same as trusted_vote itself. Needed so the
+    // timeline's own merged verdict sentence (communityVerdictLines) can
+    // name a trusted voter by @username, not just say "healthy"/"problematic".
+    const effectiveTrustedVotersMatched = communityOverride
+      ? communityOverride.trusted_voters_matched
+      : showPendingUpdate
+      ? u.trusted_voters_matched
+      : undefined;
     const communityProblematicCount = showPendingUpdate
       ? communityOverride
         ? communityOverride.problematic_count
@@ -4448,11 +4685,11 @@ class UpdateManagerPanel extends HTMLElement {
       : 0;
     // Unlike the two counts above, there's no cached fallback at all --
     // u.community_verdict never carries other_jumps (only the live
-    // verdict_for_version fetch does, see _buildReportButton), so this is
-    // simply empty until that fetch resolves and hands it in via
-    // communityOverride, same "correct in place once live data disagrees"
-    // rebuild this whole communityOverride mechanism already does for the
-    // other two.
+    // verdict_for_version fetch does, see the fetch further down this same
+    // method), so this is simply empty until that fetch resolves and hands
+    // it in via communityOverride, same "correct in place once live data
+    // disagrees" rebuild this whole communityOverride mechanism already
+    // does for the other two.
     const communityOtherJumps = communityOverride ? communityOverride.other_jumps || [] : [];
     // Same no-cached-fallback shape as communityOtherJumps just above --
     // only ever known once the live fetch resolves. Used so the timeline's
@@ -4463,6 +4700,18 @@ class UpdateManagerPanel extends HTMLElement {
     // confirmation elsewhere in the same dialog, reading as if they
     // disagreed about the same fact.
     const communityMyVerdict = communityOverride ? communityOverride.my_verdict : undefined;
+    // Same no-cached-fallback shape again -- feeds the timeline's own
+    // reasons list and "your own reason" detail (addCommunityDetail),
+    // moved there from the old standalone Community section, 2026-08-19.
+    const communityProblematicReasons = communityOverride ? communityOverride.problematic_reasons || [] : [];
+    const communityMyReason = communityOverride ? communityOverride.my_reason : undefined;
+    // Gates the timeline's own report-controls form (addReportControls):
+    // false until the live fetch below actually confirms this exact jump
+    // is identifiable (has a resolvable community-votes identity) -- same
+    // "never offer a report action that would always fail" gate the old
+    // _buildReportButton widget used, just no longer tied to a visible
+    // widget of its own.
+    const communityIdentifiable = communityOverride ? !!communityOverride.identifiable : false;
     const heldBackByCommunity =
       showPendingUpdate &&
       effectiveTrustedVote !== "healthy" &&
@@ -4584,6 +4833,29 @@ class UpdateManagerPanel extends HTMLElement {
       // direct user feedback, 2026-08-12: that table only ever restated
       // what the timeline already showed a few pixels above it (see
       // _buildTimeline's own docstring).
+      //
+      // Corrects effectiveTrustedVote/the timeline's own community content
+      // in place -- but only once live data (the verdict_for_version fetch
+      // just below, or a vote cast in the timeline's own report-controls
+      // form) actually disagrees with what this exact dialog was built
+      // with, avoiding a rebuild on every routine open where the two
+      // already agree. problematic_reasons/other_jumps/identifiable have
+      // no cached fallback at all (see communityOtherJumps's own comment
+      // above), so any change in those always counts as a disagreement
+      // worth rebuilding for, not just a changed count.
+      const applyLiveVerdict = (live) => {
+        if (isDialogStale()) return;
+        const changed =
+          (live.other_jumps || []).length !== communityOtherJumps.length ||
+          (live.problematic_reasons || []).length !== communityProblematicReasons.length ||
+          live.healthy_count !== communityHealthyCount ||
+          live.problematic_count !== communityProblematicCount ||
+          live.trusted_vote !== effectiveTrustedVote ||
+          live.my_verdict !== communityMyVerdict ||
+          !!live.identifiable !== communityIdentifiable;
+        if (!changed) return;
+        this._openDetailDialog(entityId, historyEntry, live);
+      };
       body.appendChild(
         this._buildTimeline(u, tr, entityId, {
           isQueuedInRollout,
@@ -4592,10 +4864,67 @@ class UpdateManagerPanel extends HTMLElement {
           heldBackByCommunity,
           communityHealthyCount,
           communityProblematicCount,
+          communityMyVerdict,
+          communityMyReason,
           communityOtherJumps,
+          communityProblematicReasons,
+          communityIdentifiable,
           effectiveTrustedVote,
+          effectiveTrustedVotersMatched,
+          applyLiveVerdict,
         })
       );
+      // Community verdict data for this exact pending jump: other_jumps,
+      // problematic_reasons and my_reason have no cached fallback at all
+      // (only this live fetch ever knows them), so the timeline above
+      // first renders with whatever's already known (the coordinator's own
+      // cached counts/trusted_vote, no reasons/other-jumps/my_reason yet)
+      // and corrects itself via applyLiveVerdict once this resolves, the
+      // same mechanism the old _buildReportButton widget used before it
+      // was retired in favor of putting this content and its own action
+      // together directly in the timeline, 2026-08-19, direct user
+      // feedback, rather than split across two separate spots in the
+      // dialog.
+      //
+      // Only on the very first render (communityOverride still null),
+      // found by review, 2026-08-19: applyLiveVerdict's own rebuild
+      // (this._openDetailDialog(entityId, historyEntry, live)) re-enters
+      // this exact method, and without this guard, the very rebuild it
+      // triggers would kick off *another* one of these live fetches every
+      // single time, each one racing to correct a dialog that's already
+      // correct -- wasted, piling-up network calls on every single
+      // dialog-open, worse yet after every Skip/Unskip/Force ready
+      // (_afterDialogAction's own reopen starts this whole chain over from
+      // a fresh communityOverride=null). A rebuild already carries the
+      // live answer it needs in communityOverride; it never needs to ask
+      // again.
+      if (!communityOverride && u.latest_version && u.installed_version) {
+        (async () => {
+          let result;
+          try {
+            result = await this._hass.callWS({
+              type: "update_manager/verdict_for_version",
+              entity_id: entityId,
+              version: u.latest_version,
+            });
+          } catch {
+            return;
+          }
+          if (isDialogStale() || !result.identifiable) return;
+          const counts = result.verdict || { healthy_count: 0, problematic_count: 0 };
+          applyLiveVerdict({
+            healthy_count: counts.healthy_count,
+            problematic_count: counts.problematic_count,
+            trusted_vote: result.trusted_vote,
+            trusted_voters_matched: result.trusted_voters_matched,
+            other_jumps: result.other_jumps || [],
+            problematic_reasons: result.problematic_reasons || [],
+            my_verdict: result.my_verdict,
+            my_reason: result.my_reason,
+            identifiable: true,
+          });
+        })();
+      }
 
       // Shown once this entity has crossed rollout_manager.py's own
       // _STUCK_THRESHOLD (see this._stuck's own comment) -- direct user
@@ -4654,56 +4983,6 @@ class UpdateManagerPanel extends HTMLElement {
       // of re-reading (and getting wrong) the raw attribute itself.
       const releaseUrl = u.release_url;
 
-      // Journey A (report-only, no healthy button) unconditionally -- this
-      // is inherently about a not-yet-installed version, regardless of
-      // whatever History entry the dialog might also have been opened
-      // with (changed 2026-07-25: used to be derived from `!!historyEntry`,
-      // which could let a not-yet-installed version get voted "healthy" if
-      // a historyEntry also happened to be passed).
-      //
-      // Built here (synchronous DOM construction, starts hidden -- see its
-      // own docstring), handed to insertReleaseNotesSection below as its
-      // own heading's trailing content, not appended as a section of its
-      // own -- direct user feedback, 2026-08-13, "de content en opties
-      // logisch indelen": the standalone Community section (heading,
-      // disclaimer, aggregate/trusted-vote sentence) is retired for this,
-      // the not-yet-installed case entirely. Its own content now has three
-      // homes instead: the plain summary sentence lives on the timeline's
-      // own Ready to update step (_buildTimeline's own addCommunityDetail),
-      // "other jumps" also lands there as its own detail line (see
-      // communityOtherJumps below), and only the actual *action* -- report
-      // a known issue -- stays here, right in the Release notes heading
-      // where you'd actually notice something worth reporting. Journey B
-      // (already installed, both healthy/problematic, still the *full*
-      // section with disclaimer/aggregate/other-jumps) is untouched --
-      // that's entryCommunitySection further down, a completely separate
-      // build.
-      const reportButton = this._buildReportButton(
-        tr, entityId, u.installed_version, u.latest_version, isDialogStale,
-        // Corrects heldBackByCommunity/the timeline's own summary sentence
-        // and other-jumps detail, and the "Open update" button's own accent
-        // styling, in place -- but only once this live fetch (or a fresh
-        // vote within it) actually disagrees with what this exact dialog
-        // was built with, avoiding a rebuild on every routine open where
-        // the two already agree. other_jumps has no cached fallback at all
-        // (see communityOtherJumps's own comment above), so any non-empty
-        // result there always counts as a disagreement worth rebuilding
-        // for, not just a changed count.
-        (live) => {
-          if (isDialogStale()) return;
-          const otherJumpsChanged = (live.other_jumps || []).length !== communityOtherJumps.length;
-          if (
-            !otherJumpsChanged &&
-            live.healthy_count === communityHealthyCount &&
-            live.problematic_count === communityProblematicCount &&
-            live.trusted_vote === effectiveTrustedVote
-          ) {
-            return;
-          }
-          this._openDetailDialog(entityId, historyEntry, live);
-        }
-      );
-
       // Release notes. UpdateEntityFeature.RELEASE_NOTES = 16
       // (homeassistant/components/update/const.py): entities that support
       // it generate notes on demand (e.g. fetched from a changelog API),
@@ -4739,15 +5018,13 @@ class UpdateManagerPanel extends HTMLElement {
       body.appendChild(releaseNotesAnchor);
       const supportsReleaseNotes = state && (state.attributes.supported_features || 0) & 16;
       // notes may be null/empty here -- releaseUrl alone is still reason
-      // enough to show the section, just with only the link in it (see
-      // insertReleaseNotesSection's own comment). Never called at all when
-      // both are empty, same "no empty section" treatment as before -- also
-      // the reason reportButton only ever actually shows up when release
-      // notes/a release URL exist too, a deliberate, accepted limitation
-      // (see reportButton's own build-site comment): there's no "Release
-      // notes" heading at all to attach it to otherwise.
+      // enough to show the section, just with only the link in it. Never
+      // called at all when both are empty, same "no empty section"
+      // treatment as before -- unrelated to the timeline's own report
+      // controls now (see addReportControls), which no longer depend on
+      // this section existing at all.
       const appendReleaseNotesSection = (notes, linkUrl) => {
-        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, reportButton);
+        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl);
         if (notes) this._appendUpstreamReleaseNotes(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version);
       };
       // entityId === CORE_UPDATE_ENTITY_ID only: also resolve the blog
@@ -4833,9 +5110,25 @@ class UpdateManagerPanel extends HTMLElement {
     // keeps this section always complete once it resolves -- this fetch
     // only ever happens once per panel session, guarded by
     // _installLogOlderLoaded, so opening a dialog is not a repeated cost.
+    //
+    // Reopens only once _installLogOlderLoaded has actually become true --
+    // found live, 2026-08-19 (a real, permanent page freeze, reproduced and
+    // root-caused via the browser's own debugger, not this project's usual
+    // "direct user feedback" wording since no console error was ever
+    // printed): _loadOlderHistory's own fetch can fail (its own try/catch
+    // swallows the error, "best-effort", see that method's own comment),
+    // in which case _installLogOlderLoaded never becomes true -- but this
+    // callback used to reopen unconditionally regardless, and the reopened
+    // _openDetailDialog would see the exact same still-false flag and
+    // immediately re-trigger another _loadOlderHistory/reopen round, with
+    // nothing anywhere to ever stop it: a permanent, page-freezing loop
+    // out of a single failed fetch, no external re-trigger needed to keep
+    // it going once started. Checking the flag here means a failure is
+    // simply a silent no-op (same as the "Show older history" button's own
+    // "best-effort" contract already promises) instead of an infinite retry.
     if (!this._installLogOlderLoaded) {
       this._loadOlderHistory().then(() => {
-        if (!isDialogStale()) this._openDetailDialog(entityId, historyEntry, communityOverride);
+        if (!isDialogStale() && this._installLogOlderLoaded) this._openDetailDialog(entityId, historyEntry, communityOverride);
       });
     }
 
@@ -5197,13 +5490,14 @@ class UpdateManagerPanel extends HTMLElement {
 
     dialog.appendChild(body);
 
-    // slot="footer" -- ha-dialog's own real footer area (confirmed against
-    // its current, WebAwesome-based implementation: ::slotted([slot="footer"])
-    // already gives it the right flex/gap/padding, nothing to add here),
-    // not an unslotted div. That was the actual bug behind broken
-    // scrolling and cramped-looking buttons: an unslotted sticky-positioned
-    // div was landing inside ha-dialog's own scrollable body alongside
-    // everything else instead of in its dedicated footer slot. Same real
+    // slot="footer" -- the dialog's own real footer area (confirmed against
+    // both ha-dialog's and ha-bottom-sheet's current, WebAwesome-based
+    // implementation: ::slotted([slot="footer"]) already gives it the right
+    // flex/gap/padding, nothing to add here), not an unslotted div. That
+    // was the actual bug behind broken scrolling and cramped-looking
+    // buttons: an unslotted sticky-positioned div was landing inside the
+    // dialog's own scrollable body alongside everything else instead of in
+    // its dedicated footer slot. Same real
     // update.clear_skipped service HA's own dialog calls (verified
     // against update/services.yaml, not guessed) -- Skip is plain/text-
     // style (secondary), Open update is the one filled (primary) action
@@ -5318,38 +5612,17 @@ class UpdateManagerPanel extends HTMLElement {
       openBtn.appearance = "plain";
       openBtn.label = tr.dialog_more_info;
     }
+    // Always opens HA's own more-info dialog -- direct user feedback,
+    // 2026-08-19: "hij moet gewoon altijd de more info openen. Altijd."
+    // This used to have one exception (a Zigbee rollout-group member not
+    // yet queued installed via update_manager/install directly instead, to
+    // preserve rollout_manager.py's own mesh-instability-preventing
+    // pacing, which HA's own dialog has no awareness of at all -- found by
+    // code review, 2026-07-29). Confirmed, deliberate tradeoff: that one
+    // narrow case now bypasses rollout pacing the same way every other
+    // path through HA's own dialog always has, in exchange for one single,
+    // predictable button behavior everywhere.
     openBtn.addEventListener("click", () => {
-      // A rollout-group member not yet queued (about to become the front,
-      // or racing to become one) installs via update_manager/install
-      // directly instead of opening HA's own dialog -- found by code
-      // review, 2026-07-29: rollout_manager.py's own pacing is only ever
-      // consulted through that websocket command (see websocket_api.py's
-      // own _handle_install); HA's real dialog calls update.install
-      // directly, completely invisible to it. Two Zigbee devices on the
-      // same network could otherwise both install at once by going through
-      // HA's own dialog one after the other, exactly the mesh-instability
-      // scenario this whole feature exists to prevent. A genuinely queued
-      // entry falls through to HA's own dialog below on purpose, unlike
-      // this case: clicking through from here while queued is the explicit
-      // "install ahead of my own turn anyway" override the button's own
-      // disabled state above deliberately allows now.
-      const rolloutStatus = canOpenUpdate ? this._rolloutStatusFor(entityId) : null;
-      if (canOpenUpdate && rolloutStatus && rolloutStatus.status !== "queued") {
-        _runProgressAction(openBtn, async () => {
-          const msg = { type: "update_manager/install", entity_id: entityId };
-          if (state && (state.attributes.supported_features || 0) & 8) msg.backup = true;
-          await this._hass.callWS(msg);
-          // Same reasoning as _updateAllInGroup's own reload -- this
-          // dispatch might have landed this entity (or, more likely, a
-          // sibling it's now sharing a queue with) in a tier/rollout-queue
-          // wait with no state_changed of its own to react to yet. Same
-          // established pattern the Cancel button right above already
-          // uses (await callWS, then _afterDialogAction) for exactly this
-          // "reflect what the server actually decided" reason.
-          await this._afterDialogAction(entityId);
-        });
-        return;
-      }
       this._openMoreInfo(entityId);
     });
     actions.appendChild(openBtn);
@@ -5362,8 +5635,8 @@ class UpdateManagerPanel extends HTMLElement {
     // fresh open). Sections that fetch their own data asynchronously
     // (release notes, community verdict) can still append more content
     // after this and shift things slightly -- same accepted trade-off the
-    // 150ms delay below already makes for those, not worth chasing further.
-    if (isRebuildOfSameEntity && dialog.bodyContainer) dialog.bodyContainer.scrollTop = previousScrollTop;
+    // 200ms delay below already makes for those, not worth chasing further.
+    if (dialogScrollEl) dialogScrollEl.scrollTop = previousScrollTop;
 
     // A short, fixed delay before actually showing the dialog -- direct
     // user feedback, 2026-08-01: every dialog visibly shifted layout right
@@ -5375,22 +5648,24 @@ class UpdateManagerPanel extends HTMLElement {
     // slower one to land) -- explicit tradeoff: a fixed delay covering
     // most cases is good enough, and just as important, it must stay
     // unnoticeable -- the dialog still has to feel like it opens
-    // instantly. 150ms (bumped up from the original 100ms,
-    // 2026-08-02, alongside the release-notes loader below) is still short
-    // enough to stay under the generally-cited "feels instant" perception
-    // threshold, long enough to let most of these fetches (a single small
-    // JSON file/websocket round-trip each) land before anything is
-    // actually shown -- won't catch every slow one, that's the accepted
-    // trade-off, and Release notes specifically no longer needs to rely on
-    // this delay alone anymore either way (see buildReleaseNotesLoader's
-    // own comment: that section now reserves its own stable space instead
-    // of popping in, the same technique HA core's own native dialog uses
-    // for this exact problem). isDialogStale guards the rare case this
-    // entity's dialog was closed or reopened for someone else before the
-    // delay elapsed.
+    // instantly. 200ms (bumped up from 150ms, 2026-08-19, since a
+    // bottom-sheet dialog visibly grows taller when late content pops in
+    // after opening, more noticeable than the same pop-in was on the
+    // fullscreen dialog this delay was originally tuned for) is still
+    // short enough to stay under the generally-cited "feels instant"
+    // perception threshold, long enough to let most of these fetches (a
+    // single small JSON file/websocket round-trip each) land before
+    // anything is actually shown -- won't catch every slow one, that's the
+    // accepted trade-off, and Release notes specifically no longer needs
+    // to rely on this delay alone anymore either way (see
+    // buildReleaseNotesLoader's own comment: that section now reserves its
+    // own stable space instead of popping in, the same technique HA core's
+    // own native dialog uses for this exact problem). isDialogStale guards
+    // the rare case this entity's dialog was closed or reopened for
+    // someone else before the delay elapsed.
     setTimeout(() => {
       if (!isDialogStale()) dialog.open = true;
-    }, 150);
+    }, 200);
   }
 
   // Debounced, not fired on every single value-changed event -- ha-form's
@@ -5861,136 +6136,31 @@ class UpdateManagerPanel extends HTMLElement {
     return card;
   }
 
-  // Journey A's own compact home for reporting a known issue -- everything
-  // that used to live in the full Community section (see
-  // _buildCommunitySection's own updated comment) except the actual action
-  // itself has already moved elsewhere by the time this runs: the plain
-  // summary sentence and the "other jumps" detail both now live on the
-  // timeline's own Ready to update step (see _buildTimeline's own
-  // addCommunityDetail and addOtherJumpsDetail), driven by the same
-  // onLiveVerdict callback this hands its own live fetch results to.
-  // Placed in the Release notes heading's own top-right slot (see
-  // insertReleaseNotesSection's own headingExtra) by _openDetailDialog,
-  // not appended as a section of its own -- direct user feedback,
-  // 2026-08-13: "toevoegen aan de release notes sectie. Rechtsboven ofzo".
-  //
-  // Same hidden-until-identifiable pattern as _buildCommunitySection's own
-  // (see that method's own comment) -- an unidentifiable jump never shows
-  // this at all, same as the section it replaced for this journey.
-  //
-  // allowHealthy is never passed through to _buildVoteControls as true
-  // here (this call is hardcoded to report-only) -- a "confirm healthy"
-  // button never made sense before actually installing anything, and stays
-  // that way; once you have installed it, Journey B (the History entry's
-  // own expandable card, _buildCommunitySection) is where both directions
-  // belong, right next to each other.
-  //
-  // Already voted problematic (checked before ever building the toggle
-  // button/form at all, not left to _buildVoteControls's own always-
-  // revisable rendering -- direct user feedback, 2026-08-13, "eigen stem
-  // bij de knop": once reported, this compact spot shows a quiet
-  // confirmation instead of a button, not an always-open, ready-to-
-  // resubmit form; revising an existing report is still possible from the
-  // fuller Journey B view once installed) -- swaps in
-  // community_verdict_you_problematic, the exact same sentence
-  // applyMyVerdictRow already uses for the identical fact elsewhere.
-  _buildReportButton(tr, entityId, fromVersion, toVersion, isDialogStale, onLiveVerdict) {
-    if (!toVersion || !fromVersion) return null;
-
-    const wrap = document.createElement("div");
-    wrap.className = "release-notes-report";
-    wrap.hidden = true;
-    wrap.title = tr.dialog_community_verdict_disclaimer;
-
-    (async () => {
-      let result;
-      try {
-        result = await this._hass.callWS({ type: "update_manager/verdict_for_version", entity_id: entityId, version: toVersion });
-      } catch {
-        return;
-      }
-      if (isDialogStale() || !result.identifiable) return;
-      wrap.hidden = false;
-
-      const counts = result.verdict || { healthy_count: 0, problematic_count: 0 };
-      onLiveVerdict?.({
-        healthy_count: counts.healthy_count,
-        problematic_count: counts.problematic_count,
-        trusted_vote: result.trusted_vote,
-        trusted_voters_matched: result.trusted_voters_matched,
-        other_jumps: result.other_jumps || [],
-        my_verdict: result.my_verdict,
-      });
-
-      if (result.my_verdict === "problematic") {
-        const confirmed = document.createElement("span");
-        confirmed.className = "release-notes-report-confirmed";
-        confirmed.textContent = tr.community_verdict_you_problematic;
-        wrap.appendChild(confirmed);
-        return;
-      }
-
-      // myVerdict is guaranteed null here (the only other possibility,
-      // "problematic", already returned above -- allowHealthy=false means
-      // "healthy" is never reachable in this journey at all), so the
-      // optimistic count below is always a plain +1, no prior vote to
-      // subtract first -- same optimistic-update principle
-      // _buildCommunitySection's own onVoted callback already uses, just
-      // simpler for that one reason.
-      const controls = document.createElement("div");
-      wrap.appendChild(controls);
-      this._buildVoteControls(controls, tr, entityId, toVersion, false, null, null, (verdict) => {
-        onLiveVerdict?.({
-          healthy_count: counts.healthy_count,
-          problematic_count: counts.problematic_count + (verdict === "problematic" ? 1 : 0),
-          trusted_vote: result.trusted_vote,
-          trusted_voters_matched: result.trusted_voters_matched,
-          other_jumps: result.other_jumps || [],
-          my_verdict: verdict,
-        });
-      });
-    })();
-
-    return wrap;
-  }
-
   // The dialog's own Community section: a compact verdict readout plus
   // vote controls, scoped to the exact (fromVersion, toVersion) jump the
-  // caller supplies. Only ever called for Journey B now (`allowHealthy=true`,
+  // caller supplies. Only ever called for Journey B (`allowHealthy=true`,
   // one specific, already-installed History entry's own jump, from that
   // entry's own expandable card, see the entries.forEach loop further
-  // down) -- Journey A (the entity's own current pending jump) used to
-  // call this too (`allowHealthy=false`, from _openDetailDialog's own
-  // `if (u)` block), until 2026-08-13's "content and options logically
-  // organized" split moved that one to _buildReportButton instead (see
-  // that method's own comment, and _openDetailDialog's own reportButton
-  // comment, for where each piece of what used to live here landed).
-  // Returns null (nothing to build or insert) if either version is
-  // missing. Built as a standalone element rather than appended inline, so
-  // each caller can insert it wherever it belongs (inside one History
-  // entry's own expanded card) instead of this method deciding that
-  // itself.
+  // down) -- Journey A (the entity's own current pending jump) has its own
+  // equivalent directly on the timeline instead (_buildTimeline's own
+  // addCommunityDetail/addReportControls). Returns null (nothing to build
+  // or insert) if either version is missing. Built as a standalone element
+  // rather than appended inline, so each caller can insert it wherever it
+  // belongs (inside one History entry's own expanded card) instead of this
+  // method deciding that itself.
   //
   // Hidden until the identifiable check below resolves, so an
   // unidentifiable entity (e.g. a Zigbee device update with no release_url
   // and no recognized vendor device firmware) never flashes content it's
-  // then immediately hidden again. The disclaimer that used to be its own
-  // permanent paragraph is now the row's own `title` tooltip instead --
-  // direct user feedback, 2026-07-22: the section read as cluttered, and a
-  // sentence that's the same for every single vote didn't need to always
-  // cost its own line.
-  // onLiveVerdict, when given, is called with { healthy_count,
-  // problematic_count, trusted_vote, trusted_voters_matched } once this
-  // section's own live verdict_for_version fetch resolves, and again after
-  // every vote cast in it -- see _openDetailDialog's own doc comment for
-  // what this is for. Still the full section (heading, disclaimer,
-  // aggregate/trusted-vote sentence, other jumps, both vote buttons once
-  // allowHealthy) -- used unmodified for Journey B (entryCommunitySection,
-  // an already-installed History entry). Journey A (a not-yet-installed
-  // pending update) no longer uses this at all -- see _buildReportButton
-  // just below instead, and _openDetailDialog's own reportButton comment
-  // for the full "content and options logically organized" breakdown.
-  _buildCommunitySection(tr, entityId, fromVersion, toVersion, allowHealthy, isDialogStale, onLiveVerdict) {
+  // then immediately hidden again.
+  //
+  // Renders from communityVerdictLines -- the exact same merged-per-
+  // direction sentence builder the timeline's own addCommunityDetail uses,
+  // 2026-08-19, direct user feedback: History and Pending must show
+  // identical content for the exact same facts, no separate, simpler
+  // treatment for either. Replaces the old three-way "you row / aggregate
+  // row / separate trusted-vote row" split entirely.
+  _buildCommunitySection(tr, entityId, fromVersion, toVersion, allowHealthy, isDialogStale) {
     if (!toVersion || !fromVersion) return null;
 
     const section = document.createElement("div");
@@ -5999,11 +6169,7 @@ class UpdateManagerPanel extends HTMLElement {
     section.appendChild(document.createElement("hr"));
     // Added 2026-08-01, direct user feedback: History already had its own
     // "History" heading, this section and release notes didn't, reading as
-    // inconsistent once pointed out. Reverses this section's own earlier,
-    // deliberate "icon + sentence, no heading" choice from 2026-07-22 (see
-    // the comment right below) -- that choice still holds for *within* the
-    // section (no separate disclaimer paragraph on top of the verdict
-    // sentence), just not for labeling the section itself anymore.
+    // inconsistent once pointed out.
     const heading = document.createElement("h3");
     heading.textContent = tr.dialog_community_heading;
     section.appendChild(heading);
@@ -6018,20 +6184,15 @@ class UpdateManagerPanel extends HTMLElement {
     infoGroup.className = "dialog-community-info";
     section.appendChild(infoGroup);
 
-    // Icon + sentence, not a separate heading plus a separate disclaimer
-    // paragraph on top. The icon is only ever appended once there's a real
-    // fact to show, not created upfront and toggled via .hidden -- found
-    // live, 2026-07-22: ha-svg-icon's own shadow-DOM styles set `:host {
-    // display: inline-flex }` unconditionally, with no `:host([hidden])`
-    // override, so the `hidden` attribute never actually collapsed it, only
-    // left an empty, pathless icon-sized gap sitting in front of the text.
-    const verdictRow = document.createElement("div");
-    verdictRow.className = "dialog-community-verdict-line";
-    verdictRow.title = tr.dialog_community_verdict_disclaimer;
-    const verdictText = document.createElement("span");
-    verdictText.textContent = tr.community_not_yet_rated;
-    verdictRow.appendChild(verdictText);
-    infoGroup.appendChild(verdictRow);
+    // Its own sibling group, not part of infoGroup. Found by review,
+    // 2026-08-24: renderInfo below rebuilds infoGroup from scratch on
+    // every vote, but a vote never changes which other jumps landed on
+    // this same destination version (see this section's own comment
+    // further down), so that content is built once, right after the
+    // initial fetch resolves, and never touched again.
+    const otherJumpsGroup = document.createElement("div");
+    otherJumpsGroup.className = "dialog-community-info";
+    section.appendChild(otherJumpsGroup);
 
     const controlsContainer = document.createElement("div");
     controlsContainer.className = "dialog-vote";
@@ -6054,221 +6215,91 @@ class UpdateManagerPanel extends HTMLElement {
       if (isDialogStale() || !result.identifiable) return;
       section.hidden = false;
 
-      // Row 1 ("you") + Row 2 ("everyone else"), rendered together by
-      // renderVerdictRows below since 2026-08-15 (was two independent
-      // functions before) -- merged into one sentence when there's a vote
-      // of yours to combine with (this session or before) and the others
-      // are all one direction, kept as two separate rows otherwise (no
-      // vote of yours yet, no others at all, or the others are themselves
-      // mixed). See the translation strings' own comment
-      // (community_verdict_you_and_others_healthy) for why a dissenting
-      // vote still never gets silently folded into the majority's count.
-      // `counts` stays frozen at this one fetch's numbers throughout (the
-      // external aggregate hasn't processed a vote cast in this session
-      // either way) -- same deliberately optimistic principle already used
-      // for the vote confirmation text itself. Rebuilt (not just built once
-      // here) after you cast a vote -- direct user feedback, 2026-07-27,
-      // found by code review: casting a vote used to only update Row 1,
-      // leaving Row 2 stuck on its pre-vote perspective/count.
-      const counts = result.verdict || { healthy_count: 0, problematic_count: 0 };
-      onLiveVerdict?.({
-        healthy_count: counts.healthy_count,
-        problematic_count: counts.problematic_count,
-        trusted_vote: result.trusted_vote,
-        trusted_voters_matched: result.trusted_voters_matched,
-      });
-      const myVerdict = result.my_verdict;
-      let aggregateRow = null;
-      // othersHealthy/othersProblematic (computed inside renderVerdictRows)
-      // always subtract against the *original* myVerdict (the one `counts`
-      // was actually fetched alongside), never currentMyVerdict -- found
-      // live, 2026-08-15: a fresh vote cast in this session (myVerdict
-      // null -> currentMyVerdict "healthy") isn't part of the frozen
-      // `counts` yet at all, so subtracting 1 for it wrongly zeroed out a
-      // pre-existing other person's healthy vote instead of leaving it
-      // alone. currentMyVerdict is still exactly right for deciding
-      // perspective/merging itself (that should flip the moment you've
-      // voted, this session or not).
-      const renderVerdictRows = (currentMyVerdict) => {
-        if (aggregateRow) {
-          aggregateRow.remove();
-          aggregateRow = null;
-        }
-        const othersHealthy = Math.max(0, counts.healthy_count - (myVerdict === "healthy" ? 1 : 0));
-        const othersProblematic = Math.max(0, counts.problematic_count - (myVerdict === "problematic" ? 1 : 0));
+      const trustedUsernames = result.trusted_voters_matched || [];
 
-        if (!currentMyVerdict) {
-          // Haven't voted at all yet: unchanged two-row behavior, "people"
-          // perspective (no "you" row to already exclude yourself from it).
-          if (othersHealthy === 0 && othersProblematic === 0) {
-            verdictText.textContent = tr.community_not_yet_rated;
-            verdictRow.hidden = false;
-            const existingIcon = verdictRow.querySelector("ha-svg-icon");
-            if (existingIcon) existingIcon.remove();
-          } else {
-            verdictRow.hidden = true;
+      // Rebuilt in place (not a full dialog rebuild, unlike the timeline's
+      // own applyLiveVerdict) on both the initial resolve and again after a
+      // vote cast in this same session -- same deliberately optimistic
+      // principle the vote confirmation text itself already uses:
+      // community-votes' own external aggregate can take a moment to
+      // actually reflect a vote just cast, so a fresh re-fetch right after
+      // voting would often still show the stale, pre-vote picture.
+      const renderInfo = (currentMyVerdict, currentReason, currentCounts) => {
+        infoGroup.innerHTML = "";
+        const plan = communityDetailPlan(
+          tr, currentCounts, currentMyVerdict, currentReason, result.trusted_vote, trustedUsernames, result.problematic_reasons
+        );
+        if (!plan.lines.length) {
+          const row = document.createElement("div");
+          row.className = "dialog-community-verdict-line";
+          row.title = tr.dialog_community_verdict_disclaimer;
+          const span = document.createElement("span");
+          span.textContent = tr.community_not_yet_rated;
+          row.appendChild(span);
+          infoGroup.appendChild(row);
+        }
+        for (const line of plan.lines) {
+          infoGroup.appendChild(buildVerdictLineRow(line.icon, line.text, tr.dialog_community_verdict_disclaimer));
+          if (line.direction !== "problematic") continue;
+          // Your own reason (only when you voted problematic and gave one),
+          // right under the merged verdict line -- found by review,
+          // 2026-07-29, auditing the whole section for overlap/redundancy:
+          // it used to show up a second time, unattributed, in the generic
+          // reasons list below, reading as a confusing, seemingly-unrelated
+          // extra entry rather than detail on the vote already named above.
+          if (plan.myReason) infoGroup.appendChild(buildReasonItem(tr, plan.myReason));
+          // Every other problematic voter's own reason for this exact jump
+          // (your own, if any, is already handled just above), direct user
+          // feedback, 2026-07-29: a problematic vote's own reason was
+          // nowhere to be found in the interface. A reason from a
+          // configured trusted voter is marked as such (found by review,
+          // same audit): otherwise it read as an unattributed entry with no
+          // link back to the fact that a trusted voter is in the mix at all.
+          if (plan.reasons.length) {
+            const reasonsHeading = document.createElement("p");
+            reasonsHeading.className = "hint";
+            reasonsHeading.textContent = tr.community_problematic_reasons_heading;
+            infoGroup.appendChild(reasonsHeading);
+            for (const { reason, trusted } of plan.reasons) {
+              infoGroup.appendChild(buildReasonItem(tr, reason, { trusted }));
+            }
+            if (plan.hiddenCount > 0) {
+              const more = document.createElement("p");
+              more.className = "hint";
+              more.textContent = tr.community_problematic_reasons_more(plan.hiddenCount);
+              infoGroup.appendChild(more);
+            }
           }
-          const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, "people");
-          if (aggregateText) {
-            aggregateRow = buildVerdictLineRow(verdictIcon(othersProblematic > 0), aggregateText, tr.dialog_community_verdict_disclaimer);
-            // Right after Row 1, not just appended at infoGroup's current
-            // end -- infoGroup is still empty of everything else at this
-            // point in the build (trusted-vote/other-jumps rows are only
-            // added below), but inserting relative to verdictRow rather
-            // than relying on build order keeps this correct even if that
-            // ordering ever changes.
-            infoGroup.insertBefore(aggregateRow, verdictRow.nextSibling);
-          }
-          return;
         }
-
-        // Voted, no others at all: just your own line, nothing to merge.
-        if (othersHealthy === 0 && othersProblematic === 0) {
-          applyMyVerdictRow(verdictRow, verdictText, tr, currentMyVerdict);
-          return;
-        }
-
-        // Voted, others themselves mixed: a 3-way merged sentence reads
-        // worse than the existing two-row layout, so this one case still
-        // falls back to it.
-        if (othersHealthy > 0 && othersProblematic > 0) {
-          applyMyVerdictRow(verdictRow, verdictText, tr, currentMyVerdict);
-          const aggregateText = aggregateVerdictText(tr, othersHealthy, othersProblematic, "others");
-          aggregateRow = buildVerdictLineRow(verdictIcon(othersProblematic > 0), aggregateText, tr.dialog_community_verdict_disclaimer);
-          infoGroup.insertBefore(aggregateRow, verdictRow.nextSibling);
-          return;
-        }
-
-        // Voted, others all one direction: merge into a single sentence,
-        // agreeing ("you_and_others") or not ("you_vs_others" -- your own
-        // verdict always stated explicitly, never silently absorbed).
-        const othersCount = othersHealthy > 0 ? othersHealthy : othersProblematic;
-        const othersVerdict = othersHealthy > 0 ? "healthy" : "problematic";
-        const text =
-          currentMyVerdict === othersVerdict
-            ? othersVerdict === "healthy"
-              ? tr.community_verdict_you_and_others_healthy(othersCount)
-              : tr.community_verdict_you_and_others_problematic(othersCount)
-            : currentMyVerdict === "healthy"
-            ? tr.community_verdict_you_vs_others_healthy_problematic(othersCount)
-            : tr.community_verdict_you_vs_others_problematic_healthy(othersCount);
-        verdictText.textContent = text;
-        const existingIcon = verdictRow.querySelector("ha-svg-icon");
-        if (existingIcon) existingIcon.remove();
-        const iconEl = document.createElement("ha-svg-icon");
-        // Any problematic verdict in play at all (yours or theirs) wins the
-        // icon -- same "any problematic report wins" rule verdictBadge
-        // itself already uses elsewhere in this file.
-        iconEl.path = verdictIcon(currentMyVerdict === "problematic" || othersVerdict === "problematic");
-        verdictRow.insertBefore(iconEl, verdictText);
-        verdictRow.hidden = false;
       };
-      renderVerdictRows(myVerdict);
 
-      // Your own reason (only when you voted problematic and gave one),
-      // right under your own vote line -- found by review, 2026-07-29,
-      // auditing the whole section for overlap/redundancy: it used to show
-      // up a second time, unattributed, in the generic reasons list below,
-      // reading as a confusing, seemingly-unrelated extra entry rather than
-      // detail on the vote already named right above it. Split server-side
-      // (websocket_api.py's own linked_username, already resolved for
-      // my_verdict anyway) since only the backend knows your own username.
-      // Inserted right after whatever's currently last of verdictRow/
-      // aggregateRow, not a fixed position, so it lands after "N others
-      // reported..." if that row exists, or directly after your own vote
-      // line if it doesn't.
-      if (result.my_reason) {
-        infoGroup.insertBefore(buildReasonItem(tr, result.my_reason), (aggregateRow || verdictRow).nextSibling);
-      }
-
-      // Whether a configured trusted voter is among the people who voted
-      // on this exact jump -- direct user feedback, 2026-07-27 ("toevallig
-      // mijn trusted voter die heeft gestemd, maar dat zie ik niet terug"),
-      // this is exactly the fact that changes auto-install behavior for
-      // this jump (see announcer.py's own effective_auto_install_state), so
-      // it gets its own line right next to the primary verdict, not folded
-      // into that sentence (folding "you" and "trusted voter(s)" into one
-      // grammatically correct sentence for every combination of the two
-      // wasn't worth the complexity). Not shown if the same person is both
-      // "you" and the trusted voter who voted -- a real but rare edge case,
-      // left as a minor known simplification rather than plumbing your own
-      // linked username through here just to de-duplicate one line.
-      if (result.trusted_voters_matched && result.trusted_voters_matched.length) {
-        const names = joinUsernames(tr, result.trusted_voters_matched);
-        const text =
-          result.trusted_vote === "problematic"
-            ? tr.community_trusted_vote_problematic(names)
-            : tr.community_trusted_vote_healthy(names);
-        infoGroup.appendChild(buildVerdictLineRow(verdictIcon(result.trusted_vote === "problematic"), text));
-      }
-
-      // Other jumps landing on this same destination version, if any --
+      // Other jumps landing on this same destination version, if any,
       // direct user feedback, 2026-07-24, wanting the dialog to also show
       // which other jumps to this same target version were rated safe or
-      // not, with my own jump (verdictRow above)
-      // always shown first/primary. Nothing rendered at all when there
-      // simply aren't any yet (no empty-state message) -- this data is
-      // inherently sparse early on, and a "nothing here" line would just
-      // be noise for the common case.
+      // not, with my own jump's own line(s) above always shown first/
+      // primary. Nothing rendered at all when there simply aren't any yet
+      // (no empty-state message), this data is inherently sparse early on,
+      // and a "nothing here" line would just be noise for the common case.
+      // Built once, into its own sibling group (see otherJumpsGroup's own
+      // comment above), not inside renderInfo: unaffected by a vote cast
+      // in this session (an other jump's own counts are never this jump's
+      // own to bump), so re-running it on every vote only ever produced
+      // the exact same output again, for no reason.
       if (result.other_jumps && result.other_jumps.length) {
         const otherJumpsHeading = document.createElement("p");
         otherJumpsHeading.className = "hint";
         otherJumpsHeading.textContent = tr.community_other_jumps_heading;
-        infoGroup.appendChild(otherJumpsHeading);
+        otherJumpsGroup.appendChild(otherJumpsHeading);
         result.other_jumps.forEach((jump) => {
           // Reuses verdictBadge (the exact same healthy/problematic-count
-          // derivation the Updates-tab row's own pill and this section's
-          // own verdictRow above already use), rather than re-deriving the
-          // icon/count/direction logic a third time.
+          // derivation the Updates-tab row's own pill already uses),
+          // rather than re-deriving the icon/count/direction logic again.
           const badge = verdictBadge(tr, jump);
-          if (!badge) return;
-          infoGroup.appendChild(buildVerdictLineRow(badge.icon, tr.community_other_jump_line(jump.from_version, badge.title)));
+          if (badge) otherJumpsGroup.appendChild(buildVerdictLineRow(badge.icon, tr.community_other_jump_line(jump.from_version, badge.title)));
         });
       }
-
-      // Every *other* problematic voter's own reason for this exact jump
-      // (your own, if any, is already handled above as my_reason) -- direct
-      // user feedback, 2026-07-29: a problematic vote's own reason was
-      // nowhere to be found in the interface, even though it was expected
-      // to be there. A vote's reason was
-      // collected on submission (see _buildVoteControls/_VOTE_REASON_LABEL_KEYS
-      // below) but never read back anywhere until now; reusing that same
-      // label map here so the vocabulary reads identically going in and
-      // coming back out. A reason from a configured trusted voter is marked
-      // as such (found by review, same audit as my_reason above): otherwise
-      // it read as an unattributed, seemingly unrelated entry with no link
-      // back to the "Trusted vote: @name..." line already shown above it,
-      // even though it's the exact same vote. Nothing rendered when there
-      // aren't any yet, same reasoning as other_jumps above.
-      if (result.problematic_reasons && result.problematic_reasons.length) {
-        const reasonsHeading = document.createElement("p");
-        reasonsHeading.className = "hint";
-        reasonsHeading.textContent = tr.community_problematic_reasons_heading;
-        infoGroup.appendChild(reasonsHeading);
-        const trustedUsernames = result.trusted_voters_matched || [];
-        result.problematic_reasons.forEach((reason) => {
-          const trusted = trustedUsernames.includes(reason.username);
-          infoGroup.appendChild(buildReasonItem(tr, reason, { trusted }));
-        });
-        // result.problematic_reasons is already capped server-side
-        // (MAX_PROBLEMATIC_REASONS, community_verdict_payload.py), most
-        // recent first, with no signal of its own about how many were left
-        // out -- direct user feedback, 2026-08-19: it silently showed 5
-        // even when counts.problematic_count said there were more, no
-        // indication anything was missing. counts.problematic_count is the
-        // real, uncapped total, so the gap between the two is exactly how
-        // many aren't shown (my own reason, if any, is excluded from both
-        // sides the same way -- see problematic_reasons_from_payload's own
-        // exclude_username, so this stays correct whether or not I voted).
-        const othersProblematicTotal = Math.max(0, counts.problematic_count - (myVerdict === "problematic" ? 1 : 0));
-        const hiddenReasonsCount = othersProblematicTotal - result.problematic_reasons.length;
-        if (hiddenReasonsCount > 0) {
-          const more = document.createElement("p");
-          more.className = "hint";
-          more.textContent = tr.community_problematic_reasons_more(hiddenReasonsCount);
-          infoGroup.appendChild(more);
-        }
-      }
+      const counts = result.verdict || { healthy_count: 0, problematic_count: 0 };
+      renderInfo(result.my_verdict, result.my_reason, counts);
 
       const status = await this._hass.callWS({ type: "update_manager/github_link_status" });
       if (isDialogStale()) return;
@@ -6279,26 +6310,16 @@ class UpdateManagerPanel extends HTMLElement {
         controlsContainer.appendChild(prompt);
         return;
       }
-      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, myVerdict, result.my_reason, (verdict) => {
-        renderVerdictRows(verdict);
-        // counts itself stays frozen at the original fetch (see
-        // renderVerdictRows's own comment); a vote cast just now in this
-        // session isn't reflected in it yet, so its own contribution is
-        // added/removed here the same optimistic way renderVerdictRows
-        // already does, relative to that same original myVerdict baseline
-        // -- correct regardless of how many times you re-vote in one
-        // session, since it's always compared against that one fixed point.
-        const optimisticProblematic = Math.max(
-          0,
-          counts.problematic_count - (myVerdict === "problematic" ? 1 : 0) + (verdict === "problematic" ? 1 : 0)
-        );
-        const optimisticHealthy = Math.max(0, counts.healthy_count - (myVerdict === "healthy" ? 1 : 0) + (verdict === "healthy" ? 1 : 0));
-        onLiveVerdict?.({
-          healthy_count: optimisticHealthy,
-          problematic_count: optimisticProblematic,
-          trusted_vote: result.trusted_vote,
-          trusted_voters_matched: result.trusted_voters_matched,
-        });
+      this._buildVoteControls(controlsContainer, tr, entityId, toVersion, allowHealthy, result.my_verdict, result.my_reason, (verdict, reason) => {
+        // counts itself stays frozen at the original fetch, never
+        // reassigned -- a vote cast just now in this session isn't
+        // reflected in it yet, so its own contribution is added/removed
+        // here the same optimistic way, always relative to that same
+        // original result.my_verdict baseline, correct regardless of how
+        // many times you re-vote in one session, since it's always
+        // compared against that one fixed point.
+        const optimisticCounts = optimisticVoteCounts(counts, result.my_verdict, verdict);
+        renderInfo(verdict, verdict === "problematic" ? reason : null, optimisticCounts);
       });
     })();
 
@@ -6345,13 +6366,16 @@ class UpdateManagerPanel extends HTMLElement {
   // specific reason via _showToast (not_linked/not_identifiable/
   // vote_failed, see websocket_api.py's own _handle_vote) instead.
   //
-  // `onVoted(verdict)`, called the same optimistic way right before
-  // showConfirmed: direct user feedback, 2026-07-27, found live -- Row 1
-  // above this (see _buildCommunitySection) kept showing "No one's reported
-  // on this jump yet." right next to this exact confirmation text after a
-  // successful vote, a flat contradiction. Updates that row locally too,
-  // same "don't wait on the real external count" principle as
-  // showConfirmed itself already uses.
+  // `onVoted(verdict, reason)`, called the same optimistic way right
+  // before showConfirmed: direct user feedback, 2026-07-27, found live --
+  // Row 1 above this (see _buildCommunitySection) kept showing "No one's
+  // reported on this jump yet." right next to this exact confirmation text
+  // after a successful vote, a flat contradiction. Updates that row
+  // locally too, same "don't wait on the real external count" principle as
+  // showConfirmed itself already uses. `reason` (the submitted
+  // {reason_category, notes, link}, or null for a healthy vote) lets both
+  // callers show your own reason right away too, not just the verdict
+  // count -- added 2026-08-19 alongside communityVerdictLines.
   // myVerdict: your own already-cast verdict for this exact jump, if any
   // (found by review, 2026-07-29, direct user feedback: "waarom zie ik
   // dan nog steeds de 'mark as healthy' knop? Dat heb ik toch al gedaan" --
@@ -6364,7 +6388,32 @@ class UpdateManagerPanel extends HTMLElement {
   // own my_reason, same shape already used to render the "your own reason"
   // line above this section) -- used to pre-fill the form below instead of
   // handing back a blank one when you're only here to revise it.
-  _buildVoteControls(container, tr, entityId, version, allowHealthy, myVerdict, myReason, onVoted) {
+  // actionsRow, when given (only ever the timeline's own shared action row,
+  // see _buildTimeline's own addReportControls), is where healthyBtn/
+  // toggleBtn land instead of container, direct user feedback, 2026-08-19,
+  // wanting every action for one step in a single shared row: this
+  // method's own buttons join that step's other action(s) (Force ready/
+  // Unskip/Cancel) in one row, main action first (addReportControls is
+  // always called after this step's own primary action). formContainer,
+  // the revisable form itself, only ever relevant once toggled open,
+  // always stays in container regardless, right where it already was:
+  // only the button belongs in the shared row, not the whole form. null
+  // for every other caller (_buildCommunitySection's own Journey B),
+  // unaffected, everything
+  // still lands in container exactly as before.
+  //
+  // viewEl, when given (only ever the timeline's own static "my reason"
+  // display, see addCommunityDetail's own myReasonEl), takes turns with
+  // formContainer occupying the same spot -- direct user feedback,
+  // 2026-08-19: shown together, the two read as duplicated (identical
+  // category/notes/link visible twice), even though they're conceptually
+  // different -- viewEl is community-votes' own last-confirmed record,
+  // formContainer is your own local, still-editable draft, which only
+  // happen to already match right after a fresh open. View mode (default)
+  // shows viewEl; toggling open hides it and shows the form instead, never
+  // both. null for every other caller (_buildCommunitySection's own
+  // Journey B, which has no such separate static element to begin with).
+  _buildVoteControls(container, tr, entityId, version, allowHealthy, myVerdict, myReason, onVoted, actionsRow = null, viewEl = null) {
     // reason (optional): rendered via buildReasonItem right under the
     // confirmation text, the exact same block "Your own reason" shows once
     // community-votes' own automation has processed the vote and it comes
@@ -6407,11 +6456,11 @@ class UpdateManagerPanel extends HTMLElement {
       healthyBtn.addEventListener("click", () =>
         _runProgressAction(healthyBtn, async () => {
           const result = await submitVote("healthy", {});
-          onVoted?.("healthy");
+          onVoted?.("healthy", null);
           showConfirmed(tr.community_vote_confirmed_healthy(result.updated, result.own_repo_healthy_vote));
         })
       );
-      container.appendChild(healthyBtn);
+      (actionsRow || container).appendChild(healthyBtn);
     }
 
     // Always available, regardless of myVerdict -- unlike healthyBtn above
@@ -6426,26 +6475,27 @@ class UpdateManagerPanel extends HTMLElement {
     // changed 2026-07-29, direct user feedback -- "an action we genuinely
     // want people to take, a soft-background button reads as more
     // inviting/actionable than a bare text link". Plain instead for
-    // Journey A's own "Report a known issue" (_buildReportButton, before
-    // installing anything) -- direct user feedback, 2026-08-14: swapped
-    // with Ready now (_buildTimeline's own addAction call), which is now
-    // the filled one instead. No --wa-color-on-normal override here
-    // either way (unlike addAction's own plain buttons, e.g. Cancel/
-    // Unskip, deliberately muted to --primary-text-color for that
-    // specific timeline context) -- tried first, direct user feedback,
-    // 2026-08-14: "nu zwart ipv blauw". This button isn't part of that
-    // context at all, so it should read the same natural accent-colored
-    // plain as every *other* plain button in this dialog that also skips
-    // that override (skipBtn/openBtn/unlinkBtn/stopWaitingBtn/
-    // updateAllBtn, none of which set it either).
+    // Journey A's own "Report a known issue" (_buildTimeline's own
+    // addReportControls, before installing anything) -- direct user
+    // feedback, 2026-08-14: swapped with Ready now (_buildTimeline's own
+    // addAction call), which is now the filled one instead.
+    //
+    // No --wa-color-on-normal override, in Journey A (actionsRow) or
+    // Journey B alike -- see addAction's own comment for why that override
+    // doesn't belong anywhere in this dialog anymore (it was only ever
+    // correct for a button inside ha-alert's own tinted action slot, gone
+    // since 2026-08-14). HA's normal plain-button color is what every
+    // *other* plain button in this dialog already reads as too.
     const toggleBtn = document.createElement("ha-button");
     toggleBtn.appearance = allowHealthy ? "filled" : "plain";
     // GitHub issue #7: this button stays visible even after an already-cast
     // problematic vote (see the comment block above), but it used to keep
     // showing the exact same "not yet voted" label, giving no sign the vote
-    // had registered. myVerdict === "problematic" only ever reaches here via
-    // Journey B (Journey A returns its own quiet confirmation earlier, see
-    // _buildReportButton, without ever calling this method with that verdict).
+    // had registered. Reachable via either journey now, 2026-08-19: Journey
+    // A's own addReportControls hands its own already-cast my_verdict/
+    // my_reason straight through instead of intercepting a problematic
+    // verdict with its own separate quiet confirmation the way the old,
+    // now-removed _buildReportButton widget used to.
     toggleBtn.textContent =
       myVerdict === "problematic"
         ? tr.community_vote_problematic_update
@@ -6454,8 +6504,9 @@ class UpdateManagerPanel extends HTMLElement {
         : tr.community_report_toggle;
     toggleBtn.addEventListener("click", () => {
       formContainer.hidden = !formContainer.hidden;
+      if (viewEl) viewEl.hidden = !formContainer.hidden;
     });
-    container.appendChild(toggleBtn);
+    (actionsRow || container).appendChild(toggleBtn);
     container.appendChild(formContainer);
 
     if (!allowHealthy) {
@@ -6511,7 +6562,7 @@ class UpdateManagerPanel extends HTMLElement {
           notes: formData.notes || undefined,
           link: formData.link || undefined,
         });
-        onVoted?.("problematic");
+        onVoted?.("problematic", formData);
         const reasonLabel = tr[_VOTE_REASON_LABEL_KEYS[formData.reason_category]];
         showConfirmed(tr.community_vote_confirmed_problematic(reasonLabel, result.updated), formData);
       })
@@ -7355,43 +7406,49 @@ class UpdateManagerPanel extends HTMLElement {
          it, the button then sitting flush against the bottom edge). */
       .history-load-older { max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); text-align: center; }
 
-      /* Detail dialog. ha-dialog was rewritten upstream to wrap a
-         WebAwesome <wa-dialog> -- confirmed against a current stable
-         release tag's real source, not the (already stale by comparison)
-         dev-branch snapshot used earlier, which still described the old
-         MDC-based implementation. None of that old implementation's custom
+      /* Detail dialog, a real ha-adaptive-dialog (see _ensureShell).
+         Confirmed against a current stable release tag's real source, not
+         guessed: plain ha-dialog itself has no bottom-sheet/drawer mode at
+         all, it only ever renders an edge-to-edge fullscreen dialog below
+         ~450px width or ~500px height, a correction of an earlier, wrong
+         assumption in this same comment. The actual drawer behaviour, used
+         by HA's own more-info dialog on mobile, comes from
+         ha-adaptive-dialog swapping in a nested ha-bottom-sheet below
+         ~870px width or ~500px height instead, which is why the switch was
+         made. None of the old MDC-dialog implementation's custom
          properties (--mdc-dialog-*, --dialog-container-padding,
-         --vertical-align-dialog, ...) exist on the current component at
-         all, so setting them here was a silent no-op. The bottom-sheet/
-         drawer behaviour below ~450px width or ~500px height is now baked
-         into ha-dialog itself (its own @media rule keyed off the default
-         type="standard" attribute) -- nothing to override for that at
-         all. Content sizing already defaults sensibly (min(580px, 95vw)),
-         so no width override either. The one thing that *did* need
-         fixing: the footer must be real light-DOM content with
-         slot="footer" (see the actions.slot assignment in
-         _openDetailDialog) -- an unslotted sticky-positioned div was
-         landing inside ha-dialog's own scrollable .body along with
-         everything else instead of in its dedicated, already-styled
-         footer area, which is what was breaking scrolling and cramming
-         the action buttons oddly. ::slotted([slot="footer"]) inside
-         ha-dialog's own styles already provides the flex/gap/padding for
-         that area, so nothing extra is needed here for it either. */
+         --vertical-align-dialog, ...) exist on either current component, so
+         setting them here would be a silent no-op. Content sizing already
+         defaults sensibly (min(580px, 95vw) in dialog mode), so no width
+         override needed. The one thing that *did* need fixing: the footer
+         must be real light-DOM content with slot="footer" (see the
+         actions.slot assignment in _openDetailDialog), an unslotted
+         sticky-positioned div was landing inside the dialog's own
+         scrollable .body along with everything else instead of in its
+         dedicated, already-styled footer area, which is what was breaking
+         scrolling and cramming the action buttons oddly.
+         ::slotted([slot="footer"]) inside both ha-dialog's and
+         ha-bottom-sheet's own styles already provides the flex/gap/padding
+         for that area, so nothing extra is needed here for it either.
+         Below: forces the bottom-sheet mode to always use the full
+         available height instead of auto-sizing to content, direct
+         request -- a plain custom property on this host element, not a
+         change inside either component: both --ha-bottom-sheet-height and
+         --ha-bottom-sheet-max-height are real, documented cssprops on
+         ha-bottom-sheet itself, inherited down through ha-adaptive-dialog's
+         own shadow root the same way any CSS custom property crosses a
+         shadow boundary. Both still get clamped by ha-bottom-sheet's own
+         safe-area-aware ceiling (max(safe-area-inset-top, 48px) kept clear
+         at the top), so this can't push the sheet over the status bar/
+         notch on its own. No effect on dialog mode: ha-dialog never reads
+         either of these custom properties. */
+      ha-adaptive-dialog { --ha-bottom-sheet-height: 100dvh; --ha-bottom-sheet-max-height: 100dvh; }
       .dialog-content { display: flex; flex-direction: column; gap: var(--ha-space-4, 16px); }
       .dialog-content h3 {
         margin: 0; font-size: var(--ha-font-size-m, 14px);
         font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color);
       }
-      /* The Release notes heading's own top-right slot (see
-         insertReleaseNotesSection's own headingExtra) -- History's two call
-         sites never pass headingExtra, so this rule is a no-op for them
-         (space-between with a single child has nothing to space). */
-      .release-notes-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--ha-space-2, 8px); flex-wrap: wrap; }
-      /* Once already reported (see _buildReportButton), the button's own
-         spot is replaced by this quiet confirmation instead -- deliberately
-         not styled like the heading text next to it (smaller, secondary
-         color), reads as a status note, not a second heading. */
-      .release-notes-report-confirmed { font-size: var(--ha-font-size-s, 13px); font-weight: var(--ha-font-weight-regular, 400); color: var(--secondary-text-color); }
+      .release-notes-heading { display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; }
       .dialog-content hr { border-color: var(--divider-color); border-bottom: none; margin: 0; }
       /* :not([hidden]), not a bare .dialog-community-section selector --
          found live, 2026-07-22: a bare class selector has the exact same
@@ -7447,6 +7504,20 @@ class UpdateManagerPanel extends HTMLElement {
          itself (18px icon + 8px gap), not under the icon. */
       .community-reason-item:not(:first-child) { margin-top: var(--ha-space-2, 8px); }
       .community-reason-item > .hint { margin-left: 26px; margin-top: var(--ha-space-1, 4px); }
+      /* The category label itself (e.g. "Breaking change") -- found by
+         review, 2026-08-19: .dialog-community-verdict-line has no font-size/
+         color of its own (its two other real uses, the primary verdict
+         sentence in _buildCommunitySection/addCommunityDetail, are each
+         their own section's own main content, correctly full-weight), so
+         here, nested one level down inside a reason item, it silently
+         inherited the surrounding dialog's own full-size/primary-color
+         text -- reading as heavier than the .hint notes/link directly
+         below it, almost as heavy as a timeline step's own title.
+         Scoped to .community-reason-item specifically, not the bare class,
+         so the two primary-content uses above are untouched. */
+      .community-reason-item .dialog-community-verdict-line {
+        font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color);
+      }
       .dialog-vote { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ha-space-2, 8px); }
       .dialog-vote > div { width: 100%; }
       /* :not(:first-child), not an unconditional margin-top -- found live,
@@ -7566,7 +7637,11 @@ class UpdateManagerPanel extends HTMLElement {
          still a .step-detail), only icon+gap layout is added here. */
       .step-detail-icon { display: flex; align-items: center; gap: var(--ha-space-1, 4px); }
       .step-detail-icon ha-svg-icon { --mdc-icon-size: 16px; flex-shrink: 0; }
-      .step-actions { margin-top: var(--ha-space-2, 8px); display: flex; gap: var(--ha-space-2, 8px); }
+      /* This step's own shared action row (getActionsRow) -- its own
+         primary action (Force ready/Unskip/Cancel) plus, when present, the
+         report/update-report toggle (_buildVoteControls's own toggleBtn,
+         handed this same row via addReportControls), main action first. */
+      .step-actions { margin-top: var(--ha-space-2, 8px); display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; }
       ha-alert { display: block; }
       .dialog-rows { display: flex; flex-direction: column; }
       /* No gap/padding/font-size overrides -- more-info-update.ts's own

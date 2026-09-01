@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.update import UpdateEntityFeature
-from homeassistant.core import Event, HomeAssistant, State, callback
+from homeassistant.core import CoreState, Event, HomeAssistant, State, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.event import EventStateChangedData, async_track_point_in_time, async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -81,6 +81,12 @@ _HISTORY_LOOKBACK = timedelta(days=30)
 # and reappearing doesn't trip that check at all, so nothing client-side
 # was going to recover this on its own.
 _CACHE_UNAVAILABLE_GRACE = timedelta(minutes=2)
+
+# How long after this coordinator's own async_start a contradiction against
+# self._last_installed_version's own persisted, pre-restart baseline is
+# trusted less than that baseline itself. See _within_startup_grace's own
+# docstring for the full reasoning and its two call sites.
+_RESTART_LAG_GRACE = timedelta(minutes=10)
 
 # Home Assistant Core/Supervisor/OS's own update entities, identified by
 # their unique_id (verified against homeassistant/components/hassio/
@@ -375,12 +381,13 @@ class UpdateManagerCoordinator:
         # time we saw it (any refresh, not just an install) -- persisted
         # (unlike self.cache) precisely so a restart has something to
         # compare the live post-restart value against, see
-        # _check_and_advance_installed_baseline. Installing HA Core itself
-        # (and likely Supervisor/OS) always requires a full HA restart, so
-        # the before/after installed_version transition happens *across*
-        # that restart boundary -- _handle_state_changed only ever compares
-        # a live event's own old_state/new_state, and a freshly-starting
-        # process's first-ever state report for any entity has no old_state
+        # _check_and_advance_installed_baseline. Installing HA Core
+        # itself (and likely Supervisor/OS) always requires a full HA
+        # restart, so the before/after installed_version transition happens
+        # *across* that restart boundary -- _handle_state_changed only ever
+        # compares a live event's own old_state/new_state, and a freshly-
+        # starting process's first-ever state report for any entity has no
+        # old_state
         # at all, so that listener structurally can never see this specific
         # transition. Found live, 2026-07-27: HA Core updates never
         # appeared on the History page at all.
@@ -388,6 +395,12 @@ class UpdateManagerCoordinator:
         self._last_installed_store: Store[dict[str, str]] = Store(
             hass, _LAST_INSTALLED_STORAGE_VERSION, _LAST_INSTALLED_STORAGE_KEY
         )
+        # Set once, at the top of async_start; see _within_startup_grace's
+        # own docstring for what this gates. In-memory only, deliberately
+        # never persisted: it means "since this specific process started",
+        # which is by definition a fresh fact every time this coordinator is
+        # constructed, nothing a restart could ever need to remember.
+        self._started_at: datetime | None = None
         # entity_id -> {"version", "at"}: the exact latest_version the
         # panel's own "Ready now" button forced ready for, overriding the
         # normal wait-days countdown for that one jump -- lets someone skip
@@ -476,6 +489,18 @@ class UpdateManagerCoordinator:
         )
         self._available_since = _migrate_entity_id_keys_to_unique_id(self.hass, available_since or {})
         self._last_installed_version = _migrate_entity_id_keys_to_unique_id(self.hass, last_installed_version or {})
+        # Only armed for a genuine Home Assistant restart, not an integration
+        # reload while HA itself was already running (hass.state is only
+        # ever CoreState.starting/not_running for a config entry's own
+        # async_start during real startup, already CoreState.running for a
+        # later reload triggered on a live instance). Found live, 2026-08-25:
+        # left unconditional, a reload during active development/testing
+        # re-armed this same 10-minute window on every single reload, and a
+        # real ESPHome install completed in that window went completely
+        # unlogged (see _check_and_advance_installed_baseline's own early
+        # return below), not merely misattributed like the restart-lag
+        # case this was actually built for.
+        self._started_at = dt_util.utcnow() if self.hass.state != CoreState.running else None
         # Pre-{"version", "at"} records on disk are a bare version string
         # (this field's own shape before it gained "at") -- migrated in
         # place to the current shape, "at" left absent rather than guessed.
@@ -610,10 +635,67 @@ class UpdateManagerCoordinator:
         key = self._stable_key(entity_id)
         old_installed = self._last_installed_version.get(key)
         if old_installed and old_installed != _PLACEHOLDER_INSTALLED_VERSION and old_installed != new_installed:
+            if retroactive and self._within_startup_grace():
+                # Contradicts a baseline persisted from before this
+                # process's own current run. See _within_startup_grace's
+                # own docstring and _RESTART_LAG_GRACE's own comment. Trust
+                # that persisted baseline instead, this soon after starting:
+                # neither log a backwards install for this, nor let it
+                # clobber the baseline. Once this window has passed, every
+                # contradiction is trusted again exactly as before.
+                #
+                # Only for a retroactive read (the startup sweep/periodic
+                # recheck this was actually built for), never for a live,
+                # real-time state_changed event. Found live, 2026-08-25: a
+                # genuinely installed update, detected live moments after a
+                # restart (unavoidable when testing this integration itself,
+                # since a Python change requires a full restart to take
+                # effect, immediately followed by testing it), was still
+                # being swallowed here even though it was never in question.
+                # A live event is, by definition, a real observation right
+                # now, not something to second-guess the way a retroactive
+                # snapshot with no reliable timestamp has to be.
+                return
             self._fire_install_listeners(entity_id, old_installed, new_installed, state, retroactive)
         if old_installed != new_installed:
             self._last_installed_version[key] = new_installed
             self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
+
+    def _within_startup_grace(self) -> bool:
+        """True for a short window after this coordinator's own async_start.
+        Some update-providing integrations (a HACS-managed custom
+        integration, for one) can take a moment after a restart to rescan
+        and report their own true state, briefly contradicting self.
+        _last_installed_version's own pre-restart record; this method's two
+        call sites both trust that persisted record a little longer here
+        instead. Tied to process start rather than to when the baseline was
+        last confirmed, since the latter would re-arm on every single
+        install and could suppress a second, genuinely independent one
+        minutes later.
+
+        _check_and_advance_installed_baseline's own call site only consults
+        this for a retroactive read (the startup sweep/periodic recheck this
+        was actually built for), never for a live, real-time state_changed
+        event. Found live, 2026-08-25: a genuinely installed update,
+        detected live moments after a restart, was still being swallowed
+        from History entirely here, not just misattributed, even though a
+        live event is a real observation right now with nothing to
+        second-guess. That scenario is common, not rare, precisely when
+        developing this integration itself: a Python change needs a full
+        restart to take effect, and the natural next step is testing it
+        immediately, almost always inside this same window.
+        _async_refresh_one's own call site (the panel's own "needs update"
+        display, not History) has no such distinction to make and keeps
+        trusting this for both kinds of read, since its own condition is
+        already narrow (the entity's own latest_version must exactly match
+        something this instance already confirmed installed) and only
+        delays a display update briefly rather than dropping a fact
+        outright.
+
+        Known limitation: a fixed window, not a wait for the actual rescan
+        to finish, so an unusually slow restart could still exit this
+        window before that rescan catches up."""
+        return self._started_at is not None and dt_util.utcnow() - self._started_at < _RESTART_LAG_GRACE
 
     def _fire_install_listeners(
         self, entity_id: str, old_installed: str, new_installed: str, state: State, retroactive: bool
@@ -982,6 +1064,18 @@ class UpdateManagerCoordinator:
                 # complete state_changed event naturally corrects it via a
                 # normal _async_cache_active call.
                 return
+            self.cache.pop(entity_id, None)
+            return
+        if self._within_startup_grace() and self._last_installed_version.get(self._stable_key(entity_id)) == latest:
+            # This entity claims it still needs updating to a version we
+            # ourselves already confirmed it was at, before this restart.
+            # See _within_startup_grace's own docstring. Leave whatever was
+            # already cached (nothing, on a fresh restart) alone rather than
+            # listing it as ready to update on the strength of a reading
+            # that's very likely just an upstream integration not having
+            # caught up yet; a later, correct refresh (this grace window
+            # elapsing, or the entity's own next real state_changed) settles
+            # it either way.
             self.cache.pop(entity_id, None)
             return
         await self._async_cache_active(entity_id, state, current, latest)

@@ -386,6 +386,18 @@ async def async_fetch_verdict_uncached(
     trusted_vote, trusted_voters_matched = trusted_vote_from_payload(
         payload, identity.from_version, trusted_voters or []
     )
+    # Found by code review, 2026-08-24: the caller's own username stayed in
+    # trusted_voters_matched even when they're a configured trusted voter
+    # themselves, so the dialog's own sentence named them twice ("You and
+    # @yourusername reported this jump as healthy") for one single vote.
+    # my_verdict already represents that same vote on the frontend, so this
+    # list should only ever carry other trusted voters, matching
+    # problematic_reasons_from_payload's own exclude_username just above.
+    # coordinator.py's own separate trusted_vote_from_payload call (used
+    # for the auto-install quorum, not dialog text) is untouched, since
+    # your own trusted vote should still count there.
+    if username and username in trusted_voters_matched:
+        trusted_voters_matched = [voter for voter in trusted_voters_matched if voter != username]
     return (
         verdict_from_payload(payload, identity.from_version),
         other_jumps_from_payload(payload, identity.from_version),

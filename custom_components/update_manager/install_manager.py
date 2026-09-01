@@ -76,14 +76,14 @@ _NOTIFICATION_STRINGS = {
     },
 }
 
-# Same-size entities that first become announce-eligible in the very same
-# tick share this same `now` and the single, not-per-size, announce_wait --
-# so also the same execute_at (see _async_notify_announced's own comment).
-# One combined notification for the whole group instead of one each, direct
-# user feedback, 2026-08-12: the postponement schedule (issue #4) makes many
+# Entities that first become announce-eligible in the very same tick share
+# that tick's own `now` and the single, not-per-entity, announce_wait, so
+# also the same execute_at (see _async_notify_announced's own comment). One
+# combined notification for the whole tick instead of one each, direct user
+# feedback, 2026-08-12: the postponement schedule (issue #4) makes many
 # entities reaching "ready" at literally the same instant far more likely
 # than it used to be, and each got its own separate notification regardless.
-# A group of exactly one still uses _NOTIFICATION_STRINGS above unchanged --
+# A group of exactly one still uses _NOTIFICATION_STRINGS above unchanged,
 # this is only ever reached for a genuine 2+ group.
 _NOTIFICATION_STRINGS_MULTI = {
     "en": {
@@ -388,7 +388,7 @@ class InstallManager:
         if announced:
             self._async_notify_announced(announced)
 
-    async def _async_evaluate_one(self, entity_id: str, now: datetime) -> tuple[str, str, str, datetime] | None:
+    async def _async_evaluate_one(self, entity_id: str, now: datetime) -> tuple[str, str, datetime] | None:
         # A previous "Update failed" notification has no business lingering
         # once the entity is genuinely installing again, however that retry
         # was triggered -- direct user feedback, 2026-08-11: it wasn't going
@@ -493,7 +493,7 @@ class InstallManager:
 
         if action == "announce":
             execute_at = await self._async_announce(entity_id, current_to_version, now)
-            return (entity_id, current_to_version, cached["version_size"], execute_at)
+            return (entity_id, current_to_version, execute_at)
         elif action == "execute":
             # reason is guaranteed non-None here: decide_action only ever
             # returns "execute" when auto_install_enabled was True, and
@@ -506,13 +506,14 @@ class InstallManager:
         return None
 
     async def _async_announce(self, entity_id: str, to_version: str, now: datetime) -> datetime:
-        """Records the announcement (state + event) only -- the
+        """Records the announcement (state + event) only. The
         persistent_notification itself is created separately, by
         _async_notify_announced, once this whole tick's own gather has
         finished and every entity that just became announce-eligible is
-        known, so entities sharing a size can be grouped into one
+        known, so simultaneous announcements can be grouped into one
         notification (see that method's own comment). `cached["version_size"]`
-        is read by the caller, not here -- decide_action only ever returns
+        is read by the caller (for the size-based auto-install rules check,
+        unrelated to this), not here: decide_action only ever returns
         "announce" when is_ready was True, which (see _async_evaluate_one's
         own is_ready branch) only happens when `cached` is truthy, so it's
         always available there without a None guard."""
@@ -541,56 +542,63 @@ class InstallManager:
         )
         return announcement.execute_at
 
-    def _async_notify_announced(self, announced: list[tuple[str, str, str, datetime]]) -> None:
-        """One persistent_notification per version_size group within this
-        tick, not one per entity -- see _NOTIFICATION_STRINGS_MULTI's own
+    def _async_notify_announced(self, announced: list[tuple[str, str, datetime]]) -> None:
+        """One persistent_notification for this whole tick's own announced
+        list, not one per entity, see _NOTIFICATION_STRINGS_MULTI's own
         comment for why. A group of exactly one (the common case, unaffected
         either by the schedule feature or just by coincidence) keeps the
         exact same notification shape/id this always had.
 
+        Every entry here shares one execute_at by construction (same tick,
+        same `now`, and announce_wait isn't a per-entity setting), so this
+        used to additionally split the tick's own list by version_size, on
+        the theory that a "same size" group meant something to the reader.
+        Found live, 2026-08-25: four entities sharing the exact same jump,
+        announced in the same tick for the same execute_at, still landed in
+        two separate notifications, since their own cached version_size
+        happened to disagree despite the identical jump, and the
+        notification text itself never mentioned size at all. There's
+        nothing left that size grouping was actually protecting once
+        execute_at is already guaranteed uniform across the whole list, so
+        this now uses the whole tick's own list as the one group.
+
         Not tracked afterward: cancelling one entity out of a multi-entity
-        group later doesn't update or shrink this notification's text --
+        group later doesn't update or shrink this notification's text,
         direct user feedback, 2026-08-12, deliberately choosing the simpler
         of two options. The notification's own job is "heads up, these are
-        about to happen, cancel via the panel if you don't want that" --
+        about to happen, cancel via the panel if you don't want that":
         cancelling already works independently per entity regardless of
         which notification (if any) mentioned it, and reconciling the text
         afterward would need this class to remember which notification_id a
         given entity's announcement belongs to, surviving restarts, for a
         purely cosmetic improvement to a notification that's moot anyway
         once its own execute_at passes."""
-        by_size: dict[str, list[tuple[str, str, datetime]]] = {}
-        for entity_id, to_version, version_size, execute_at in announced:
-            by_size.setdefault(version_size, []).append((entity_id, to_version, execute_at))
-
-        for version_size, entries in by_size.items():
-            # entries[0]'s own execute_at stands in for the whole group --
-            # every entry here shares it by construction (same tick, same
-            # `now`, and announce_wait isn't a per-size setting).
-            when = dt_util.as_local(entries[0][2]).strftime("%d-%m-%Y %H:%M")
-            if len(entries) == 1:
-                entity_id, to_version, _ = entries[0]
-                name = _friendly_name(self.hass, entity_id)
-                strings = localized_strings(self.hass, _NOTIFICATION_STRINGS)
-                persistent_notification.async_create(
-                    self.hass,
-                    strings["body"].format(name=name, to_version=to_version, when=when, url=_PANEL_UPDATES_URL),
-                    title=strings["title"],
-                    notification_id=f"{_NOTIFICATION_ID_PREFIX}{entity_id}",
-                )
-                continue
-
-            strings = localized_strings(self.hass, _NOTIFICATION_STRINGS_MULTI)
-            items = "\n".join(
-                strings["item"].format(name=_friendly_name(self.hass, entity_id), to_version=to_version)
-                for entity_id, to_version, _ in entries
-            )
+        # announced[0]'s own execute_at stands in for the whole list, see
+        # this method's own docstring for why that's guaranteed.
+        when = dt_util.as_local(announced[0][2]).strftime("%d-%m-%Y %H:%M")
+        if len(announced) == 1:
+            entity_id, to_version, _ = announced[0]
+            name = _friendly_name(self.hass, entity_id)
+            strings = localized_strings(self.hass, _NOTIFICATION_STRINGS)
             persistent_notification.async_create(
                 self.hass,
-                strings["body"].format(count=len(entries), when=when, items=items, url=_PANEL_UPDATES_URL),
+                strings["body"].format(name=name, to_version=to_version, when=when, url=_PANEL_UPDATES_URL),
                 title=strings["title"],
-                notification_id=f"{_NOTIFICATION_ID_PREFIX}batch_{version_size}_{entries[0][2].isoformat()}",
+                notification_id=f"{_NOTIFICATION_ID_PREFIX}{entity_id}",
             )
+            return
+
+        strings = localized_strings(self.hass, _NOTIFICATION_STRINGS_MULTI)
+        items = "\n".join(
+            strings["item"].format(name=_friendly_name(self.hass, entity_id), to_version=to_version)
+            for entity_id, to_version, _ in announced
+        )
+        persistent_notification.async_create(
+            self.hass,
+            strings["body"].format(count=len(announced), when=when, items=items, url=_PANEL_UPDATES_URL),
+            title=strings["title"],
+            notification_id=f"{_NOTIFICATION_ID_PREFIX}batch_{announced[0][2].isoformat()}",
+        )
 
     async def _async_execute(
         self, entity_id: str, to_version: str, reason: AutoInstallReason, trusted_voter_usernames: list[str]

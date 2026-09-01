@@ -16,8 +16,13 @@ require SUPERVISOR_UPDATED as a hard job condition), not guessed:
 - "firmware": device_class == "firmware" (HA's own UpdateDeviceClass enum).
   Dozens of real integrations use this (WLED, Shelly, ESPHome, UniFi, ZHA/
   Z-Wave JS/Matter radios, and more, confirmed via a real code search) --
-  ordinary peripheral/networked device firmware, safe alongside each other,
-  still held back from anything below.
+  ordinary peripheral/networked device firmware, safe alongside each other
+  *and* alongside "safe"-tier installs too (direct user feedback,
+  2026-08-24: nothing about an unrelated HACS integration/card install
+  threatens an over-the-air device firmware flash, so gating one behind
+  the other was needless waiting, not real safety). FIRST_GATED_RANK
+  below is what actually excuses both of these two tiers from ever being
+  held back by anything.
 - "host_firmware": specifically RaspberryPiFirmwareUpdateEntity (its own
   _attr_translation_key, "rpi_firmware" -- both the standalone raspberry_pi
   integration and homeassistant_yellow's own CM4/CM5 module use this exact
@@ -50,6 +55,15 @@ from .coordinator import home_assistant_component_for_entity
 
 TIER_ORDER = ("safe", "firmware", "host_firmware", "supervisor", "core", "os")
 TIER_RANK = {tier: rank for rank, tier in enumerate(TIER_ORDER)}
+
+# Only "host_firmware" and up actually restart/reboot something (the host's
+# own EEPROM programmer, the Supervisor container, Core's own process, the
+# whole host); see the tier list above for why each of those genuinely
+# needs to wait its turn. "safe" and "firmware" don't restart anything and
+# were never a real risk to each other, so rollout_manager.py's tier gate
+# exempts both of them from ever being held back, however much other work
+# is running.
+FIRST_GATED_RANK = TIER_RANK["host_firmware"]
 
 
 def tier_for_entity(hass: HomeAssistant, entity_id: str) -> str:

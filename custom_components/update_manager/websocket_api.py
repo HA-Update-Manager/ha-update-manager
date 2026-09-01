@@ -783,6 +783,17 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     if msg.get("backup"):
         service_data["backup"] = True
 
+    # This connection's own user, not the default, fresh, contextless
+    # Context HA would otherwise create for a service call made from backend
+    # code. Found live, 2026-08-23: a genuinely user-clicked Update All
+    # showed up in History as install_method "External", indistinguishable
+    # from a real externally-triggered update, because neither dispatch path
+    # below used to pass this connection's own context through to the actual
+    # update.install call (see __init__.py's own "manual" vs "external"
+    # comment, and _QueuedEntry.ha_context's own comment for the queued
+    # case).
+    ha_context = connection.context(msg)
+
     # A no-op for anything that isn't part of an active multi-device Zigbee
     # rollout (see rollout_manager.py's own docstring): queued means a
     # sibling device from the same network/model/version is already
@@ -795,11 +806,13 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     queued = False
     if data and to_version:
         result = await data.rollout_manager.async_request_install(
-            entity_id, to_version, service_data, is_auto=False
+            entity_id, to_version, service_data, is_auto=False, ha_context=ha_context
         )
         queued = result == "queued"
     if not queued:
-        hass.async_create_task(hass.services.async_call("update", "install", service_data, blocking=True))
+        hass.async_create_task(
+            hass.services.async_call("update", "install", service_data, blocking=True, context=ha_context)
+        )
     if data:
         # Awaited, not left to the state_changed event clear_skipped above
         # already schedules on its own -- that's a background task HA
