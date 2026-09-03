@@ -529,7 +529,7 @@ class UpdateManagerCoordinator:
             state = self.hass.states.get(entity_id)
             if state is not None:
                 self._check_and_advance_installed_baseline(entity_id, state, retroactive=True)
-            await self._async_refresh_one(entity_id)
+            await self._async_refresh_one(entity_id, baseline_already_checked=state is not None)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
 
         # _async_refresh_one above (unlike its own async_refresh_one/
@@ -968,7 +968,7 @@ class UpdateManagerCoordinator:
         if self.hass.states.get(new_entity_id) is not None:
             await self.async_refresh_one(new_entity_id)
 
-    async def _async_refresh_one(self, entity_id: str) -> None:
+    async def _async_refresh_one(self, entity_id: str, *, baseline_already_checked: bool = False) -> None:
         state = self.hass.states.get(entity_id)
         if state is None:
             self.cache.pop(entity_id, None)
@@ -996,7 +996,27 @@ class UpdateManagerCoordinator:
         # docstring for the full reasoning (placeholder/falsy exclusion,
         # comparison-before-advance ordering) -- shared with async_start's
         # own startup sweep and _async_periodic_recheck.
-        self._check_and_advance_installed_baseline(entity_id, state, retroactive=False)
+        #
+        # Skipped when the caller already ran this for the exact same
+        # entity_id and state a moment ago (async_start's own startup
+        # sweep, synchronously, with no await in between): running it here
+        # too would silently re-fire the exact same transition again, this
+        # time as retroactive=False. Found live, 2026-09-03: a Home
+        # Assistant Core update, installed via HA's own more-info dialog
+        # while genuinely postponed, showed up in History as install
+        # method "external" instead of "manual". Installing Core always
+        # restarts Home Assistant to take effect, which wipes rollout_
+        # manager.py's own in-memory record of who requested it before the
+        # transition is ever observed; the startup sweep's own retroactive
+        # call already accounts for exactly that (see __init__.py's own
+        # _on_install: retroactive always falls back to the safe "manual"
+        # default, never guesses "external" from an untrustworthy signal),
+        # but that call is itself routinely suppressed by
+        # _within_startup_grace right at process start, without advancing
+        # the baseline, only for this same call to immediately re-fire the
+        # unsuppressed transition, mislabeled as a fresh live observation.
+        if not baseline_already_checked:
+            self._check_and_advance_installed_baseline(entity_id, state, retroactive=False)
 
         # HA's own update entities are always exactly "on" (an update is
         # available) or "off" -- "off" normally means genuinely up to
