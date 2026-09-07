@@ -48,10 +48,12 @@ def zigbee_network_id(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None
     Returns None for anything that isn't Zigbee at all."""
     if is_zigbee2mqtt_device(hass, device):
         return f"z2m:{device.via_device_id}"
-    for entry_id in device.config_entries:
-        entry = hass.config_entries.async_get_entry(entry_id)
-        if entry and entry.domain == "zha":
-            return f"zha:{entry_id}"
+    # Devices belong to exactly one config entry since HA Core 2026.8
+    # (device.config_entries is a deprecated compatibility shim now,
+    # removed in 2027.8); config_entry_id is the direct replacement.
+    entry = hass.config_entries.async_get_entry(device.config_entry_id)
+    if entry and entry.domain == "zha":
+        return f"zha:{device.config_entry_id}"
     return None
 
 
