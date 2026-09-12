@@ -63,7 +63,7 @@ RequestResult = Literal["dispatch", "queued"]
 
 _PANEL_UPDATES_URL = "/update-manager/updates"
 
-_STALLED_NOTIFICATION_ID_PREFIX = f"{DOMAIN}_stalled_install_"
+_STALLED_NOTIFICATION_ID = f"{DOMAIN}_stalled_installs"
 
 # Public (no leading underscore): repairs.py imports this directly instead
 # of keeping its own independently-defined copy -- found by code review,
@@ -84,14 +84,23 @@ def stuck_issue_id(entity_id: str) -> str:
 # nothing telling the user that happened at all -- found live, testing an
 # actual Zigbee2MQTT device that sat at 0% for a couple of minutes before
 # giving up. Deliberately a distinct notification from install_manager.py's
-# own "Update failed" one
-# (_FAILURE_NOTIFICATION_STRINGS): that's for a dispatch call that raised
-# outright (a real error), this is for an install that started normally and
-# simply never completed -- a different, much more common situation, not
-# obviously a fault, especially for a battery-powered Zigbee end device.
+# own "Failed updates" one (_FAILED_NOTIFICATION_STRINGS): that's for a
+# dispatch call that raised outright (a real error), this is for an install
+# that started normally and simply never completed -- a different, much
+# more common situation, not obviously a fault, especially for a
+# battery-powered Zigbee end device.
+#
+# One notification_id total for every currently stalled entity, not one
+# each -- same one-notification-total reasoning as install_manager.py's own
+# _NOTIFICATION_STRINGS, direct user feedback, 2026-09-12. Rebuilt from
+# self._stalled's own current contents by _refresh_stalled_notification.
 _STALLED_NOTIFICATION_STRINGS = {
     "en": {
-        "title": "Update didn't finish",
+        "title": "Updates that didn't finish",
+        "body": (
+            "{count} update{plural} didn't install successfully:\n\n{items}\n\n"
+            "Try installing again from the [Update Manager page]({url})."
+        ),
         # No mention of "the rest of the queue" here at all -- found live:
         # every Zigbee dispatch, even a lone one with no siblings, creates a
         # 1-entry bookkeeping "queue" internally (see
@@ -100,29 +109,17 @@ _STALLED_NOTIFICATION_STRINGS = {
         # own, with nothing ever actually queued behind it. What matters to
         # the user is simply that this one didn't install and what to do
         # about it, not this module's own internal queue bookkeeping.
-        "body_zigbee": (
-            "**{name}** didn't install successfully. Is this a battery-powered Zigbee device? It may "
-            "need to be woken up first (for example by pressing a button on the device) before the "
-            "update can actually start. Try that, then install it again from the "
-            "[Update Manager page]({url})."
-        ),
-        "body_neutral": (
-            "**{name}** didn't install successfully. Try installing it again from the "
-            "[Update Manager page]({url})."
-        ),
+        "item_zigbee": "* **{name}** (a battery-powered Zigbee device? It may need waking up first)",
+        "item_neutral": "* **{name}**",
     },
     "nl": {
-        "title": "Update niet gelukt",
-        "body_zigbee": (
-            "De installatie van **{name}** is niet gelukt. Is dit een batterij-gevoed Zigbee-apparaat? "
-            "Dan moet het misschien eerst wakker gemaakt worden (bijvoorbeeld door op een knopje op "
-            "het apparaat te drukken) voordat de update daadwerkelijk kan starten. Probeer dat, en "
-            "installeer daarna opnieuw via de [Update Manager-pagina]({url})."
+        "title": "Updates die niet zijn gelukt",
+        "body": (
+            "{count} update{plural} is niet gelukt:\n\n{items}\n\n"
+            "Probeer opnieuw te installeren via de [Update Manager-pagina]({url})."
         ),
-        "body_neutral": (
-            "De installatie van **{name}** is niet gelukt. Installeer opnieuw via de "
-            "[Update Manager-pagina]({url})."
-        ),
+        "item_zigbee": "* **{name}** (een batterij-gevoed Zigbee-apparaat? Die moet misschien eerst wakker gemaakt worden)",
+        "item_neutral": "* **{name}**",
     },
 }
 
@@ -366,6 +363,14 @@ class RolloutManager:
         # behind it is the same "one-off I've decided" behavior this
         # already had before consolidating.
         self._in_flight: dict[str, _InFlightInstall] = {}
+        # entity_id currently showing a "didn't finish" notification --
+        # purely to rebuild _refresh_stalled_notification's own single
+        # notification from the current, complete picture. Not persisted,
+        # same reasoning as self._in_flight above: a stall is a fact about
+        # the current runtime session, and _on_install_completed already
+        # clears this the moment a later attempt (auto or manual) actually
+        # succeeds, restart or not.
+        self._stalled: set[str] = set()
         # Told about by __init__.py so a queue-dispatched auto-install still
         # gets correctly attributed in install_log.py, see
         # set_recently_executed_setter's own docstring.
@@ -915,6 +920,12 @@ class RolloutManager:
 
         relabel_key(self._in_flight, old_entity_id, new_entity_id)
         relabel_key(self._recently_manual, old_entity_id, new_entity_id)
+        # self._stalled is a plain set, not a dict -- relabel_key's own
+        # pop/reinsert shape doesn't apply, same "different shape, not
+        # something this helper can absorb" reasoning as self._queues above.
+        if old_entity_id in self._stalled:
+            self._stalled.discard(old_entity_id)
+            self._stalled.add(new_entity_id)
         self._async_clear_stuck_issue(old_entity_id)
 
     async def async_cancel_queued(self, entity_id: str) -> bool:
@@ -1015,11 +1026,13 @@ class RolloutManager:
         self._async_clear_stuck_issue(entity_id)
         # A later retry (a manual click, or another auto-install cycle
         # picking the now-standalone entity back up) just genuinely
-        # succeeded -- clears any "didn't finish" notification
-        # _async_notify_stalled raised for an earlier attempt, same
-        # "harmless no-op if nothing's raised" reasoning as the Repair
-        # issue's own clear above.
-        persistent_notification.async_dismiss(self.hass, f"{_STALLED_NOTIFICATION_ID_PREFIX}{entity_id}")
+        # succeeded -- clears this entity out of the "didn't finish"
+        # notification if _async_notify_stalled raised it for an earlier
+        # attempt, same "harmless no-op if nothing's raised" reasoning as
+        # the Repair issue's own clear above.
+        if entity_id in self._stalled:
+            self._stalled.discard(entity_id)
+            self._refresh_stalled_notification()
         self.hass.async_create_task(self._async_retry_tier_blocked())
         group_key = self._group_key_with_front(entity_id)
         if group_key is not None:
@@ -1134,24 +1147,43 @@ class RolloutManager:
         await self._async_advance(group_key)
 
     def _async_notify_stalled(self, entity_id: str) -> None:
-        """Nudges someone to wake a battery-powered Zigbee device so its
-        stalled install can actually proceed. Every entity that ever
-        reaches here is a genuine Zigbee device by construction
+        """Adds entity_id to the current "didn't finish" picture and
+        rebuilds the one shared notification from it. Every entity that
+        ever reaches here is a genuine Zigbee device by construction
         (_group_key_with_front only ever matches something that entered
         self._queues in the first place, which only happens for a real
-        Zigbee network_id, see _group_key_for), so is_zigbee_entity below
-        is a defensive check, not expected to ever actually be False --
-        same "check it anyway" precedent _async_maybe_raise_stuck_issue
-        already sets for its own, near-identical choice of wording."""
-        state = self.hass.states.get(entity_id)
-        name = state.name if state else entity_id
+        Zigbee network_id, see _group_key_for), so is_zigbee_entity in
+        _refresh_stalled_notification below is a defensive check, not
+        expected to ever actually be False -- same "check it anyway"
+        precedent _async_maybe_raise_stuck_issue already sets for its own,
+        near-identical choice of wording."""
+        self._stalled.add(entity_id)
+        self._refresh_stalled_notification()
+
+    @callback
+    def _refresh_stalled_notification(self) -> None:
+        """Rebuilds the single "didn't finish" notification from
+        self._stalled's own complete, current contents, same
+        one-notification-total reasoning as install_manager.py's own
+        _refresh_pending_notification. Dismissed entirely once nothing is
+        left stalled."""
+        if not self._stalled:
+            persistent_notification.async_dismiss(self.hass, _STALLED_NOTIFICATION_ID)
+            return
         strings = localized_strings(self.hass, _STALLED_NOTIFICATION_STRINGS)
-        body_key = "body_zigbee" if is_zigbee_entity(self.hass, entity_id) else "body_neutral"
+        items = "\n".join(
+            strings["item_zigbee" if is_zigbee_entity(self.hass, entity_id) else "item_neutral"].format(
+                name=(self.hass.states.get(entity_id).name if self.hass.states.get(entity_id) else entity_id)
+            )
+            for entity_id in self._stalled
+        )
         persistent_notification.async_create(
             self.hass,
-            strings[body_key].format(name=name, url=_PANEL_UPDATES_URL),
+            strings["body"].format(
+                count=len(self._stalled), plural="" if len(self._stalled) == 1 else "s", items=items, url=_PANEL_UPDATES_URL
+            ),
             title=strings["title"],
-            notification_id=f"{_STALLED_NOTIFICATION_ID_PREFIX}{entity_id}",
+            notification_id=_STALLED_NOTIFICATION_ID,
         )
 
     async def _async_dispatch(self, entry: _QueuedEntry) -> None:
