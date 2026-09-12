@@ -527,9 +527,12 @@ class UpdateManagerCoordinator:
 
         for entity_id in self.hass.states.async_entity_ids("update"):
             state = self.hass.states.get(entity_id)
+            baseline_already_checked = False
             if state is not None:
-                self._check_and_advance_installed_baseline(entity_id, state, retroactive=True)
-            await self._async_refresh_one(entity_id, baseline_already_checked=state is not None)
+                baseline_already_checked = self._check_and_advance_installed_baseline(
+                    entity_id, state, retroactive=True
+                )
+            await self._async_refresh_one(entity_id, baseline_already_checked=baseline_already_checked)
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
 
         # _async_refresh_one above (unlike its own async_refresh_one/
@@ -567,7 +570,7 @@ class UpdateManagerCoordinator:
         return entry.unique_id if entry is not None and entry.unique_id else entity_id
 
     @callback
-    def _check_and_advance_installed_baseline(self, entity_id: str, state: State, *, retroactive: bool) -> None:
+    def _check_and_advance_installed_baseline(self, entity_id: str, state: State, *, retroactive: bool) -> bool:
         """Compares `state`'s own installed_version against the persisted
         restart-recovery baseline (self._last_installed_version), fires the
         install listeners if they genuinely disagree, then advances the
@@ -628,10 +631,24 @@ class UpdateManagerCoordinator:
         entirely, so "manual" is always correct for them regardless) --
         narrow enough, and persisting dispatch records across a restart
         invasive enough, that this is left as a documented gap rather than
-        fixed here."""
+        fixed here.
+
+        Returns whether this call actually evaluated the transition
+        (fired the install listeners, or found no disagreement worth
+        acting on) rather than being suppressed outright by the startup
+        grace window below. async_start's own startup sweep uses this to
+        decide whether _async_refresh_one's own follow-up call for the
+        same entity_id is still needed: found live, 2026-09-12, a real
+        Core update installed via a restart went missing from History
+        entirely, not just misattributed. The sweep's own retroactive call
+        is always inside the grace window right at process start (it was
+        just armed a moment earlier in this same async_start), so it's
+        suppressed every single time for a transition discovered this way;
+        skipping the follow-up unconditionally, as a prior fix here did,
+        left nothing to ever actually log it."""
         new_installed = state.attributes.get("installed_version")
         if not new_installed or new_installed == _PLACEHOLDER_INSTALLED_VERSION:
-            return
+            return True
         key = self._stable_key(entity_id)
         old_installed = self._last_installed_version.get(key)
         if old_installed and old_installed != _PLACEHOLDER_INSTALLED_VERSION and old_installed != new_installed:
@@ -655,11 +672,12 @@ class UpdateManagerCoordinator:
                 # A live event is, by definition, a real observation right
                 # now, not something to second-guess the way a retroactive
                 # snapshot with no reliable timestamp has to be.
-                return
+                return False
             self._fire_install_listeners(entity_id, old_installed, new_installed, state, retroactive)
         if old_installed != new_installed:
             self._last_installed_version[key] = new_installed
             self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
+        return True
 
     def _within_startup_grace(self) -> bool:
         """True for a short window after this coordinator's own async_start.
