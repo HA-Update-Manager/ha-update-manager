@@ -48,13 +48,23 @@ def zigbee_network_id(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None
     Returns None for anything that isn't Zigbee at all."""
     if is_zigbee2mqtt_device(hass, device):
         return f"z2m:{device.via_device_id}"
-    # Devices belong to exactly one config entry since HA Core 2026.8
-    # (device.config_entries is a deprecated compatibility shim now,
-    # removed in 2027.8); config_entry_id is the direct replacement.
-    entry = hass.config_entries.async_get_entry(device.config_entry_id)
-    if entry and entry.domain == "zha":
-        return f"zha:{device.config_entry_id}"
+    for entry_id in _device_config_entry_ids(device):
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry and entry.domain == "zha":
+            return f"zha:{entry_id}"
     return None
+
+
+def _device_config_entry_ids(device: dr.DeviceEntry) -> set[str]:
+    """A device belongs to exactly one config entry from HA Core 2026.8 on
+    (config_entry_id; config_entries is a deprecated shim there, removed in
+    2027.8), but this integration still supports far older HA versions
+    (hacs.json), where config_entry_id doesn't exist at all and reading it
+    raises AttributeError."""
+    entry_id = getattr(device, "config_entry_id", None)
+    if entry_id is not None:
+        return {entry_id}
+    return set(device.config_entries)
 
 
 def is_zigbee_entity(hass: HomeAssistant, entity_id: str) -> bool:
