@@ -31,6 +31,21 @@ EVENT_ANNOUNCED = f"{DOMAIN}_announced"
 EVENT_INSTALLED = f"{DOMAIN}_installed"
 EVENT_INSTALL_FAILED = f"{DOMAIN}_install_failed"
 
+# Real Home Assistant services (Developer Tools > Actions), not just
+# websocket commands the panel itself calls -- registered by services.py so
+# an automation can react to EVENT_ANNOUNCED on its own (e.g. running its
+# own analysis of the release notes) without needing this project's own
+# panel open at all.
+SERVICE_GET_RELEASE_NOTES = "get_release_notes"
+SERVICE_CANCEL_SCHEDULED_INSTALL = "cancel_scheduled_install"
+# `to_version` is optional on both of the services above: without it, the
+# entity's own current latest_version is used, on the theory that "the jump
+# currently pending" is what a caller almost always means -- direct user
+# feedback, 2026-09-27. A caller after the exact jump EVENT_ANNOUNCED itself
+# described, even if a newer one has since become available, can still pass
+# that event's own to_version explicitly.
+ATTR_TO_VERSION = "to_version"
+
 # The master switch (default on): pauses every autonomous action Update
 # Manager itself takes -- auto-install (announcing/executing) and the
 # hide-postponed auto-skip -- without touching any of the other settings

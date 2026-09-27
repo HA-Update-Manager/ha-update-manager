@@ -1,0 +1,26 @@
+get_release_notes:
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          filter:
+            domain: update
+    to_version:
+      required: false
+      example: "2026.10.0"
+      selector:
+        text:
+cancel_scheduled_install:
+  fields:
+    entity_id:
+      required: true
+      selector:
+        entity:
+          filter:
+            domain: update
+    to_version:
+      required: false
+      example: "2026.10.0"
+      selector:
+        text:

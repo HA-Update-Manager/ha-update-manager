@@ -65,5 +65,43 @@
                 }
             }
         }
+    },
+    "services": {
+        "get_release_notes": {
+            "name": "Release notes ophalen",
+            "description": "Geeft de samengevoegde release notes van een update terug, van de huidig geïnstalleerde versie tot de doelversie (dezelfde tekst die het update-detailvenster zelf toont).",
+            "fields": {
+                "entity_id": {
+                    "name": "Entiteit",
+                    "description": "De update-entiteit om release notes voor op te halen."
+                },
+                "to_version": {
+                    "name": "Naar versie",
+                    "description": "De versie om notes tot en met op te halen. Standaard de huidige nieuwste versie van de entiteit."
+                }
+            }
+        },
+        "cancel_scheduled_install": {
+            "name": "Geplande installatie annuleren",
+            "description": "Annuleert een auto-install die Update Manager heeft gepland (of op het punt staat te plannen) voor een update.",
+            "fields": {
+                "entity_id": {
+                    "name": "Entiteit",
+                    "description": "De update-entiteit om de geplande installatie voor te annuleren."
+                },
+                "to_version": {
+                    "name": "Naar versie",
+                    "description": "De versie om de geplande installatie voor te annuleren. Standaard de huidige nieuwste versie van de entiteit."
+                }
+            }
+        }
+    },
+    "exceptions": {
+        "not_set_up": {
+            "message": "Update Manager is niet ingesteld."
+        },
+        "unknown_update_entity": {
+            "message": "{entity_id} is geen op dit moment gevolgde update-entiteit."
+        }
     }
 }

@@ -100,7 +100,7 @@ Every entity Update Manager creates lives under its own "Update Manager" device.
 
   | Event | Fired when | Data |
   | --- | --- | --- |
-  | `update_manager_announced` | An auto-install countdown starts | `entity_id`, `from_version`, `to_version`, `execute_at` |
+  | `update_manager_announced` | An auto-install countdown starts | `entity_id`, `from_version`, `to_version`, `release_url`, `execute_at` |
   | `update_manager_installed` | An install completes, auto or manual alike | `entity_id`, `from_version`, `to_version`, `auto_installed`, `install_method`, `auto_install_reason`, `trusted_voter_usernames` |
   | `update_manager_install_failed` | An auto-install's `update.install` call raised | `entity_id`, `to_version` |
 
@@ -108,6 +108,14 @@ Every entity Update Manager creates lives under its own "Update Manager" device.
   above; these events are only for the moments in between. `install_method` is one of `auto`, `manual`,
   or `external` (an entity that updated itself outside Home Assistant entirely, only noticed here after
   the fact, e.g. a device with its own separate auto-update setting).
+* **Services** (Developer Tools > Actions), so an automation can act on `update_manager_announced` without
+  the panel involved at all, e.g. running its own analysis of the release notes before deciding whether to
+  let a scheduled auto-install proceed:
+
+  | Service | Does |
+  | --- | --- |
+  | `update_manager.get_release_notes` | Returns the same compiled release notes the update-detail dialog itself shows, from the currently installed version up to `to_version` (defaults to the entity's own current latest version if omitted). |
+  | `update_manager.cancel_scheduled_install` | Cancels a scheduled auto-install for `to_version` (same default as above). |
 
 **Example: send yourself a notification for every scheduled auto-install**, the same message the built-in
 persistent notification already shows, just on your phone instead:

@@ -507,10 +507,17 @@ class InstallManager:
         self._refresh_pending_notification()
 
         # See const.py's own EVENT_ANNOUNCED docstring for the events
-        # design overall. from_version comes from the coordinator's cache,
-        # not the (possibly stale-by-now) update entity's own state
-        # directly, same source install_log.py's own entries already use
-        # for the same fact.
+        # design overall. from_version/release_url come from the
+        # coordinator's cache, not the (possibly stale-by-now) update
+        # entity's own state directly, same source install_log.py's own
+        # entries already use for the same facts. release_url is already
+        # corrected for Core (see corrected_release_url's own docstring),
+        # so an automation reading it doesn't need to know that quirk
+        # exists at all -- added so an automation can fetch the release
+        # notes itself (directly, or via this integration's own
+        # get_release_notes service, see services.py) before the install
+        # actually runs, e.g. to run its own analysis and decide whether
+        # to cancel it via cancel_scheduled_install.
         cached = self._coordinator.cache.get(entity_id)
         self.hass.bus.async_fire(
             EVENT_ANNOUNCED,
@@ -518,6 +525,7 @@ class InstallManager:
                 "entity_id": entity_id,
                 "from_version": cached.get("installed_version") if cached else None,
                 "to_version": to_version,
+                "release_url": cached.get("release_url") if cached else None,
                 "execute_at": announcement.execute_at.isoformat(),
             },
         )

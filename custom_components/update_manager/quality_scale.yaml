@@ -1,10 +1,15 @@
 rules:
   # Bronze
   action-setup:
-    status: exempt
+    status: done
     comment: >-
-      No custom services/actions are registered. The panel talks to this integration
-      entirely over its own websocket commands, not HA service actions.
+      services.py's async_setup_services registers get_release_notes and
+      cancel_scheduled_install from async_setup_entry (not the module-level
+      async_setup this integration doesn't have), guarded by
+      hass.services.has_service for idempotency. The panel itself still
+      talks to this integration over its own websocket commands; these two
+      exist so an automation can react to update_manager_announced without
+      the panel involved at all (2026-09-27).
   appropriate-polling: done
   brands: done
   common-modules: done
@@ -18,8 +23,12 @@ rules:
   config-flow: done
   dependency-transparency: done
   docs-actions:
-    status: exempt
-    comment: No custom actions exist.
+    status: done
+    comment: >-
+      README's own Services table documents both get_release_notes and
+      cancel_scheduled_install; services.yaml's own fields plus
+      strings.json's services section cover the rest (names/descriptions
+      shown in Developer Tools > Actions).
   docs-triggers:
     status: exempt
     comment: No triggers exist.
@@ -57,8 +66,11 @@ rules:
 
   # Silver
   action-exceptions:
-    status: exempt
-    comment: No actions are registered.
+    status: done
+    comment: >-
+      Both services raise ServiceValidationError, translated (strings.json's
+      own exceptions section), for the two expected failure cases: not set
+      up yet, and an entity_id that isn't a currently tracked update entity.
   config-entry-unloading: done
   docs-configuration-parameters: done
   docs-installation-parameters:

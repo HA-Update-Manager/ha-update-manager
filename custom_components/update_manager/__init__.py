@@ -34,6 +34,7 @@ from .my_votes import MyVotesManager
 from .panel import async_register_update_manager_panel
 from .rollout_manager import RolloutManager
 from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
+from .services import async_setup_services
 from .staging_skip import StagingSkipManager
 from .websocket_api import async_apply_options, async_setup_websocket_api
 
@@ -501,6 +502,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     _migrate_enabled_switch_entity_id(hass)
 
     async_setup_websocket_api(hass)
+    async_setup_services(hass)
     await async_register_update_manager_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

@@ -272,7 +272,7 @@ async def _async_reconcile_my_votes(hass: HomeAssistant, data: UpdateManagerData
     await data.my_votes_manager.async_forget_many(stale_jump_keys)
 
 
-async def _async_fetch_github_release_notes(
+async def async_fetch_github_release_notes(
     hass: HomeAssistant,
     release_url: str | None,
     access_token: str | None,
@@ -535,7 +535,7 @@ async def _handle_github_release_notes(hass: HomeAssistant, connection: websocke
     entity_id = msg.get("entity_id")
     if entity_id and to_version:
         release_url = corrected_release_url(entity_id, release_url, to_version) or release_url
-    result = await _async_fetch_github_release_notes(
+    result = await async_fetch_github_release_notes(
         hass, release_url, access_token, msg.get("from_version"), to_version
     )
     if result is None:
