@@ -831,11 +831,6 @@ class RolloutManager:
         # already accounted for (see blocking_rank's update below) by the
         # time a higher-tier entry in the same pass is considered.
         ordered = sorted(ranks, key=lambda e: ranks[e])
-        # Saved once for the whole batch below, not once per cleared entry.
-        # Found by code review, 2026-08-10: several requests clearing in
-        # the same tick (e.g. right after a blocking Core install finishes)
-        # used to each trigger their own full Store write.
-        cleared_any = False
         for entity_id in ordered:
             entry = self._tier_blocked.get(entity_id)
             if entry is None:
@@ -844,7 +839,23 @@ class RolloutManager:
             if blocking_rank is not None and blocking_rank < my_rank:
                 continue
             del self._tier_blocked[entity_id]
-            cleared_any = True
+            # Persisted right away, not batched until this whole loop ends
+            # (as it used to be, found by code review 2026-08-10, to avoid
+            # one Store write per entry when several clear in the same
+            # tick) -- Core/OS's own update.install restarts Home Assistant
+            # itself, so the awaited dispatch below can end the process
+            # before ever returning, and a save deferred until after the
+            # loop would then never run at all. Confirmed live, 2026-09-30:
+            # Core cleared here and installed successfully, but the on-disk
+            # tier_blocked still listed it (the batched save never got its
+            # turn), so the next restart's own _async_recover_after_restart
+            # read that stale entry and tried to dispatch Core again, now
+            # with nothing left to install -- see _async_dispatch's own
+            # guard for what that produced. Still one write per cleared
+            # entry in the rarer multi-entry-clearing case, but correctness
+            # for the entries that can end the process outright matters
+            # more than that batching ever saved.
+            await self._async_save()
             if await self._async_request_past_tier_gate(entry) == "dispatch":
                 await self._async_dispatch(entry)
             # This entry is now itself either dispatched or freshly queued
@@ -854,8 +865,6 @@ class RolloutManager:
             # shown up as in_progress in the snapshot above.
             if blocking_rank is None or my_rank < blocking_rank:
                 blocking_rank = my_rank
-        if cleared_any:
-            await self._async_save()
 
     def _min_blocking_tier_rank(self) -> int | None:
         """The lowest tier rank among every update entity currently
@@ -1187,6 +1196,33 @@ class RolloutManager:
         )
 
     async def _async_dispatch(self, entry: _QueuedEntry) -> None:
+        # Already installed by some other route while this request sat
+        # waiting its turn here. Confirmed live, 2026-09-30: the main way
+        # this actually happens is Core/OS's own update.install restarting
+        # Home Assistant mid-dispatch, which used to leave a stale entry in
+        # the on-disk tier_blocked behind (see _async_retry_tier_blocked's
+        # own comment on saving per-entry, now fixed) -- the next restart's
+        # _async_recover_after_restart then read that stale entry and tried
+        # to dispatch an entity that had, by definition, just successfully
+        # installed to become that stale entry in the first place. Also a
+        # real, if rarer, possibility for any entity clicked through Home
+        # Assistant's own native more-info dialog while queued here,
+        # entirely outside this queue/tier-gate's own awareness (a known,
+        # so-far-parked gap, see TODO-CLAUDE.md). Either way, dispatching
+        # anyway calls update.install with no explicit version on an entity
+        # that already has nothing left to install, which Home Assistant
+        # rejects outright ("No update available"), misreporting a real,
+        # already-successful install as a failure of this queue's own.
+        # coordinator.py's own install-listener already picked up that
+        # real completion when it happened (regardless of who triggered
+        # it) and advanced past this entry via _on_install_completed below
+        # -- if this method still got called for it anyway (a race between
+        # that and this same retry), there's nothing left to do here but
+        # skip the now-redundant call silently, not report a failure for
+        # an install that already succeeded.
+        state = self.hass.states.get(entry.entity_id)
+        if state is not None and state.attributes.get("installed_version") == entry.to_version:
+            return
         self._in_flight_entry(entry.entity_id).front_since = dt_util.utcnow()
         if entry.is_auto and self._mark_recently_executed is not None:
             # entry.context is only ever None for an is_auto=True entry

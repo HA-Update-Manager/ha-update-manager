@@ -481,7 +481,7 @@ async def _async_core_aware_section(hass: HomeAssistant, is_core: bool, tag_name
     """"## {tag_name}\n\n{body}", except for home-assistant/core's own .0
     releases (is_core and tag_name strips down to an "X.Y.0" version), where
     body is replaced outright by that release's own blog announcement intro
-    (_async_fetch_core_announcement's own short frontmatter description) --
+    (async_fetch_core_announcement's own short frontmatter description) --
     never GitHub's raw PR-list body for a .0 release, direct user feedback,
     2026-08-08 ("bij core .0 enkel dat intro zinnetje"). Falls back to the
     raw GitHub body when the announcement fetch itself finds nothing (a
@@ -491,7 +491,7 @@ async def _async_core_aware_section(hass: HomeAssistant, is_core: bool, tag_name
     whenever there ends up nothing at all to show, so an empty section never
     contributes a bare heading to the eventual join."""
     if is_core and strip_version_prefix(tag_name).endswith(".0"):
-        announcement = await _async_fetch_core_announcement(hass, tag_name)
+        announcement = await async_fetch_core_announcement(hass, tag_name)
         if announcement and announcement.get("intro"):
             body = announcement["intro"]
     return f"## {tag_name}\n\n{body}" if body else None
@@ -547,7 +547,7 @@ async def _handle_github_release_notes(hass: HomeAssistant, connection: websocke
 
 async def _async_fetch_text(hass: HomeAssistant, url: str) -> str | None:
     """Plain GET, text body, None on anything but a clean 200 -- shared by
-    both fetches _async_fetch_core_announcement below needs. No
+    both fetches async_fetch_core_announcement below needs. No
     authentication: both files this is ever called with live in a public
     repo (home-assistant/home-assistant.io), no rate-limit-sensitive volume
     expected here (the frontend caches every result, per exact version, in
@@ -562,7 +562,7 @@ async def _async_fetch_text(hass: HomeAssistant, url: str) -> str | None:
         return None
 
 
-async def _async_fetch_core_announcement(hass: HomeAssistant, latest_version: str) -> dict[str, str | None] | None:
+async def async_fetch_core_announcement(hass: HomeAssistant, latest_version: str) -> dict[str, str | None] | None:
     """{"url": ..., "intro": ...} for a Core update's own "Open release
     announcement" link -- see core_blog_notes.py's own module docstring for
     the two-file fetch this does (home-assistant/home-assistant.io's own
@@ -620,7 +620,7 @@ async def _async_fetch_core_announcement(hass: HomeAssistant, latest_version: st
     }
 )
 async def _handle_core_announcement(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    result = await _async_fetch_core_announcement(hass, msg["latest_version"])
+    result = await async_fetch_core_announcement(hass, msg["latest_version"])
     if result is None:
         connection.send_result(msg["id"], {"url": None, "intro": None})
         return

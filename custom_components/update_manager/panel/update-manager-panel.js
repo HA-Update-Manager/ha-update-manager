@@ -1385,6 +1385,14 @@ async function _runProgressAction(btn, fn) {
 // release notes commonly use across many other repos too. An unmapped
 // shortcode is left exactly as written, same graceful "can't improve on
 // it, don't break it" treatment as everything else in this fallback.
+//
+// Mirrored, not shared: custom_components/update_manager/
+// release_notes_decoration.py's own _GITHUB_EMOJI_SHORTCODES, used by the
+// get_release_notes service so an automation gets the exact same decorated
+// text this dialog shows (no shared JS/Python runtime to import this
+// table from once, into both). Keep both in sync by hand whenever either
+// changes -- that Python module's own tests cover the confirmed real
+// cases, not this table's own completeness.
 const _GITHUB_EMOJI_SHORTCODES = {
   boom: "💥", sparkles: "✨", bug: "🐛", gem: "💎", package: "📦", rocket: "🚀",
   rotating_light: "🚨", hammer_and_wrench: "🛠️", gear: "⚙️", recycle: "♻️",
@@ -1438,6 +1446,10 @@ function _replaceGithubEmojiShortcodes(text) {
 // ha-markdown's own renderer recognizes at all, so instead of staying
 // invisible (as a real reference definition does) the whole block of
 // them rendered as a wall of literal link text underneath the notes.
+//
+// This regex and _GITHUB_MENTION_RE below are mirrored, not shared, in
+// custom_components/update_manager/release_notes_decoration.py (see that
+// emoji table's own comment above for why) -- keep both in sync by hand.
 const _GITHUB_ISSUE_REF_RE = /(?<![\w#[])#(\d+)\b/g;
 // @username -- GitHub handles are alphanumeric/hyphen, 1-39 chars, can't
 // start or end with a hyphen (not enforced here, a trailing-hyphen handle
@@ -1554,6 +1566,12 @@ function _decorateReleaseNotes(notes, releaseUrl) {
 // picking the resolvable one anyway would show the *wrong* (less relevant)
 // project's notes with no indication anything was left out, worse than
 // showing nothing.
+//
+// Mirrored, not shared, in custom_components/update_manager/
+// embedded_upstream_release.py's own find_embedded_upstream_release, used
+// by the get_release_notes service -- keep both in sync by hand whenever
+// either changes; that Python module's own tests cover the confirmed real
+// cases referenced throughout this comment.
 function _findEmbeddedUpstreamRelease(notes, ownOwner, ownRepo, fromVersion) {
   if (!notes) return null;
   const linkRe = /https?:\/\/[^\s)]+/g;
@@ -1681,6 +1699,13 @@ function _splitIntoHeadingSections(text) {
 // (including ones that were already correctly scoped, like the GitHub
 // fallback's own single-release fetch, which has no version heading in it
 // at all to begin with) is safe by construction for exactly that reason.
+//
+// Mirrored, not shared (this function and _findChangelogHeadingIndex/
+// _splitIntoHeadingSections above), in custom_components/update_manager/
+// changelog_trim.py's own trim_changelog_to_version, used by the
+// get_release_notes service -- keep both in sync by hand whenever either
+// changes; that Python module's own tests cover the confirmed real cases
+// referenced throughout this comment and _findChangelogHeadingIndex's own.
 function _trimChangelogToVersion(notes, fromVersion, toVersion) {
   if (!notes || !toVersion) return notes;
   const startIndex = _findChangelogHeadingIndex(notes, toVersion);
