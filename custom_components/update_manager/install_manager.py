@@ -711,6 +711,24 @@ class InstallManager:
         if context is not None and context.to_version == to_version:
             del self._recently_executed[entity_id]
 
+        # The install actually succeeded despite whatever raised this --
+        # direct user feedback, 2026-09-30, after a tier-gated Core/OS
+        # install genuinely completed but still produced a "couldn't
+        # install" notification (a stale, pre-restart tier-gate entry got
+        # redispatched against an entity that already had nothing left to
+        # install, see rollout_manager.py's own _async_dispatch/
+        # _async_retry_tier_blocked comments for the actual bug that's now
+        # fixed at the source). Checked here too, not just there, as a
+        # second, more general safety net: whatever the caller, and however
+        # it happened, an entity already sitting on the version this
+        # failure is about never needs a failure notification for it. The
+        # self._recently_executed cleanup above still applies either way --
+        # it's about attribution bookkeeping, not about whether to notify.
+        state = self.hass.states.get(entity_id)
+        if state is not None and state.attributes.get("installed_version") == to_version:
+            self._clear_failed(entity_id)
+            return
+
         self._failed[entity_id] = to_version
         self._refresh_failed_notification()
         # See const.py's own EVENT_ANNOUNCED docstring for the events
