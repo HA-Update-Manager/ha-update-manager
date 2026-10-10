@@ -346,10 +346,12 @@ export const TRANSLATIONS = {
     save: "Save",
     settings_saved_toast: "Settings saved",
     cancel_auto_install: "Cancel",
-    // The pending-update dialog's own "Ready now" button, next to Cancel --
-    // forces this one jump to evaluate as ready immediately, skipping the
-    // rest of its postponement period.
-    dialog_force_ready: "Ready",
+    // The pending-update dialog's own button, next to Cancel -- forces
+    // this one jump to evaluate as ready immediately, skipping the rest of
+    // its postponement period. "Ready to install", not bare "Ready" --
+    // found live, 2026-10-10: a lone "Ready" read as a status ("this is
+    // already ready"), not an action to take.
+    dialog_force_ready: "Ready to install",
     dialog_open_update: "Open update",
     dialog_skip: "Skip",
     dialog_unskip: "Clear skipped",
@@ -358,10 +360,12 @@ export const TRANSLATIONS = {
     group_blocked: "Discouraged",
     update_all: "Update all",
     // Postponed group's own header button (see _markAllReadyInGroup) --
-    // same effect as the per-entity "Ready" button in the dialog
-    // (dialog_force_ready above), just applied to every postponed update
-    // at once, direct user feedback, 2026-10-10.
-    mark_all_ready: "Mark all ready",
+    // same effect as the per-entity dialog_force_ready button above, just
+    // applied to every postponed update at once. "Ready all", matching
+    // update_all's own "<verb> all" shape, not "Mark all ready" -- shorter,
+    // and shares its own core word with dialog_force_ready, so it reads as
+    // the same action applied in bulk.
+    mark_all_ready: "Ready all",
     mark_all_ready_started_toast: (count) => (count === 1 ? "Marking 1 update ready…" : `Marking ${count} updates ready…`),
     // The "Installing" section's own title (see _buildInstallingCard) --
     // everything currently installing or held back (the tier gate or the
@@ -655,7 +659,7 @@ export const TRANSLATIONS = {
     save: "Opslaan",
     settings_saved_toast: "Instellingen opgeslagen",
     cancel_auto_install: "Annuleren",
-    dialog_force_ready: "Klaar",
+    dialog_force_ready: "Klaar voor installatie",
     dialog_open_update: "Update openen",
     dialog_skip: "Overslaan",
     dialog_unskip: "Overslaan ongedaan maken",
@@ -663,7 +667,7 @@ export const TRANSLATIONS = {
     group_waiting: "Uitgesteld",
     group_blocked: "Afgeraden",
     update_all: "Alles updaten",
-    mark_all_ready: "Alles klaar markeren",
+    mark_all_ready: "Alles klaar",
     mark_all_ready_started_toast: (count) =>
       count === 1 ? "1 update wordt klaar gemarkeerd…" : `${count} updates worden klaar gemarkeerd…`,
     installing_section_title: "Bezig met installeren",
