@@ -107,6 +107,19 @@ WEEKDAY_READY_OPTION_KEYS: tuple[tuple[str, str], ...] = tuple(
 # about *which* entities, not a wait/auto-install tuning value.
 CONF_EXCLUDED_ENTITIES = "excluded_entities"
 
+# The opposite standing override, added 2026-10-10 (direct user feedback,
+# answers issue #10's own "instant-install allow list" request): an entity
+# here skips both the staging wait and the announce-then-wait countdown
+# entirely (see announcer.py's own effective_auto_install_state/
+# decide_action) and installs the moment it's actually available, size
+# rules and community votes included -- the strongest, most explicit signal
+# this project has, only a hard exclusion (CONF_EXCLUDED_ENTITIES above) or
+# an explicit user skip outranks it. An entity can't be in both lists at
+# once (see websocket_api.py's own async_apply_options validation) --
+# "never" and "always" contradicting each other has no sensible resolution,
+# so it's rejected outright rather than silently picking a winner.
+CONF_WHITELISTED_ENTITIES = "whitelisted_entities"
+
 # On by default (changed 2026-07-21, direct user feedback), opt-out rather
 # than opt-in. Not part of any profile preset (same reasoning as
 # CONF_EXCLUDED_ENTITIES above: a behavior toggle, not a wait/auto-install

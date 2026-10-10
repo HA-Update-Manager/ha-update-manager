@@ -163,6 +163,7 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
                 community_problematic_count=(u.get("community_verdict") or {}).get("problematic_count", 0),
                 rules=rules,
                 master_enabled=self._coordinator.master_enabled,
+                auto_install_whitelisted=bool(u.get("auto_install_whitelisted")),
             )
         ]
         self._attr_native_value = len(bucket)

@@ -300,6 +300,7 @@ function knownSettingsFields() {
     "enabled",
     "announce_hours",
     "excluded_entities",
+    "whitelisted_entities",
     "hide_postponed",
     "show_skipped_updates",
     "show_not_installable_updates",
@@ -318,7 +319,7 @@ function knownSettingsFields() {
 // ha-form's own multiple:true selector emits null once the last chip is
 // removed (found live, 2026-07-27), and save_settings' own schema requires
 // a real list for both. Coerced here too, not just at each field's own
-// value-changed handler (see entitiesForm/trustedForm below): this is the
+// value-changed handler (see _openEntityListModal/trustedForm below): this is the
 // one place every settings field already passes through before being sent,
 // so a future third list-typed field is covered automatically instead of
 // needing to remember this same fix on its own. Blank entries (e.g. a
@@ -327,7 +328,7 @@ function knownSettingsFields() {
 // time only -- not from _formData/the live widget's own state, which would
 // delete ha-input-multi's freshly-added blank row before the user can type
 // into it (found live, 2026-08-11).
-const LIST_SETTINGS_FIELDS = new Set(["excluded_entities", "trusted_voters"]);
+const LIST_SETTINGS_FIELDS = new Set(["excluded_entities", "whitelisted_entities", "trusted_voters"]);
 
 function pickKnownSettings(data) {
   const known = knownSettingsFields();
@@ -408,6 +409,12 @@ function compareUpdates(a, b, settings) {
 // apart the way they already once did (the Updates-tab list row's own "will
 // auto-install at X" pill disagreeing with that same entity's dialog).
 function communityBlocksAutoInstall(u) {
+  // Mirrors effective_auto_install_state's own order: the whitelist
+  // override (added 2026-10-10, answers issue #10) outranks a trusted
+  // vote, same as it does server-side -- checked first, not just folded
+  // into autoInstallEnabledFor below, since this function is also used
+  // standalone by _openDetailDialog's own heldBackByCommunity.
+  if (u.auto_install_whitelisted) return false;
   if (u.trusted_vote === "healthy") return false;
   return ((u.community_verdict && u.community_verdict.problematic_count) || 0) > 0;
 }
@@ -424,6 +431,10 @@ function autoInstallEnabledFor(u, settings) {
   // showing a "will update automatically" projection while paused would be
   // actively misleading, since nothing will actually happen.
   if (!settings || settings.enabled === false || !u.installable || u.auto_install_excluded) return false;
+  // Whitelisted bypasses the size toggle entirely too, same as server-side
+  // -- checked before communityBlocksAutoInstall below, though that
+  // function itself already also special-cases this same field.
+  if (u.auto_install_whitelisted) return true;
   if (communityBlocksAutoInstall(u)) return false;
   return !!settings[`${u.version_size}_auto_install`];
 }
@@ -897,6 +908,7 @@ function installMethodText(tr, entry) {
     return tr.dialog_history_method_trusted(joinUsernames(tr, entry.trusted_voter_usernames || []));
   }
   if (entry.auto_install_reason === "rules") return tr.dialog_history_method_rules;
+  if (entry.auto_install_reason === "whitelist") return tr.dialog_history_method_whitelist;
   return tr.dialog_history_auto;
 }
 
@@ -1766,6 +1778,22 @@ class UpdateManagerPanel extends HTMLElement {
     // position the *previous* tab happened to be left at instead of each
     // tab remembering its own.
     this._scrollPositions = {};
+    // Same idea as this._scrollPositions above, one level down: the detail
+    // dialog's own scrollable body (see _dialogScrollContainer) is one
+    // real element reused for every entity/History-entry it ever shows,
+    // not recreated per open. Direct user feedback, 2026-10-10, after an
+    // earlier, narrower fix (reset to the top on anything but a same-
+    // entity rebuild) still briefly flashed the *previous* dialog's own
+    // scroll position before snapping to the top, and -- the actual
+    // question that led here -- why not let each one just remember its
+    // own position instead of always restarting at the top. Keyed by
+    // _dialogScrollKey (entity_id alone for the live pending view, entity_id
+    // + the specific History entry's own identity for a History row's
+    // dialog, since the same entity's different past installs can have
+    // differently long notes). Populated on every departure from a given
+    // dialog (_openDetailDialog's own switch-away save, and the dialog's
+    // own "closed" handler below), read back on arrival.
+    this._dialogScrollPositions = new Map();
     this._route = null;
     this._updates = null;
     this._rolloutGroups = [];
@@ -1882,6 +1910,28 @@ class UpdateManagerPanel extends HTMLElement {
   _dialogScrollContainer() {
     const inner = this._dialogEl && this._dialogEl.shadowRoot && this._dialogEl.shadowRoot.querySelector("ha-dialog, ha-bottom-sheet");
     return inner && inner.shadowRoot && inner.shadowRoot.querySelector(".body");
+  }
+
+  // this._dialogScrollPositions's own key for one specific dialog "page" --
+  // entity_id alone for the entity's live pending view, entity_id plus the
+  // History entry's own identity (installed_at + to_version, the same pair
+  // _afterDialogAction's own re-lookup already uses to recognize one exact
+  // entry) for a History row's dialog, since the same entity's different
+  // past installs can show differently long content.
+  _dialogScrollKey(entityId, historyEntry) {
+    return historyEntry ? `${entityId}:${historyEntry.installed_at}:${historyEntry.to_version}` : entityId;
+  }
+
+  // Saves whatever is currently showing's own scroll position under its own
+  // key, if the dialog is actually open right now -- shared by
+  // _openDetailDialog's own switch-away handling and the dialog's "closed"
+  // listener (see _ensureShell), the two moments a dialog is ever actually
+  // left.
+  _saveDialogScrollPosition() {
+    if (!this._dialogEl.open || this._dialogEntityId == null) return;
+    const el = this._dialogScrollContainer();
+    if (!el) return;
+    this._dialogScrollPositions.set(this._dialogScrollKey(this._dialogEntityId, this._dialogHistoryEntry), el.scrollTop);
   }
 
   // Set by HA's panel resolver on every navigation under this panel's own
@@ -2075,6 +2125,7 @@ class UpdateManagerPanel extends HTMLElement {
         this._formData = {
           enabled: true,
           excluded_entities: [],
+          whitelisted_entities: [],
           trusted_voters: [],
           hide_postponed: true,
           show_skipped_updates: true,
@@ -2662,6 +2713,11 @@ class UpdateManagerPanel extends HTMLElement {
       }
     });
     dialog.addEventListener("closed", () => {
+      // Before dialog.open flips false below -- _saveDialogScrollPosition's
+      // own guard reads that, and this is the one place a real close (not
+      // just switching to a different entity's dialog, see
+      // _openDetailDialog's own matching save) is ever observed.
+      this._saveDialogScrollPosition();
       dialog.open = false;
       this._dialogEntityId = null;
       // Found by review: this used to leave a stale historyEntry behind,
@@ -3112,6 +3168,40 @@ class UpdateManagerPanel extends HTMLElement {
     results.forEach((result, i) => {
       if (result.status !== "rejected") return;
       const entityId = entityIds[i];
+      const err = result.reason;
+      let message = (err && err.message) || String(err);
+      if (message.includes(entityId)) {
+        message = message.split(entityId).join(friendlyEntityName(this._hass, entityId));
+      }
+      this._showToast(message);
+    });
+  }
+
+  // Postponed group's own header button -- same action as the per-entity
+  // "Ready" button in the dialog (update_manager/force_ready, see that
+  // addAction's own comment for why it only ever shows for a "waiting"
+  // entity), just fired for every entity in this group at once instead of
+  // one at a time. Direct user feedback, 2026-10-10: "alles in postponed
+  // moet als ready gemarkeerd worden, zoals de Ready-knop in de dialoog,
+  // maar dan voor alle tegelijk" -- every entity group.key === "waiting"
+  // already is a postponed one by construction (see groupUpdates), so no
+  // extra status filter is needed here, only the same effectively-
+  // installing exclusion _updateAllInGroup above already uses (defensive;
+  // a genuinely "waiting" entity is never also installing in practice).
+  async _markAllReadyInGroup(group) {
+    const entities = group.entities.filter((u) => !this._isEffectivelyInstalling(u.entity_id));
+    if (!entities.length) return;
+    this._showToast(this._tr.mark_all_ready_started_toast(entities.length));
+    const results = await Promise.allSettled(
+      entities.map((u) =>
+        this._hass.callWS({ type: "update_manager/force_ready", entity_id: u.entity_id, to_version: u.latest_version })
+      )
+    );
+    await this._loadAll();
+    this._renderContent();
+    results.forEach((result, i) => {
+      if (result.status !== "rejected") return;
+      const entityId = entities[i].entity_id;
       const err = result.reason;
       let message = (err && err.message) || String(err);
       if (message.includes(entityId)) {
@@ -3754,6 +3844,16 @@ class UpdateManagerPanel extends HTMLElement {
         updateAllBtn.disabled = group.entities.every((u) => updateIsInstalling(entityState(this._hass, u.entity_id)));
         updateAllBtn.addEventListener("click", () => this._updateAllInGroup(group));
         header.appendChild(updateAllBtn);
+      } else if (group.key === "waiting") {
+        // Same placement/style precedent as "ready" above, just the
+        // group this action actually belongs to -- see
+        // _markAllReadyInGroup's own comment.
+        const markAllReadyBtn = document.createElement("ha-button");
+        markAllReadyBtn.appearance = "plain";
+        markAllReadyBtn.size = "s";
+        markAllReadyBtn.textContent = tr.mark_all_ready;
+        markAllReadyBtn.addEventListener("click", () => this._markAllReadyInGroup(group));
+        header.appendChild(markAllReadyBtn);
       }
 
       const list = document.createElement("ha-list-base");
@@ -4589,20 +4689,24 @@ class UpdateManagerPanel extends HTMLElement {
     }
     const tr = this._tr;
     const dialog = this._dialogEl;
-    // Same "one shared scrollable element, wiped and rebuilt in place"
-    // problem this._scrollPositions/_scrollContainer already solved for the
-    // three tabs, found live 2026-08-16 in this dialog too: _afterDialogAction
-    // and a live-verdict disagreement both rebuild this exact dialog in
-    // place (see their own comments) by calling this method again for the
-    // same entity while it's already open, which used to snap the scroll
-    // back to the top every time, losing your place in the release notes or
-    // community section. Only meaningful to restore for a same-entity
-    // rebuild, not a genuinely fresh open (this._dialogScrollContainer() is
-    // the real scrollable element one shadow root inside the dialog, not
-    // this method's own `body`, which is only slotted into it).
-    const isRebuildOfSameEntity = this._dialogEntityId === entityId && dialog.open;
-    const dialogScrollEl = isRebuildOfSameEntity ? this._dialogScrollContainer() : null;
-    const previousScrollTop = dialogScrollEl ? dialogScrollEl.scrollTop : 0;
+    // Each entity/History-entry gets its own remembered scroll position
+    // now (this._dialogScrollPositions), not just "restore it for a
+    // same-entity rebuild, reset to the top for anything else" -- direct
+    // user feedback, 2026-10-10, after that narrower approach still
+    // visibly flashed the *previous* dialog's own position for a moment
+    // before snapping to the top when switching quickly between two
+    // entities, and the actual question that led here: why not let each
+    // one just remember its own position instead. Saved under whatever
+    // was showing before this call, if the dialog was already open --
+    // covers both a same-entity rebuild (_afterDialogAction, a live-
+    // verdict disagreement, see their own comments: saves then
+    // immediately reads its own position straight back, a no-op net
+    // change) and switching straight to a different entity/entry without
+    // closing first (the "closed" listener, _ensureShell's own, never
+    // fires for that, only a real close does).
+    this._saveDialogScrollPosition();
+    const dialogScrollKey = this._dialogScrollKey(entityId, historyEntry);
+    const restoreScrollTop = this._dialogScrollPositions.get(dialogScrollKey) || 0;
     // Tracks which entity the dialog is currently showing -- lets an
     // in-flight release-notes fetch (see below) recognize itself as stale
     // if the dialog closes or gets reopened for a different entity before
@@ -4742,6 +4846,11 @@ class UpdateManagerPanel extends HTMLElement {
       effectiveTrustedVote !== "healthy" &&
       communityProblematicCount > 0 &&
       !u.auto_install_excluded &&
+      // Same whitelist override as communityBlocksAutoInstall's own,
+      // added 2026-10-10 -- this condition is hand-rolled rather than
+      // calling that shared function (pre-existing, not introduced here),
+      // so it needs this added by hand too.
+      !u.auto_install_whitelisted &&
       u.status !== "skipped";
     // isQueuedInRollout/isTierWaiting checked first: u.status itself is
     // still "ready" for a queued/tier-blocked entity (the real staging
@@ -5072,8 +5181,19 @@ class UpdateManagerPanel extends HTMLElement {
         return { linkUrl: url || correctedUrl };
       };
       if (supportsReleaseNotes) {
-        const loader = buildReleaseNotesLoader();
-        body.insertBefore(loader, releaseNotesAnchor);
+        // Cache key format duplicated from _fetchNativeReleaseNotes's own
+        // (must stay in sync with it) -- checked here, synchronously,
+        // before ever touching the loader at all: found live, 2026-10-10,
+        // direct user feedback ("ik sluit de dialoog en open 'm weer, dan
+        // laadt hij de release notes opnieuw"). They weren't actually
+        // re-fetched (the cache below already prevented that, since
+        // 2026-08-01) -- the loader was unconditionally inserted before
+        // ever checking it, so even a cache hit still flashed the spinner
+        // for a frame or two before being removed, reading as a fresh
+        // reload even though nothing was refetched over the network.
+        const nativeCacheKey = `native:${entityId}:${u.latest_version}`;
+        const loader = this._releaseNotesCache.has(nativeCacheKey) ? null : buildReleaseNotesLoader();
+        if (loader) body.insertBefore(loader, releaseNotesAnchor);
         // _fetchNativeReleaseNotes already folds a rejection into a null
         // resolution (see its own comment) -- a rejected update/release_notes
         // call and a resolved-but-empty one both need exactly the same
@@ -5086,7 +5206,7 @@ class UpdateManagerPanel extends HTMLElement {
           // either way: harmless even if dialog.innerHTML already wiped it
           // out from under us.
           if (isDialogStale()) {
-            loader.remove();
+            if (loader) loader.remove();
             return;
           }
           let finalNotes = notes;
@@ -5097,7 +5217,7 @@ class UpdateManagerPanel extends HTMLElement {
             ));
           }
           const { linkUrl } = await withCoreAnnouncement(correctedUrl);
-          loader.remove();
+          if (loader) loader.remove();
           if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, linkUrl);
         });
       } else {
@@ -5105,8 +5225,12 @@ class UpdateManagerPanel extends HTMLElement {
         if (releaseSummary) {
           appendReleaseNotesSection(releaseSummary);
         } else {
-          const loader = buildReleaseNotesLoader();
-          body.insertBefore(loader, releaseNotesAnchor);
+          // Same "skip the loader on a cache hit" fix as the
+          // supportsReleaseNotes branch above, same cache key format
+          // duplicated from _fetchGithubReleaseNotesFallback's own.
+          const githubCacheKey = `github:${releaseUrl}:${u.installed_version || ""}:${u.latest_version || ""}`;
+          const loader = this._releaseNotesCache.has(githubCacheKey) ? null : buildReleaseNotesLoader();
+          if (loader) body.insertBefore(loader, releaseNotesAnchor);
           // Same fromVersion/toVersion range for Core as for any other
           // entity -- websocket_api.py's own compiled multi-version range
           // (and, for Core specifically, its per-release .0 intro
@@ -5117,7 +5241,7 @@ class UpdateManagerPanel extends HTMLElement {
             releaseUrl, u.installed_version, u.latest_version, entityId
           ).then(async ({ notes, correctedUrl }) => {
             const { linkUrl } = await withCoreAnnouncement(correctedUrl);
-            loader.remove();
+            if (loader) loader.remove();
             if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, linkUrl);
           });
         }
@@ -5655,13 +5779,19 @@ class UpdateManagerPanel extends HTMLElement {
     dialog.appendChild(actions);
 
     // Restored right after the synchronous content lands, not inside the
-    // setTimeout below -- an already-open dialog being rebuilt has nothing
-    // to wait for (that delay is only there to avoid pop-in on a genuinely
-    // fresh open). Sections that fetch their own data asynchronously
+    // setTimeout below -- an already-open dialog being rebuilt (or switched
+    // straight to a different entity) has nothing to wait for (that delay
+    // is only there to avoid pop-in on a genuinely fresh open). Queried
+    // fresh here, not reused from before this method's own content-building
+    // above (dialog.innerHTML = "" only wipes the slotted light-DOM content,
+    // not this shadow-DOM-internal element, so it's still the same node
+    // either way, this is just not holding a reference across all that work
+    // for no reason). Sections that fetch their own data asynchronously
     // (release notes, community verdict) can still append more content
     // after this and shift things slightly -- same accepted trade-off the
     // 200ms delay below already makes for those, not worth chasing further.
-    if (dialogScrollEl) dialogScrollEl.scrollTop = previousScrollTop;
+    const dialogScrollEl = this._dialogScrollContainer();
+    if (dialogScrollEl) dialogScrollEl.scrollTop = restoreScrollTop;
 
     // A short, fixed delay before actually showing the dialog -- direct
     // user feedback, 2026-08-01: every dialog visibly shifted layout right
@@ -5689,7 +5819,20 @@ class UpdateManagerPanel extends HTMLElement {
     // the rare case this entity's dialog was closed or reopened for
     // someone else before the delay elapsed.
     setTimeout(() => {
-      if (!isDialogStale()) dialog.open = true;
+      if (isDialogStale()) return;
+      dialog.open = true;
+      // Re-asserted here too, not just synchronously above -- for a
+      // genuinely fresh open (the dialog was fully closed a moment ago,
+      // dialog.open was false at this method's own top), this._dialog
+      // ScrollContainer() back then has no guarantee of resolving the real
+      // element at all, so the single synchronous reset further up isn't
+      // reliable for this specific case. Queried fresh here instead, once
+      // the dialog is actually open and its real scrollable element is
+      // guaranteed to exist -- restoreScrollTop is still 0 for a never-
+      // before-seen entity/entry, so this is a no-op for anything the
+      // synchronous reset above already correctly handled.
+      const freshScrollEl = this._dialogScrollContainer();
+      if (freshScrollEl) freshScrollEl.scrollTop = restoreScrollTop;
     }, 200);
   }
 
@@ -5722,6 +5865,114 @@ class UpdateManagerPanel extends HTMLElement {
     } catch (err) {
       this._showToast((err && err.message) || String(err));
     }
+  }
+
+  // One half of the never/always auto-update pair (see
+  // _buildAutoInstallCard's own opening rows): just a heading + a button
+  // showing how many entities are currently configured, opening the real
+  // picker in its own modal (_openEntityListModal) -- no description span
+  // here on the page itself, direct user feedback: that same text already
+  // sits in the modal (passed through as `descriptionText` below), showing
+  // it twice was redundant. `key`/`otherKey` are always the two opposite
+  // sides of the same pair (excluded_entities vs. whitelisted_entities), so
+  // an entity already on the other list can be excluded from this one's
+  // own picker (see that method's own exclude_entities use) instead of
+  // letting the two ever contradict each other in the first place.
+  _buildEntityListSummary(tr, { key, otherKey, headingText, descriptionText }) {
+    const row = document.createElement("ha-settings-row");
+    const heading = document.createElement("span");
+    heading.slot = "heading";
+    heading.textContent = headingText;
+    row.appendChild(heading);
+    const btn = document.createElement("ha-button");
+    btn.appearance = "plain";
+    btn.size = "s";
+    // ha-settings-row's own control slot has min-width: 0 (confirmed
+    // against its real source), with no nowrap protection of its own --
+    // found live, 2026-10-10: "3 entities" wrapped to "3" / "entities" on
+    // two lines once the row ran short on space, instead of this button
+    // just keeping its own text on one line like every other row's control
+    // already does.
+    btn.className = "entity-list-count-btn";
+    btn.textContent = tr.entity_list_configured_count((this._formData[key] || []).length);
+    btn.addEventListener("click", () =>
+      this._openEntityListModal(tr, { key, otherKey, title: headingText, description: descriptionText, button: btn })
+    );
+    row.appendChild(btn);
+    return row;
+  }
+
+  // The modal _buildEntityListSummary's own button opens -- a separate,
+  // dedicated ha-dialog (not this panel's own this._dialogEl, which is
+  // already heavily tied to one specific update entity's own detail view,
+  // see _openDetailDialog) since this one is a plain, generic "pick some
+  // entities" form with nothing else going on. Appended directly to this
+  // element's own shadow root, not into the regular content tree
+  // _renderContent rebuilds, so a settings autosave triggered from inside
+  // it (see the form's own value-changed below) can't ever yank it out
+  // from under an open picker. `button` is only used to refresh its own
+  // "N configured" label once this modal closes, not while it's still
+  // open -- re-rendering mid-pick would rebuild the entity selector
+  // underneath the user's own in-progress interaction.
+  _openEntityListModal(tr, { key, otherKey, title, description, button }) {
+    const modal = document.createElement("ha-dialog");
+    modal.headerTitle = title;
+
+    const desc = document.createElement("p");
+    desc.className = "hint";
+    desc.textContent = description;
+    modal.appendChild(desc);
+
+    const form = document.createElement("ha-form");
+    form.hass = this._hass;
+    form.schema = [
+      {
+        name: key,
+        selector: {
+          entity: {
+            multiple: true,
+            filter: { domain: "update" },
+            // Never both at once -- see const.py's own
+            // CONF_WHITELISTED_ENTITIES comment for why this is prevented
+            // here rather than resolved by some precedence rule later.
+            exclude_entities: this._formData[otherKey] || [],
+          },
+        },
+      },
+    ];
+    form.data = this._formData;
+    form.computeLabel = () => "";
+    form.computeHelper = () => "";
+    form.addEventListener("value-changed", (e) => {
+      // `|| []`, same reasoning as every other multiple:true entity/text
+      // selector in this file (see e.g. entitiesForm's own historical
+      // comment, now this method) -- ha-form emits null once the last
+      // chip is removed.
+      const chosen = e.detail.value[key] || [];
+      this._formData = { ...this._formData, [key]: chosen };
+      form.data = this._formData;
+      this._scheduleAutosave();
+    });
+    modal.appendChild(form);
+
+    const closeBtn = document.createElement("ha-button");
+    closeBtn.slot = "footer";
+    closeBtn.textContent = tr.close;
+    closeBtn.addEventListener("click", () => {
+      modal.open = false;
+    });
+    modal.appendChild(closeBtn);
+
+    modal.addEventListener("closed", () => {
+      modal.remove();
+      // Refreshes the count only, not a full _renderContent -- same
+      // mid-edit-focus-loss reasoning _saveSettingsNow's own caller
+      // comment already gives for Settings in general.
+      button.textContent = tr.entity_list_configured_count((this._formData[key] || []).length);
+    });
+
+    this.shadowRoot.appendChild(modal);
+    modal.open = true;
   }
 
   // Shared by every plain "label [+ description] + one ha-selector control"
@@ -6823,6 +7074,37 @@ class UpdateManagerPanel extends HTMLElement {
     // which genuinely needs its own lead-in to explain *why* postponing
     // is worth it at all (not something the header alone conveys).
 
+    // Never/always auto-update, first in this card, not after the size/
+    // announce rows below, 2026-10-10: these two override everything else
+    // in this card (see effective_auto_install_state's own precedence), so
+    // reading top to bottom should hit them before the rules they
+    // override, not after. Plain stacked ha-settings-rows, same shape as
+    // every other row here -- an outlined border per row (tried first) put
+    // an outline inside this already-outlined ha-card (card.outlined above),
+    // reading as a nested card rather than two more rows of it.
+    // Home Assistant Core/Supervisor/OS's own update entities start out as
+    // ordinary, pre-populated members of excluded_entities (see
+    // __init__.py's own _migrate_default_excluded_entities), not a
+    // separate hard-coded exclusion -- removing one of these chips is a
+    // real, persisted choice, same as removing anything else from it.
+    body.appendChild(
+      this._buildEntityListSummary(tr, {
+        key: "excluded_entities",
+        otherKey: "whitelisted_entities",
+        headingText: tr.field_excluded_entities,
+        descriptionText: tr.field_excluded_entities_helper,
+      })
+    );
+    body.appendChild(
+      this._buildEntityListSummary(tr, {
+        key: "whitelisted_entities",
+        otherKey: "excluded_entities",
+        headingText: tr.field_whitelisted_entities,
+        descriptionText: tr.field_whitelisted_entities_helper,
+      })
+    );
+    body.appendChild(document.createElement("hr")).className = "divider";
+
     // ha-settings-row for every row here, same real HA settings-row
     // pattern Postponement's own rows use (see that method's own
     // comment) -- no more expandables, no more hand-rolled flex CSS.
@@ -6869,69 +7151,15 @@ class UpdateManagerPanel extends HTMLElement {
       })
     );
 
-    // Same divider treatment as Postponement's own wait-days/schedule
-    // boundary -- see that card's own comment. The auto-install/announce
-    // rows above and the entity lists below are a genuinely separate
-    // concern (who's involved and what's excluded, vs. what installs
-    // automatically and when).
-    body.appendChild(document.createElement("hr")).className = "divider";
-
-    // A manually-drawn label, not ha-form's own computeLabel for this
-    // field (see entitiesForm below, which suppresses it): direct user
-    // feedback wanted the explanatory hint to sit under this label but
-    // still above the picker itself, and ha-form always renders a field's
-    // own label and its widget as a single, inseparable unit. There's no
-    // way to slot anything in between the two while still going through
-    // the schema.
-    const excludedLabel = document.createElement("p");
-    excludedLabel.className = "field-label";
-    excludedLabel.textContent = tr.field_excluded_entities;
-    body.appendChild(excludedLabel);
-
-    const excludedHint = document.createElement("p");
-    excludedHint.className = "hint";
-    excludedHint.textContent = tr.field_excluded_entities_helper;
-    body.appendChild(excludedHint);
-
-    // Home Assistant Core/Supervisor/OS's own update entities start out as
-    // ordinary, pre-populated members of this same list (see __init__.py's
-    // own _migrate_default_excluded_entities), not a separate hard-coded
-    // exclusion -- removing one of these chips is a real, persisted
-    // choice, same as removing anything else from it.
-    const entitiesForm = document.createElement("ha-form");
-    entitiesForm.hass = this._hass;
-    entitiesForm.schema = [
-      { name: "excluded_entities", selector: { entity: { multiple: true, filter: { domain: "update" } } } },
-    ];
-    entitiesForm.data = this._formData;
-    // Label drawn manually above (excludedLabel), not here: see this
-    // section's own comment.
-    entitiesForm.computeLabel = () => "";
-    entitiesForm.computeHelper = () => "";
-    entitiesForm.addEventListener("value-changed", (e) => {
-      // `|| []`, not a bare e.detail.value.excluded_entities -- ha-form's
-      // own multiple:true selector emits null once the last chip is
-      // removed (found live, 2026-07-27), and this would otherwise save
-      // that literal null. pickKnownSettings has its own
-      // LIST_SETTINGS_FIELDS coercion too (for save_settings' own schema,
-      // which also rejects a null list outright), but that runs later, at
-      // save time -- doesn't help here, where the crash would already
-      // have happened.
-      const chosen = e.detail.value.excluded_entities || [];
-      this._formData = { ...this._formData, excluded_entities: chosen };
-      entitiesForm.data = this._formData;
-      this._scheduleAutosave();
-    });
-    body.appendChild(entitiesForm);
-
     // Same divider treatment as every other subsection boundary now
     // (direct user feedback, 2026-08-11) -- trusted voters is its own
     // concern (overriding your own rules for one person's vote), separate
-    // from the plain exclusion list above it.
+    // from the per-size rows above it. The never/always lists themselves
+    // moved to the top of this card, see this method's own opening comment.
     body.appendChild(document.createElement("hr")).className = "divider";
 
-    // Same manually-drawn label + hint pattern as excludedLabel/excludedHint
-    // above -- direct user feedback, wanting a specific person's healthy
+    // Same manually-drawn label + hint pattern the never/always auto-update
+    // rows' own modals use above -- direct user feedback, wanting a specific person's healthy
     // verdict to always trigger auto-install regardless of your own rules,
     // then asking whether more than one person could be trusted at once
     // (yes, a list,
@@ -7214,6 +7442,16 @@ class UpdateManagerPanel extends HTMLElement {
         border: 1px solid var(--ha-color-border-neutral-quiet); border-radius: 8px;
         padding-inline: var(--ha-space-4, 16px); padding-block: var(--ha-space-2, 8px);
       }
+      /* See _buildEntityListSummary's own comment: keeps "N entities" on
+         one line instead of wrapping once the row's own control slot
+         (ha-settings-row's min-width: 0) runs short on space. Targets
+         ha-button's own exposed ::part(label) directly (confirmed against
+         its real source), not a plain white-space on the host -- its
+         internal label wrapper didn't inherit that the way a plain
+         element would, confirmed live on a real narrow (mobile) viewport,
+         2026-10-10: still wrapped to "5" / "entities" with only the host
+         rule in place. */
+      .entity-list-count-btn::part(label) { white-space: nowrap; }
       .hint {
         color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px);
         line-height: 1.4; margin: 0;

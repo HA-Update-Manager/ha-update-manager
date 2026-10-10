@@ -39,6 +39,7 @@ from .const import (
     CONF_SMALL_AUTO_INSTALL,
     CONF_SMALL_WAIT_DAYS,
     CONF_TRUSTED_VOTERS,
+    CONF_WHITELISTED_ENTITIES,
     DEFAULT_WAIT_DAYS,
     DOMAIN,
     WEEKDAY_READY_OPTION_KEYS,
@@ -55,6 +56,7 @@ from .coordinator import (
     rules_from_options,
     schedule_from_options,
     trusted_voters_from_options,
+    whitelisted_entities_from_options,
 )
 from .core_blog_notes import (
     extract_blog_path,
@@ -112,7 +114,10 @@ async def async_apply_options(hass: HomeAssistant, options: dict) -> None:
     # gathering them wouldn't add real concurrency, only reorder which one
     # "wins" the lock first).
     await data.coordinator.async_update_rules(
-        rules_from_options(options), excluded_entities_from_options(options), schedule_from_options(options)
+        rules_from_options(options),
+        excluded_entities_from_options(options),
+        schedule_from_options(options),
+        whitelisted_entities_from_options(options),
     )
     data.install_manager.update_rules(auto_install_rules_from_options(options))
     data.community_verdict_manager.set_trusted_voters(trusted_voters_from_options(options))
@@ -936,6 +941,7 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
                 vol.Required(CONF_LARGE_AUTO_INSTALL): bool,
                 vol.Required(CONF_ANNOUNCE_HOURS): vol.All(vol.Coerce(int), vol.Range(min=1, max=336)),
                 vol.Required(CONF_EXCLUDED_ENTITIES): [str],
+                vol.Required(CONF_WHITELISTED_ENTITIES): [str],
                 vol.Required(CONF_HIDE_POSTPONED): bool,
                 vol.Required(CONF_SHOW_SKIPPED_UPDATES): bool,
                 vol.Required(CONF_SHOW_NOT_INSTALLABLE_UPDATES): bool,
@@ -958,6 +964,21 @@ async def _handle_save_settings(hass: HomeAssistant, connection: websocket_api.A
     entry = _get_entry(hass)
     if not entry:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
+        return
+    # "Never" and "always" contradicting each other for the same entity has
+    # no sensible resolution -- rejected outright rather than silently
+    # picking a winner, see const.py's own CONF_WHITELISTED_ENTITIES
+    # comment. The panel's own entity pickers already filter each other's
+    # picks out so this shouldn't normally be reachable through the UI
+    # (see _buildAutoInstallCard), this is the backend's own last-resort
+    # guard for anything else that might save options directly.
+    overlap = set(msg[CONF_EXCLUDED_ENTITIES]) & set(msg[CONF_WHITELISTED_ENTITIES])
+    if overlap:
+        connection.send_error(
+            msg["id"],
+            "entity_on_both_lists",
+            f"{', '.join(sorted(overlap))} can't be on both the never- and always-auto-update lists at once.",
+        )
         return
     options = {k: v for k, v in msg.items() if k not in ("type", "id")}
     hass.config_entries.async_update_entry(entry, options=options)

@@ -15,6 +15,7 @@ from .const import (
     CONF_HIDE_POSTPONED,
     CONF_LARGE_AUTO_INSTALL,
     CONF_LARGE_WAIT_DAYS,
+    CONF_WHITELISTED_ENTITIES,
     DOMAIN,
     EVENT_INSTALLED,
 )
@@ -24,6 +25,7 @@ from .coordinator import (
     rules_from_options,
     schedule_from_options,
     trusted_voters_from_options,
+    whitelisted_entities_from_options,
 )
 from .device import device_info as update_manager_device_info
 from .github_auth import GitHubAuthManager
@@ -190,7 +192,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # verdict_for_version handler, written by its vote handler.
     my_votes_manager = MyVotesManager(hass)
     coordinator = UpdateManagerCoordinator(
-        hass, rules, excluded_entities_from_options(options), community_verdict_manager, schedule_from_options(options)
+        hass,
+        rules,
+        excluded_entities_from_options(options),
+        community_verdict_manager,
+        schedule_from_options(options),
+        whitelisted_entities_from_options(options),
     )
     install_log = InstallLog(hass)
     # Constructed before InstallManager/StagingSkipManager: both take a
@@ -416,11 +423,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         # exact same apply path every other options change already does --
         # update_listener -> async_apply_options -> coordinator.async_update_rules.
         excluded = list(entry.options.get(CONF_EXCLUDED_ENTITIES, []))
+        whitelisted = list(entry.options.get(CONF_WHITELISTED_ENTITIES, []))
+        new_options = dict(entry.options)
+        changed = False
         if old_entity_id in excluded:
-            excluded = [new_entity_id if e == old_entity_id else e for e in excluded]
-            hass.config_entries.async_update_entry(
-                entry, options={**entry.options, CONF_EXCLUDED_ENTITIES: excluded}
-            )
+            new_options[CONF_EXCLUDED_ENTITIES] = [new_entity_id if e == old_entity_id else e for e in excluded]
+            changed = True
+        # Same reasoning as excluded_entities above, same rename event --
+        # whitelisted_entities lives in the exact same config-entry-options
+        # shape, added 2026-10-10.
+        if old_entity_id in whitelisted:
+            new_options[CONF_WHITELISTED_ENTITIES] = [
+                new_entity_id if e == old_entity_id else e for e in whitelisted
+            ]
+            changed = True
+        if changed:
+            hass.config_entries.async_update_entry(entry, options=new_options)
 
     @callback
     def _on_entity_registry_updated(event) -> None:

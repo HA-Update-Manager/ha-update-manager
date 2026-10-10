@@ -150,6 +150,47 @@ class TestEffectiveAutoInstallState:
             status="skipped", size_enabled=True, auto_install_excluded=False, trusted_vote="healthy"
         ) == (False, False, None)
 
+    def test_whitelisted_overrides_wait_toggle_and_trusted_vote(self):
+        # Not ready, size toggle off, and no trusted vote at all -- the
+        # whitelist override still forces both is_ready and
+        # auto_install_enabled, reason "whitelist".
+        assert announcer.effective_auto_install_state(
+            status="waiting",
+            size_enabled=False,
+            auto_install_excluded=False,
+            trusted_vote=None,
+            auto_install_whitelisted=True,
+        ) == (True, True, "whitelist")
+        # Also wins over an explicit trusted "problematic" vote, direct
+        # user feedback 2026-10-10: a standing whitelist entry is a
+        # stronger signal than any vote about one specific version.
+        assert announcer.effective_auto_install_state(
+            status="waiting",
+            size_enabled=False,
+            auto_install_excluded=False,
+            trusted_vote=None,
+            community_problematic_count=5,
+            auto_install_whitelisted=True,
+        ) == (True, True, "whitelist")
+
+    def test_auto_install_excluded_wins_over_whitelist(self):
+        assert announcer.effective_auto_install_state(
+            status="ready",
+            size_enabled=True,
+            auto_install_excluded=True,
+            trusted_vote=None,
+            auto_install_whitelisted=True,
+        ) == (True, False, None)
+
+    def test_explicit_skip_wins_over_whitelist(self):
+        assert announcer.effective_auto_install_state(
+            status="skipped",
+            size_enabled=True,
+            auto_install_excluded=False,
+            trusted_vote=None,
+            auto_install_whitelisted=True,
+        ) == (False, False, None)
+
 
 class TestNeedsManualAction:
     RULES_ALL_ENABLED = announcer.AutoInstallRules(
@@ -261,6 +302,21 @@ class TestNeedsManualAction:
             is True
         )
 
+    def test_whitelisted_is_not_manual_even_with_rules_disabled(self):
+        assert (
+            announcer.needs_manual_action(
+                status="ready",
+                version_size="small",
+                auto_install_excluded=False,
+                trusted_vote=None,
+                community_problematic_count=0,
+                rules=self.RULES_ALL_DISABLED,
+                master_enabled=True,
+                auto_install_whitelisted=True,
+            )
+            is False
+        )
+
 
 class TestDecideAction:
     def test_not_ready_with_no_existing_announcement_does_nothing(self):
@@ -307,6 +363,36 @@ class TestDecideAction:
             now=NOW, announce_wait=WAIT,
         )
         assert action == "announce"
+
+    def test_instant_executes_directly_without_ever_announcing(self):
+        # The whitelist case (see effective_auto_install_state's own
+        # auto_install_whitelisted) -- no countdown, straight to "execute"
+        # even though no announcement ever existed.
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=None, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT, instant=True,
+        )
+        assert action == "execute"
+
+    def test_instant_still_respects_not_ready_or_disabled(self):
+        action = announcer.decide_action(
+            is_ready=False, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=None, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT, instant=True,
+        )
+        assert action == "none"
+
+    def test_instant_still_respects_an_explicit_cancellation(self):
+        # A direct cancel_scheduled_install call for this exact version
+        # still outranks the standing whitelist override -- same "direct
+        # action beats indirect setting" precedent as everywhere else.
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=None, cancelled_to_version="2.0.0", current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT, instant=True,
+        )
+        assert action == "none"
 
     def test_existing_announcement_not_yet_due_does_nothing(self):
         action = announcer.decide_action(

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from .semver import Size
 
 AnnouncementAction = Literal["none", "announce", "execute", "remove"]
-AutoInstallReason = Literal["rules", "trusted_voter"]
+AutoInstallReason = Literal["rules", "trusted_voter", "whitelist"]
 
 
 class AutoInstallRules(NamedTuple):
@@ -62,31 +62,47 @@ def effective_auto_install_state(
     auto_install_excluded: bool,
     trusted_vote: str | None,
     community_problematic_count: int = 0,
+    auto_install_whitelisted: bool = False,
 ) -> tuple[bool, bool, AutoInstallReason | None]:
-    """(is_ready, auto_install_enabled, reason) after folding in (a) a
-    trusted voter's already-aggregated verdict for this exact pending
-    version, if any (see community_verdict.py's own async_get_verdict for
-    how a list of trusted usernames' individual votes becomes this single
-    value -- this function only ever sees the result, never the raw list),
-    and (b) the wider crowd's own raw problematic count. Direct user
-    feedback, 2026-07-23 ("installeer altijd automatisch als [klaptafel]
-    een update als healthy heeft beoordeeld, ongeacht mijn eigen rules" ->
-    confirmed symmetric while planning: a trusted "problematic" verdict
-    blocks just as firmly).
+    """(is_ready, auto_install_enabled, reason) after folding in (a)
+    auto_install_whitelisted, the standing "always auto-update" override
+    (see CONF_WHITELISTED_ENTITIES's own comment), (b) a trusted voter's
+    already-aggregated verdict for this exact pending version, if any (see
+    community_verdict.py's own async_get_verdict for how a list of trusted
+    usernames' individual votes becomes this single value -- this function
+    only ever sees the result, never the raw list), and (c) the wider
+    crowd's own raw problematic count. Direct user feedback, 2026-07-23
+    ("installeer altijd automatisch als [klaptafel] een update als healthy
+    heeft beoordeeld, ongeacht mijn eigen rules" -> confirmed symmetric
+    while planning: a trusted "problematic" verdict blocks just as firmly).
 
     auto_install_excluded (Core/Supervisor/OS, plus anything the user
     explicitly excluded) is a hard, unconditional gate either way -- a
-    trusted "healthy" vote never reaches past it, exactly like the size
-    toggle never does today. So is an explicit user skip (status ==
-    "skipped"): found by review, a bare trusted-healthy override that
-    ignored status entirely would silently un-skip a version the user
-    deliberately told Home Assistant to skip via update.skip, the moment
-    someone they trust rated it healthy -- a direct, deliberate user action
-    outranks an indirect trust setting, same reasoning as
-    auto_install_excluded. `installable` isn't a parameter here at all:
-    that's still install_manager.py's own separate, always-applies gate
-    (announcer.py has never known about it, decide_action takes it as its
-    own argument), unaffected by any of this.
+    trusted "healthy" vote (or the whitelist override below) never reaches
+    past it, exactly like the size toggle never does today. So is an
+    explicit user skip (status == "skipped"): found by review, a bare
+    trusted-healthy override that ignored status entirely would silently
+    un-skip a version the user deliberately told Home Assistant to skip via
+    update.skip, the moment someone they trust rated it healthy -- a
+    direct, deliberate user action outranks an indirect trust setting, same
+    reasoning as auto_install_excluded. An entity can never be both
+    excluded and whitelisted at once (see CONF_WHITELISTED_ENTITIES's own
+    comment), so there's no ordering question between those two to resolve
+    here -- only ever one or the other, or neither. `installable` isn't a
+    parameter here at all: that's still install_manager.py's own separate,
+    always-applies gate (announcer.py has never known about it,
+    decide_action takes it as its own argument), unaffected by any of this.
+
+    auto_install_whitelisted is checked next, before the trusted-vote logic
+    below: direct user feedback, 2026-10-10, confirming it should outrank a
+    trusted voter's own judgement too, not just the size toggle and the
+    wait -- it's a standing, deliberately configured override for this
+    exact entity, a stronger signal than a vote about a version. Forces
+    both is_ready and auto_install_enabled True unconditionally, skipping
+    size_enabled/trusted_vote/community_problematic_count entirely: the
+    whole point (see issue #10) is installing the instant something is
+    available, not merely winning the size toggle the way a trusted-healthy
+    vote does.
 
     A trusted "healthy" vote overrides *both* the size-based toggle and the
     staging wait period (`is_ready`) for anything else -- the whole point of
@@ -111,10 +127,13 @@ def effective_auto_install_state(
     aggregate community_problematic_count, so that case no longer needs its
     own separate branch. Neither this nor the trusted-healthy override
     changes how decide_action itself sequences announce/execute -- only
-    what feeds into it."""
+    what feeds into it (whitelist is the one exception, see
+    decide_action's own `instant` parameter)."""
     is_ready = status == "ready"
     if auto_install_excluded or status == "skipped":
         return is_ready, False, None
+    if auto_install_whitelisted:
+        return True, True, "whitelist"
     if trusted_vote == "healthy":
         return True, True, "trusted_voter"
     if community_problematic_count > 0:
@@ -131,6 +150,7 @@ def needs_manual_action(
     community_problematic_count: int,
     rules: AutoInstallRules,
     master_enabled: bool,
+    auto_install_whitelisted: bool = False,
 ) -> bool:
     """True for a "ready" update that won't be auto-installed -- the exact
     set install_manager.py's own periodic tick otherwise leaves for a
@@ -159,6 +179,7 @@ def needs_manual_action(
         auto_install_excluded=auto_install_excluded,
         trusted_vote=trusted_vote,
         community_problematic_count=community_problematic_count,
+        auto_install_whitelisted=auto_install_whitelisted,
     )
     return not (auto_install_enabled and master_enabled)
 
@@ -181,6 +202,7 @@ def decide_action(
     current_to_version: str,
     now: datetime,
     announce_wait: timedelta,
+    instant: bool = False,
 ) -> AnnouncementAction:
     """What should happen right now to this entity's pending-install
     announcement?
@@ -203,6 +225,20 @@ def decide_action(
     users in one sentence. Total time from "available" to "installed" is
     now plainly uitsteltermijn + aankondigingstermijn, matching what a user
     reading those two settings would expect.
+
+    `instant` (True only for a whitelisted entity, see
+    effective_auto_install_state's own `auto_install_whitelisted`) is the
+    one deliberate exception to that sequencing: skips straight to
+    "execute" once ready/enabled/installable and not explicitly cancelled,
+    never creating an announcement at all (no countdown, no persistent
+    notification, nothing to cancel) -- the entire point of naming an
+    entity "always auto-update" is installing it the instant it's
+    available, not a shorter wait. Checked after the cancellation check
+    below, not before: an explicit cancel_scheduled_install call for this
+    exact version is a direct, deliberate action on this one jump, and
+    still outranks the standing whitelist override, same "direct action
+    beats indirect setting" precedent as auto_install_excluded elsewhere in
+    this module.
 
     master_enabled (the global pause switch, const.py's CONF_ENABLED) is
     deliberately its own parameter, not folded into auto_install_enabled --
@@ -228,6 +264,9 @@ def decide_action(
         # quiet unless/until a newer version appears (a different
         # to_version no longer matches the cancelled one).
         return "remove" if existing is not None else "none"
+
+    if instant:
+        return "execute"
 
     if existing is None:
         return "announce"

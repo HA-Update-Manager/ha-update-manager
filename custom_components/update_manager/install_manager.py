@@ -462,6 +462,7 @@ class InstallManager:
                 auto_install_excluded=cached["auto_install_excluded"],
                 trusted_vote=cached.get("trusted_vote"),
                 community_problematic_count=(cached.get("community_verdict") or {}).get("problematic_count", 0),
+                auto_install_whitelisted=cached.get("auto_install_whitelisted", False),
             )
             trusted_voter_usernames = cached.get("trusted_voters_matched", []) if reason == "trusted_voter" else []
         else:
@@ -477,6 +478,12 @@ class InstallManager:
             current_to_version=current_to_version,
             now=now,
             announce_wait=self._rules.announce_wait,
+            # Reason is only ever "whitelist" when effective_auto_install_state
+            # itself forced it (see that function's own auto_install_excluded/
+            # skip precedence) -- reusing it here instead of re-reading
+            # cached["auto_install_whitelisted"] a second time keeps this in
+            # sync with whichever of the two actually decided eligibility.
+            instant=reason == "whitelist",
         )
 
         if action == "announce":

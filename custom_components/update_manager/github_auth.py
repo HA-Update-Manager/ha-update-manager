@@ -110,6 +110,21 @@ class GitHubAuthManager:
         # (or just-finished) linking attempt, reset to "idle" on every
         # fresh async_start_device_flow call.
         self._link_status: LinkStatus = "idle"
+        # Serializes the actual refresh call in async_get_valid_access_token
+        # below -- found live, 2026-10-09, direct user feedback ("af en toe
+        # moet ik opnieuw linken, dat kan niet aan inactiviteit liggen"):
+        # both tokens rotate on every refresh (see this module's own
+        # docstring), so two callers racing to refresh at the same moment
+        # (e.g. a vote being submitted while get_release_notes also needs a
+        # token) both read the same, still-current refresh_token, but only
+        # whichever one's request GitHub processes first actually succeeds
+        # -- the other gets a real "bad_refresh_token"-style error back for
+        # a token that was perfectly valid a moment ago, counted as a
+        # genuine refresh failure (_MIN_CONSECUTIVE_REFRESH_FAILURES) even
+        # though nothing was actually wrong with the link. A second caller
+        # now waits for whichever refresh is already in flight and reuses
+        # its result instead of starting a competing one.
+        self._refresh_lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         self._data = await self._store.async_load() or {}
@@ -250,6 +265,17 @@ class GitHubAuthManager:
             _LOGGER.debug("Couldn't fetch the linked GitHub username", exc_info=True)
             return None
 
+    def _valid_cached_token(self) -> str | None:
+        """self._data's own access_token, but only if it isn't due to
+        expire within _EXPIRY_SAFETY_MARGIN -- shared between
+        async_get_valid_access_token's own fast path (before ever touching
+        self._refresh_lock) and its post-lock re-check (another caller may
+        have already refreshed while this one was waiting for the lock)."""
+        expires_at = dt_util.parse_datetime(self._data.get("access_token_expires_at", ""))
+        if expires_at is not None and dt_util.utcnow() < expires_at - _EXPIRY_SAFETY_MARGIN:
+            return self._data["access_token"]
+        return None
+
     async def async_get_valid_access_token(self) -> str | None:
         """A valid access token, refreshing first if needed, or None if
         there's no way to get one right now (never linked, or the refresh
@@ -265,15 +291,27 @@ class GitHubAuthManager:
         if not self.is_linked:
             return None
 
-        expires_at = dt_util.parse_datetime(self._data.get("access_token_expires_at", ""))
-        if expires_at is not None and dt_util.utcnow() < expires_at - _EXPIRY_SAFETY_MARGIN:
-            return self._data["access_token"]
+        token = self._valid_cached_token()
+        if token is not None:
+            return token
 
-        refresh_expires_at = dt_util.parse_datetime(self._data.get("refresh_token_expires_at", ""))
-        if refresh_expires_at is not None and dt_util.utcnow() >= refresh_expires_at:
-            await self._async_mark_broken()
-            return None
+        async with self._refresh_lock:
+            # Re-check: whoever held the lock just before us may have
+            # already refreshed while we were waiting for it -- see
+            # self._refresh_lock's own comment in __init__ for why this
+            # lock exists at all.
+            token = self._valid_cached_token()
+            if token is not None:
+                return token
 
+            refresh_expires_at = dt_util.parse_datetime(self._data.get("refresh_token_expires_at", ""))
+            if refresh_expires_at is not None and dt_util.utcnow() >= refresh_expires_at:
+                await self._async_mark_broken()
+                return None
+
+            return await self._async_refresh_token()
+
+    async def _async_refresh_token(self) -> str | None:
         session = async_get_clientsession(self.hass)
         try:
             async with session.post(

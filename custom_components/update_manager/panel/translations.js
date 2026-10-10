@@ -146,9 +146,20 @@ export const TRANSLATIONS = {
     // used elsewhere in this file (e.g. the history entry's
     // "from → to ⋅ when" line) to combine two independent facts.
     always_manual_suffix: " ⋅ Always manual",
-    field_excluded_entities: "Always manual",
+    field_excluded_entities: "Never auto-update",
+    // "your other auto-update settings", not "what's configured above" --
+    // this same string doubles as both the Settings-page row's own
+    // description AND the modal's (_openEntityListModal), which has
+    // nothing "above" it at all. Direct user feedback, 2026-10-10.
     field_excluded_entities_helper:
-      "Still shown normally in Updates and History. Update Manager just never auto-installs these, regardless of what's configured above.",
+      "Still shown normally in Updates and History. Update Manager just never auto-installs these, regardless of your other auto-update settings.",
+    // Answers issue #10's own "instant-install allow list" request, direct
+    // user feedback, 2026-10-10.
+    field_whitelisted_entities: "Always auto-update",
+    field_whitelisted_entities_helper:
+      "Installs the instant a new version is available, skipping the wait and the community vote check entirely, regardless of your other auto-update settings.",
+    entity_list_configured_count: (count) => (count === 1 ? "1 entity" : `${count} entities`),
+    close: "Close",
     field_wait_days_unit: "days",
     field_auto_install: "Update automatically",
     auto_install_section_title: "Auto-update",
@@ -271,6 +282,7 @@ export const TRANSLATIONS = {
     dialog_history_method_external: "External",
     dialog_history_method_rules: "Automatic, your own rules",
     dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
+    dialog_history_method_whitelist: "Automatic, always auto-update list",
     dialog_history_backup_label: "Backup",
     dialog_history_backup_yes: "Taken before installing",
     dialog_history_backup_no: "Not supported by this entity",
@@ -345,6 +357,12 @@ export const TRANSLATIONS = {
     group_waiting: "Postponed",
     group_blocked: "Discouraged",
     update_all: "Update all",
+    // Postponed group's own header button (see _markAllReadyInGroup) --
+    // same effect as the per-entity "Ready" button in the dialog
+    // (dialog_force_ready above), just applied to every postponed update
+    // at once, direct user feedback, 2026-10-10.
+    mark_all_ready: "Mark all ready",
+    mark_all_ready_started_toast: (count) => (count === 1 ? "Marking 1 update ready…" : `Marking ${count} updates ready…`),
     // The "Installing" section's own title (see _buildInstallingCard) --
     // everything currently installing or held back (the tier gate or the
     // Zigbee model gate, both server-side in rollout_manager.py), pulled
@@ -524,9 +542,14 @@ export const TRANSLATIONS = {
     status_installing: "Bezig met installeren…",
     status_pending_install: (when) => `Wordt automatisch geüpdatet ${when}`,
     always_manual_suffix: " ⋅ Altijd handmatig",
-    field_excluded_entities: "Altijd handmatig",
+    field_excluded_entities: "Nooit automatisch updaten",
     field_excluded_entities_helper:
-      "Blijven gewoon zichtbaar bij Updates en Historie. Update Manager installeert ze alleen nooit automatisch, ongeacht wat je hierboven instelt.",
+      "Blijven gewoon zichtbaar bij Updates en Historie. Update Manager installeert ze alleen nooit automatisch, ongeacht je overige auto-update-instellingen.",
+    field_whitelisted_entities: "Altijd automatisch updaten",
+    field_whitelisted_entities_helper:
+      "Installeert direct zodra er een nieuwe versie beschikbaar is, en slaat daarbij de wachttijd en de community-stemcontrole helemaal over, ongeacht je overige auto-update-instellingen.",
+    entity_list_configured_count: (count) => (count === 1 ? "1 entiteit" : `${count} entiteiten`),
+    close: "Sluiten",
     field_wait_days_unit: "dagen",
     field_auto_install: "Automatisch updaten",
     auto_install_section_title: "Auto-update",
@@ -595,6 +618,7 @@ export const TRANSLATIONS = {
     dialog_history_method_external: "Extern",
     dialog_history_method_rules: "Automatisch, je eigen regels",
     dialog_history_method_trusted: (names) => `Automatisch, vertrouwde stem van ${names}`,
+    dialog_history_method_whitelist: "Automatisch, altijd-updaten-lijst",
     dialog_history_backup_label: "Back-up",
     dialog_history_backup_yes: "Gemaakt voor het installeren",
     dialog_history_backup_no: "Niet ondersteund door deze entiteit",
@@ -639,6 +663,9 @@ export const TRANSLATIONS = {
     group_waiting: "Uitgesteld",
     group_blocked: "Afgeraden",
     update_all: "Alles updaten",
+    mark_all_ready: "Alles klaar markeren",
+    mark_all_ready_started_toast: (count) =>
+      count === 1 ? "1 update wordt klaar gemarkeerd…" : `${count} updates worden klaar gemarkeerd…`,
     installing_section_title: "Bezig met installeren",
     tier_waiting_text: "Wacht tot andere updates eerst klaar zijn",
     stuck_waiting_text: (duration) => `Installeert al ${duration}, langer dan gebruikelijk`,
