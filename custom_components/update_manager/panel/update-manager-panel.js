@@ -7781,6 +7781,16 @@ class UpdateManagerPanel extends HTMLElement {
       .community-reason-item .dialog-community-verdict-line {
         font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color);
       }
+      /* Inside a timeline step, match .step-detail-icon's smaller icon/gap
+         instead of this rule's own bigger one (tuned for the standalone
+         Community section) -- found live, 2026-10-17, direct user feedback. */
+      .step-content .community-reason-item .dialog-community-verdict-line {
+        gap: var(--ha-space-1, 4px);
+      }
+      .step-content .community-reason-item .dialog-community-verdict-line ha-svg-icon {
+        --mdc-icon-size: 16px;
+      }
+      .step-content .community-reason-item > .hint { margin-left: 20px; }
       .dialog-vote { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ha-space-2, 8px); }
       .dialog-vote > div { width: 100%; }
       /* :not(:first-child), not an unconditional margin-top -- found live,

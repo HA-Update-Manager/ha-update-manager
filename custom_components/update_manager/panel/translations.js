@@ -193,7 +193,7 @@ export const TRANSLATIONS = {
     // Pointer to the Community section further down this same dialog, not
     // a restatement of it -- shown on the Auto-install step whenever
     // heldBackByCommunity is true.
-    dialog_timeline_held_back_pointer: "Held back by the community verdict below.",
+    dialog_timeline_held_back_pointer: "Held back by the community verdict.",
     dialog_community_verdict_disclaimer:
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
     // Also the "nothing at all" row of the Community section's own fact
@@ -578,7 +578,7 @@ export const TRANSLATIONS = {
     announce_hours_helper: "Hoelang je nog hebt om een geplande automatische installatie te annuleren.",
     dialog_timeline_update_available: "Update beschikbaar",
     dialog_timeline_auto_install: "Auto-install",
-    dialog_timeline_held_back_pointer: "Tegengehouden door het communityoordeel hieronder.",
+    dialog_timeline_held_back_pointer: "Tegengehouden door het communityoordeel.",
     dialog_community_verdict_disclaimer:
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
     community_not_yet_rated: "Niemand heeft nog iets over deze sprong gemeld.",
