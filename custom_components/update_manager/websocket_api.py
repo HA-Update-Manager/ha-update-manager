@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
@@ -1223,6 +1224,21 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     )
 
 
+def _validate_web_url(value: str) -> str:
+    """Rejects anything but a real http(s) URL -- a vote's own link ends up
+    rendered as a clickable anchor for every Update Manager user who later
+    looks at this exact version jump, on every instance, via community-
+    votes (confirmed real, 2026-10-18, hacs/default PR review): a
+    javascript: (or other) scheme here is stored-XSS against all of them,
+    not just a mistake by whoever voted. The panel's own buildReasonItem
+    already refuses to render anything but http(s) as a link either way,
+    this closes the same hole from the submitting side too, matching
+    community-votes' own process-vote.yml validation on its end."""
+    if urlsplit(value).scheme not in ("http", "https"):
+        raise vol.Invalid("link must be an http or https URL")
+    return value
+
+
 @websocket_api.require_admin
 @websocket_api.async_response
 @websocket_api.websocket_command(
@@ -1237,7 +1253,7 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
         vol.Required("verdict"): vol.In(["healthy", "problematic"]),
         vol.Optional("reason_category"): vol.In(REASON_CATEGORIES),
         vol.Optional("notes"): str,
-        vol.Optional("link"): str,
+        vol.Optional("link"): vol.All(str, _validate_web_url),
     }
 )
 async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:

@@ -707,12 +707,32 @@ function buildReasonItem(tr, reason, { trusted } = {}) {
   if (reason.link) {
     const linkRow = document.createElement("p");
     linkRow.className = "hint";
-    const link = document.createElement("a");
-    link.href = reason.link;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    link.textContent = reason.link;
-    linkRow.appendChild(link);
+    // reason.link is whatever the "Issue or changelog link" field on a
+    // community-votes vote issue contained, copied verbatim by that repo's
+    // own process-vote.yml -- anyone who can open an issue there controls
+    // this value, same as update_manager/vote's own `link` field anyone
+    // with admin access to this instance controls. A bare `link.href =
+    // reason.link` rendered it as a real, clickable anchor regardless of
+    // scheme, including javascript: -- confirmed real, 2026-10-18, hacs/
+    // default PR review (frenck). Only ever rendered as a link when it
+    // actually parses as http(s); shown as plain, inert text otherwise, so
+    // the value is still visible without being clickable.
+    let isWebUrl = false;
+    try {
+      isWebUrl = ["http:", "https:"].includes(new URL(reason.link).protocol);
+    } catch {
+      isWebUrl = false;
+    }
+    if (isWebUrl) {
+      const link = document.createElement("a");
+      link.href = reason.link;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = reason.link;
+      linkRow.appendChild(link);
+    } else {
+      linkRow.textContent = reason.link;
+    }
     item.appendChild(linkRow);
   }
   return item;
