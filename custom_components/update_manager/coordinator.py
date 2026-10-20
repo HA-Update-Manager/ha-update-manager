@@ -955,10 +955,35 @@ class UpdateManagerCoordinator:
             # would answer differently, skip it rather than re-querying.
             return
 
-        self.hass.async_create_task(self._async_handle_changed(entity_id))
+        # An entity's very first state this session (old_state is None),
+        # seen within the startup grace window, is almost certainly the
+        # startup sweep's own blind spot, not a genuinely live transition --
+        # confirmed live, 2026-10-20 (direct user feedback, a Core update
+        # "not always" making it into History): async_start's own sweep
+        # only iterates hass.states.async_entity_ids("update") as it exists
+        # at that one instant; an update entity the built-in `update`
+        # platform hasn't registered yet at that exact moment (setup order
+        # isn't guaranteed relative to this integration's own
+        # coordinator.async_start) is simply absent from that snapshot,
+        # with nothing to catch it until its own first live state_changed
+        # event fires here instead. That event used to always flow through
+        # as retroactive=False (the default, correct for a *genuinely* live
+        # change on an entity already being tracked), landing in
+        # __init__.py's own _on_install with no was_manually_requested/
+        # context.user_id left to go on (both wiped by the same restart),
+        # falling through to the same unsafe "External" guess the startup
+        # sweep's own follow-up call was already fixed for (2026-10-09) --
+        # this is the third, until-now-unpatched entry point into the same
+        # underlying gap, not a new one. Outside the grace window, or for
+        # an entity genuinely new (never tracked before, so no persisted
+        # baseline to even compare against), this is False exactly like
+        # before, so a real plain reload (2026-08-25's own fix: _started_at
+        # is only armed for a genuine restart to begin with) is unaffected.
+        retroactive = old_state is None and self._within_startup_grace()
+        self.hass.async_create_task(self._async_handle_changed(entity_id, retroactive=retroactive))
 
-    async def _async_handle_changed(self, entity_id: str) -> None:
-        await self._async_refresh_one(entity_id)
+    async def _async_handle_changed(self, entity_id: str, *, retroactive: bool = False) -> None:
+        await self._async_refresh_one(entity_id, retroactive=retroactive)
         self._fire_listeners()
 
     async def async_refresh_one(self, entity_id: str) -> None:
