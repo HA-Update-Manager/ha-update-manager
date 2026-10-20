@@ -1,5 +1,5 @@
 [![Made for Home Assistant](https://img.shields.io/badge/Made%20for-Home%20Assistant-blue?style=for-the-badge&logo=homeassistant)](https://www.home-assistant.io/)
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
+[![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
 
 # Update Manager: Home Assistant helper integration
 
@@ -40,13 +40,13 @@ auto-install and most of that becomes something you never have to think about ag
 
 ## Installation
 
-This integration isn't in the HACS default store yet, so add it as a custom repository.
+This integration is available via [HACS](https://hacs.xyz/).
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=HA-Update-Manager&repository=ha-update-manager&category=integration)
 
-1. In HACS, add `https://github.com/HA-Update-Manager/ha-update-manager` as a custom repository
-   (category: Integration).
-2. Install "Update Manager" and restart Home Assistant.
+1. Go to HACS in your Home Assistant.
+2. Search for "Update Manager" and download it.
+3. Restart Home Assistant.
 
 ---
 
