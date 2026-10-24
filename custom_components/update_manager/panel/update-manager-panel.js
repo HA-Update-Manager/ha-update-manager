@@ -369,11 +369,13 @@ function compareUpdates(a, b, settings) {
   if (pa !== pb) return pa - pb;
 
   // Within "ready": an entity already counting down to a real scheduled
-  // auto-install (pending_install) sorts soonest-execute_at-first among
-  // others like it, ahead of "ready" entities with nothing scheduled yet --
-  // direct user feedback, 2026-07-27: within "ready to update", scheduled
-  // automatic updates were expected to sort soonest-first. Plain ready entities (no pending_install) keep the
-  // existing oldest-available-first order below.
+  // auto-install (pending_install -- a failure-driven retry is one too,
+  // see install_manager.py's own handle_install_failure) sorts
+  // soonest-execute_at-first among others like it, ahead of "ready"
+  // entities with nothing scheduled yet -- direct user feedback,
+  // 2026-07-27: within "ready to update", scheduled automatic updates were
+  // expected to sort soonest-first. Plain ready entities (no pending_install)
+  // keep the existing oldest-available-first order below.
   if (a.status === "ready" && b.status === "ready") {
     const aScheduled = a.pending_install != null;
     const bScheduled = b.pending_install != null;

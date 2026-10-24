@@ -394,6 +394,34 @@ class TestDecideAction:
         )
         assert action == "none"
 
+    def test_instant_respects_a_failure_backoff_record_instead_of_reexecuting(self):
+        # install_manager.py's own backoff after a hard failure writes a
+        # real PendingAnnouncement into self._pending even for an
+        # otherwise-instant (whitelisted) entity, see handle_install_
+        # failure -- existing takes priority over instant once that
+        # exists, so a retry respects its own backoff instead of
+        # instant-executing again on the very next tick.
+        backoff = announcer.PendingAnnouncement(
+            entity_id="update.thing", to_version="2.0.0", announced_at=NOW, execute_at=NOW + timedelta(minutes=5)
+        )
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=backoff, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT, instant=True,
+        )
+        assert action == "none"
+
+    def test_instant_executes_once_its_own_backoff_record_is_due(self):
+        backoff = announcer.PendingAnnouncement(
+            entity_id="update.thing", to_version="2.0.0", announced_at=NOW, execute_at=NOW - timedelta(seconds=1)
+        )
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=backoff, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT, instant=True,
+        )
+        assert action == "execute"
+
     def test_existing_announcement_not_yet_due_does_nothing(self):
         action = announcer.decide_action(
             is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,

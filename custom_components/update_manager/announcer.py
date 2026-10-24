@@ -228,17 +228,19 @@ def decide_action(
 
     `instant` (True only for a whitelisted entity, see
     effective_auto_install_state's own `auto_install_whitelisted`) is the
-    one deliberate exception to that sequencing: skips straight to
-    "execute" once ready/enabled/installable and not explicitly cancelled,
-    never creating an announcement at all (no countdown, no persistent
-    notification, nothing to cancel) -- the entire point of naming an
-    entity "always auto-update" is installing it the instant it's
-    available, not a shorter wait. Checked after the cancellation check
-    below, not before: an explicit cancel_scheduled_install call for this
-    exact version is a direct, deliberate action on this one jump, and
-    still outranks the standing whitelist override, same "direct action
-    beats indirect setting" precedent as auto_install_excluded elsewhere in
-    this module.
+    one deliberate exception to the normal announce-then-wait sequencing:
+    skips straight to "execute" once ready/enabled/installable and not
+    explicitly cancelled, with no announcement to begin with -- the entire
+    point of naming an entity "always auto-update" is installing it the
+    instant it's available, not a shorter wait. Checked after the
+    cancellation check above, and only once `existing is None`: a direct
+    cancel_scheduled_install call for this exact version still outranks the
+    standing whitelist override (same "direct action beats indirect
+    setting" precedent as auto_install_excluded elsewhere in this module),
+    and `existing` (see below) takes priority whenever install_manager.py's
+    own backoff after a hard failure already put a record there -- a
+    whitelisted entity backs off exactly like a normal one once it's
+    actually failed once, it just never announces *before* a first attempt.
 
     master_enabled (the global pause switch, const.py's CONF_ENABLED) is
     deliberately its own parameter, not folded into auto_install_enabled --
@@ -265,23 +267,29 @@ def decide_action(
         # to_version no longer matches the cancelled one).
         return "remove" if existing is not None else "none"
 
+    # existing (a real PendingAnnouncement) governs regardless of instant
+    # once one exists -- install_manager.py's own backoff after a hard
+    # failure writes one here even for an otherwise-instant entity (see
+    # handle_install_failure), reusing this exact same mechanism instead of
+    # a second, parallel notion of "scheduled" the rest of this module (and
+    # every caller/consumer of PendingAnnouncement) would need to know
+    # about too. Checked before instant below, not after: this is what
+    # lets a failed whitelisted entity's retry respect its own backoff
+    # instead of instant-executing again on the very next tick.
+    if existing is not None:
+        if existing.to_version != current_to_version:
+            # The pending update changed underneath the existing
+            # announcement (e.g. a newer version appeared before the old
+            # one was installed) -- clear it rather than firing on stale
+            # data; a fresh "announce"/instant-"execute" follows once this
+            # same check runs again with existing=None.
+            return "remove"
+        return "execute" if now >= existing.execute_at else "none"
+
     if instant:
         return "execute"
 
-    if existing is None:
-        return "announce"
-
-    if existing.to_version != current_to_version:
-        # The pending update changed underneath the existing announcement
-        # (e.g. a newer version appeared before the old one was installed)
-        # -- clear it rather than firing on stale data; a fresh "announce"
-        # follows once this same check runs again with existing=None.
-        return "remove"
-
-    if now >= existing.execute_at:
-        return "execute"
-
-    return "none"
+    return "announce"
 
 
 def start_announcement(

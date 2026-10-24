@@ -3,7 +3,11 @@ auto-install announcements (Store, survives restarts), runs a periodic
 check, actually calls `update.install` (with `backup=True` when the entity
 supports it) once an announcement's wait elapses uncancelled, and shows/
 clears a `persistent_notification` -- deliberately not a Repair issue: this
-isn't a problem to fix, just an announcement.
+isn't a problem to fix, just an announcement. A hard install failure is a
+problem, though: handle_install_failure below schedules a backoff retry
+using this exact same pending-announcement mechanism (so the rest of the
+system never has to tell the two apart), but also raises a real Repair
+issue for it, on top of the notification.
 """
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ from typing import Any
 from homeassistant.components import persistent_notification
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -89,6 +94,37 @@ _NOTIFICATION_STRINGS = {
         "item": "* **{name}** naar versie {to_version}, op {when}",
     },
 }
+
+# Escalating cooldown after a hard install failure (an exception from
+# `update.install` itself, e.g. a download error -- distinct from
+# rollout_manager.py's own "stuck" case, an install that started normally
+# and simply never finished), direct user feedback 2026-10-24: a known HACS-
+# wide download bug (see STANDARDS.md) made this visible live, 140 identical
+# failed attempts in one day, every 5 minutes with no backoff at all. Each
+# failed attempt on an already-installed repository also makes HACS itself
+# do a real backup-restore cycle on disk before raising -- the actual cost
+# worth backing off for, not the network request itself (confirmed against
+# HACS's own async_install_repository). Capped at an hour, not longer: once
+# whatever's actually broken (upstream, or this specific device) gets fixed,
+# this should still notice reasonably soon, not sit quiet for a day.
+#
+# Represented as a perfectly normal PendingAnnouncement in self._pending
+# (see handle_install_failure below), not a separate, parallel notion of
+# "scheduled" -- direct user feedback, 2026-10-24: a retry after a failure
+# should be indistinguishable from any other auto-install everywhere it's
+# shown (the list badge, status text, sort order, the detail dialog's own
+# timeline, Cancel), not a special case the frontend (or announcer.py, see
+# its own decide_action) needs to separately know about. self._failure_
+# counts below is the one piece of bookkeeping that genuinely can't live in
+# PendingAnnouncement itself: how many consecutive failures this is, purely
+# to pick the right backoff tier and word the Repair issue below.
+_FAILURE_BACKOFF_SCHEDULE = (timedelta(minutes=5), timedelta(minutes=15), timedelta(hours=1))
+FAILED_ISSUE_ID_PREFIX = "install_failed_"
+
+
+def failed_issue_id(entity_id: str) -> str:
+    return f"{FAILED_ISSUE_ID_PREFIX}{entity_id}"
+
 
 _FAILED_NOTIFICATION_ID = f"{DOMAIN}_failed_installs"
 
@@ -182,6 +218,16 @@ class InstallManager:
         # self._recently_executed above; a failure from a previous run
         # isn't worth resurfacing after a restart.
         self._failed: dict[str, str] = {}
+        # entity_id -> (to_version, consecutive failure count) for picking
+        # the right _FAILURE_BACKOFF_SCHEDULE tier and wording the Repair
+        # issue -- same "not persisted, meaningful only for a live process"
+        # reasoning as self._failed above. The actual next-retry *time* this
+        # drives lives in self._pending instead (a real PendingAnnouncement,
+        # see handle_install_failure), which *is* persisted, same as any
+        # other scheduled auto-install -- only the consecutive-count
+        # bookkeeping itself resets after a restart, not the retry time a
+        # user is actually shown.
+        self._failure_counts: dict[str, tuple[str, int]] = {}
         # Serializes every _async_tick pass against every other one: same
         # fix, and same underlying race, as staging_skip.py's own StagingSkipManager
         # lock (see its docstring for the full incident this closes). _on_recompute
@@ -343,6 +389,12 @@ class InstallManager:
         relabel_key(self._recently_executed, old_entity_id, new_entity_id)
         if relabel_key(self._failed, old_entity_id, new_entity_id) is not None:
             self._refresh_failed_notification()
+        relabel_key(self._failure_counts, old_entity_id, new_entity_id)
+        # The old entity's Repair issue (if any) is deleted outright, not
+        # relabeled -- same precedent as rollout_manager.py's own stuck-
+        # issue handling: the next failure simply recreates a fresh one
+        # under the new entity_id if this is still happening.
+        ir.async_delete_issue(self.hass, DOMAIN, failed_issue_id(old_entity_id))
 
     async def _async_tick(self, now: datetime) -> None:
         # Every entity the coordinator currently tracks, plus any entity
@@ -391,7 +443,7 @@ class InstallManager:
         # harmless no-op if there was nothing to clear).
         state = self.hass.states.get(entity_id)
         if state is not None and state.attributes.get("in_progress"):
-            self._clear_failed(entity_id)
+            self._clear_failure_state(entity_id)
 
         if entity_id in self._recently_executed:
             # An install is still in flight for this entity (dispatched by
@@ -677,11 +729,11 @@ class InstallManager:
         find no record left and misattribute it as a manual install in
         install_log.py.
 
-        Also clears entity_id out of the failed-installs notification
-        unconditionally (regardless of the match below): however this
-        genuinely completed install came about, any earlier failure
-        recorded for it is stale now."""
-        self._clear_failed(entity_id)
+        Also clears entity_id's failed/retrying state unconditionally
+        (regardless of the match below): however this genuinely completed
+        install came about, any earlier failure (or failure-driven retry
+        countdown) recorded for it is stale now."""
+        self._clear_failure_state(entity_id)
         context = self._recently_executed.get(entity_id)
         if context is None or context.to_version != to_version:
             return None
@@ -733,7 +785,7 @@ class InstallManager:
         # it's about attribution bookkeeping, not about whether to notify.
         state = self.hass.states.get(entity_id)
         if state is not None and state.attributes.get("installed_version") == to_version:
-            self._clear_failed(entity_id)
+            self._clear_failure_state(entity_id)
             return
 
         self._failed[entity_id] = to_version
@@ -742,26 +794,92 @@ class InstallManager:
         # design overall.
         self.hass.bus.async_fire(EVENT_INSTALL_FAILED, {"entity_id": entity_id, "to_version": to_version})
 
+        # Escalating backoff (see _FAILURE_BACKOFF_SCHEDULE's own comment):
+        # a fresh run of failures for this exact to_version starts back at
+        # 1 -- a version change or a success already cleared any previous
+        # count via _clear_failure_state above (called both by
+        # was_auto_installed and by the already-installed short-circuit
+        # earlier in this method).
+        previous = self._failure_counts.get(entity_id)
+        consecutive = previous[1] + 1 if previous is not None and previous[0] == to_version else 1
+        self._failure_counts[entity_id] = (to_version, consecutive)
+        delay = _FAILURE_BACKOFF_SCHEDULE[min(consecutive, len(_FAILURE_BACKOFF_SCHEDULE)) - 1]
+        now = dt_util.utcnow()
+        next_retry_at = now + delay
+
+        # The actual retry schedule: a perfectly normal PendingAnnouncement,
+        # so the entire rest of the system (announcer.py's own decide_action,
+        # the panel's badge/status/sort/dialog/Cancel) treats this exactly
+        # like any other scheduled auto-install -- direct user feedback,
+        # 2026-10-24, see this module's own top-of-file comment for the full
+        # reasoning. announced_at is "now" (when this retry cycle started),
+        # not the original announcement's own announced_at (already gone by
+        # the time a failure is handled, cleared at the start of every
+        # _async_execute attempt, including this one) -- a fresh, honest
+        # fact ("retrying since") rather than a stale, harder-to-get-right
+        # one.
+        self._pending[entity_id] = PendingAnnouncement(
+            entity_id=entity_id, to_version=to_version, announced_at=now, execute_at=next_retry_at
+        )
+        self._dirty = True
+        self._refresh_pending_notification()
+
+        # Raised (or refreshed, async_create_issue overwrites a matching
+        # issue_id in place) on every single failure, not after some
+        # threshold -- direct user feedback, 2026-10-24: visible from the
+        # very first failure, always showing the current count and the real
+        # next-retry time, not a stale snapshot from whenever it first
+        # crossed some count. Not fixable (is_fixable=False): the install
+        # itself needs no distinct "fix" action besides trying again, which
+        # already keeps happening on its own via the backoff above -- this
+        # issue exists purely to be seen, not acted on. Cleared by
+        # _clear_failure_state the moment this succeeds (or this specific
+        # failure state otherwise stops applying).
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            failed_issue_id(entity_id),
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="install_failed",
+            translation_placeholders={
+                "entity_id": entity_id,
+                "count": str(consecutive),
+                "to_version": to_version,
+                "retry_at": dt_util.as_local(next_retry_at).strftime("%d-%m-%Y %H:%M"),
+            },
+        )
+
     async def _async_remove(self, entity_id: str) -> None:
+        # Also called at the start of every _async_execute, i.e. right
+        # before each (re)attempt. Fully delegated to _clear_failure_state:
+        # "no announcement applies anymore" and "no failed/retrying state
+        # applies anymore" are the exact same situation now that a failure-
+        # driven retry (handle_install_failure below) is itself just a
+        # PendingAnnouncement in self._pending -- see that method's own
+        # comment for why this used to be two separate concepts and no
+        # longer needs to be.
+        self._clear_failure_state(entity_id)
+
+    @callback
+    def _clear_failure_state(self, entity_id: str) -> None:
+        """Fully resets entity_id's failed/retrying state: any pending
+        announcement (a normal countdown, or a failure-driven retry --
+        indistinguishable here on purpose, see handle_install_failure),
+        the shared "Failed updates" notification entry, the consecutive-
+        failure count driving the backoff schedule, and the Repair issue if
+        one was raised. Every call site here means "this entity's
+        failed/pending state no longer applies" (a genuinely fresh attempt
+        starting, a success, or this entity no longer being our concern at
+        all), which is exactly when any of these would otherwise linger."""
         if entity_id in self._pending:
             del self._pending[entity_id]
             self._dirty = True
             self._refresh_pending_notification()
-        # Also called at the start of every _async_execute, i.e. right
-        # before each (re)attempt: clears out a previous attempt's
-        # failure notification so it doesn't linger once a retry is
-        # actually underway.
-        self._clear_failed(entity_id)
-
-    @callback
-    def _clear_failed(self, entity_id: str) -> None:
-        """Removes entity_id from the current failed-installs picture and
-        rebuilds the shared notification if that actually changed anything
-        -- a plain, unconditional dismiss of the *whole* notification here
-        would wipe out every other still-failed entity's own mention of it
-        too, now that there's only one notification_id for all of them."""
         if self._failed.pop(entity_id, None) is not None:
             self._refresh_failed_notification()
+        if self._failure_counts.pop(entity_id, None) is not None:
+            ir.async_delete_issue(self.hass, DOMAIN, failed_issue_id(entity_id))
 
     @callback
     def _refresh_failed_notification(self) -> None:

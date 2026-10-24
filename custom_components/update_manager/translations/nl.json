@@ -43,6 +43,10 @@
             "title": "Update Manager's GitHub-koppeling is verlopen",
             "description": "Je gekoppelde GitHub-account, gebruikt om community-stemmen op updates in te dienen, is niet meer geldig (ingetrokken, of langer dan 6 maanden niet gebruikt). Open de tab Instellingen van het Update Manager-paneel en koppel je GitHub-account opnieuw om te kunnen blijven stemmen.\n\nDit heeft geen invloed op het uitstellen of automatisch installeren van updates, alleen op community-stemmen."
         },
+        "install_failed": {
+            "title": "Een automatische installatie blijft mislukken",
+            "description": "{entity_id} is {count} keer achter elkaar niet gelukt om automatisch te updaten naar versie {to_version}. Update Manager probeert het om {retry_at} opnieuw, met een oplopende wachttijd. Bekijk de Home Assistant-logs voor de echte foutmelding, of installeer handmatig in Update Manager.\n\nDeze melding verdwijnt vanzelf zodra de installatie lukt."
+        },
         "install_stuck": {
             "title": "Een update lijkt vast te zitten",
             "fix_flow": {
