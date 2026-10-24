@@ -43,10 +43,6 @@
             "title": "Update Manager's GitHub link has expired",
             "description": "Your linked GitHub account, used to submit community votes on updates, is no longer valid (it was either revoked or hasn't been used in over 6 months). Open the Update Manager panel's Settings tab and re-link your GitHub account to keep voting.\n\nThis doesn't affect update staging or auto-install, only community voting."
         },
-        "install_failed": {
-            "title": "An auto-install keeps failing",
-            "description": "{entity_id} has failed to auto-install to version {to_version} {count} time(s) in a row. Update Manager will try again at {retry_at}, with a growing wait between attempts. Check the Home Assistant logs for the actual error, or try installing it manually in Update Manager.\n\nThis issue clears itself once the install succeeds."
-        },
         "install_stuck": {
             "title": "An update seems stuck",
             "fix_flow": {

@@ -16,15 +16,18 @@ time.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
+
+_LOGGER = logging.getLogger(__name__)
 
 from .const import (
     CONF_ANNOUNCE_HOURS,
@@ -752,6 +755,29 @@ async def _handle_cancel_queued(hass: HomeAssistant, connection: websocket_api.A
     connection.send_result(msg["id"])
 
 
+async def _async_run_manual_install(
+    hass: HomeAssistant,
+    data: UpdateManagerData | None,
+    entity_id: str,
+    to_version: str | None,
+    service_data: dict[str, Any],
+    ha_context: Context,
+) -> None:
+    """The non-queued half of _handle_install's own dispatch, as its own
+    task (see that docstring for why it isn't awaited there) -- mirrors
+    install_manager.py's own _async_run_install exactly, down to the log
+    message, so a failure here gets the exact same "Failed updates"
+    notification an auto-install failure does (via handle_manual_install_
+    failure, deliberately without a backoff retry of its own, see that
+    method's own docstring)."""
+    try:
+        await hass.services.async_call("update", "install", service_data, blocking=True, context=ha_context)
+    except Exception:
+        _LOGGER.exception("Update Manager's manual install failed for %s", entity_id)
+        if data and to_version:
+            data.install_manager.handle_manual_install_failure(entity_id, to_version)
+
+
 @websocket_api.require_admin
 @websocket_api.async_response
 @websocket_api.websocket_command(
@@ -777,7 +803,15 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     install takes, e.g. a slow firmware flash) -- its own in_progress/
     installed_version attributes stream back to the panel live through the
     normal hass state-push mechanism regardless (see the panel's own
-    _updateInstallProgress/_updateDialogProgress)."""
+    _updateInstallProgress/_updateDialogProgress). Wrapped in its own
+    try/except (see _async_run_manual_install below), found live,
+    2026-10-24, right after install_manager.py's own auto-install failures
+    started getting a real notification + backoff retry: this explicit,
+    user-clicked path had *less* failure visibility than an automatic one,
+    the wrong way around -- a bare async_create_task with no try/except at
+    all around it, so a real failure here just vanished into HA's own
+    generic unhandled-task-exception log, no Update Manager context, no
+    notification, nothing."""
     entity_id = msg["entity_id"]
     data = _get_data(hass)
     if data:
@@ -816,9 +850,7 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
         )
         queued = result == "queued"
     if not queued:
-        hass.async_create_task(
-            hass.services.async_call("update", "install", service_data, blocking=True, context=ha_context)
-        )
+        hass.async_create_task(_async_run_manual_install(hass, data, entity_id, to_version, service_data, ha_context))
     if data:
         # Awaited, not left to the state_changed event clear_skipped above
         # already schedules on its own -- that's a background task HA

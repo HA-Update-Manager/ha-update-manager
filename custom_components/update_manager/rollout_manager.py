@@ -377,8 +377,17 @@ class RolloutManager:
         self._mark_recently_executed: Callable[[str, AutoInstallContext], None] | None = None
         # Same reasoning/wiring as _mark_recently_executed above, see
         # set_failure_handler's own docstring: a queued entry's install can
-        # fail too, once this module is the one dispatching it.
+        # fail too, once this module is the one dispatching it. Two
+        # separate handlers, not one: a queued entry can be either
+        # auto-install's own doing or a manual click that simply had to
+        # wait its turn (see entry.is_auto), and the two need different
+        # treatment on failure -- install_manager.py's own
+        # handle_install_failure schedules a backoff retry, its
+        # handle_manual_install_failure deliberately doesn't (a one-off
+        # manual click shouldn't silently turn into an ongoing automatic
+        # retry loop).
         self._handle_install_failure: Callable[[str, str], None] | None = None
+        self._handle_manual_install_failure: Callable[[str, str], None] | None = None
         self._unsub_install_listener: Callable[[], None] | None = None
         self._unsub_periodic_recheck: Callable[[], None] | None = None
         # Fired by _async_save below, the one place every real mutation of
@@ -456,8 +465,18 @@ class RolloutManager:
         entry's install (dispatched by this module, not install_manager.py's
         own _async_execute) had no failure path at all before this. Same
         setter pattern, same import-cycle reasoning, as
-        set_recently_executed_setter above."""
+        set_recently_executed_setter above. For an auto-install entry
+        (entry.is_auto) -- see set_manual_failure_handler for the other
+        half."""
         self._handle_install_failure = handler
+
+    def set_manual_failure_handler(self, handler: Callable[[str, str], None]) -> None:
+        """Same as set_failure_handler above, for a queued entry that was a
+        manual click (not entry.is_auto) rather than auto-install's own
+        doing -- install_manager.py's own handle_manual_install_failure,
+        which marks the same failure without scheduling a backoff retry of
+        its own."""
+        self._handle_manual_install_failure = handler
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -1252,8 +1271,9 @@ class RolloutManager:
             # failure notification anywhere, unlike a plain, non-queued
             # auto-install's own path.
             _LOGGER.exception("Update Manager's queued install failed for %s", entry.entity_id)
-            if self._handle_install_failure is not None:
-                self._handle_install_failure(entry.entity_id, entry.to_version)
+            failure_handler = self._handle_install_failure if entry.is_auto else self._handle_manual_install_failure
+            if failure_handler is not None:
+                failure_handler(entry.entity_id, entry.to_version)
             # Advances past it immediately if it was a Zigbee queue's own
             # front entry -- a no-op for anything else (never entered
             # self._queues at all). notify=False: _handle_install_failure

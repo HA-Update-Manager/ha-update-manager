@@ -215,8 +215,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # Same reasoning, see rollout_manager.py's own set_failure_handler
     # docstring: a queued entry's install can fail too, once this module is
     # the one dispatching it, and it needs the exact same cleanup/
-    # notification install_manager.py's own non-queued path already has.
+    # notification install_manager.py's own non-queued path already has --
+    # two separate handlers since a queued entry can be either auto-install's
+    # own doing or a manual click that simply had to wait its turn.
     rollout_manager.set_failure_handler(install_manager.handle_install_failure)
+    rollout_manager.set_manual_failure_handler(install_manager.handle_manual_install_failure)
     # The single shared master-enabled flag (see coordinator.py's own
     # set_master_enabled) -- set once, here, before either manager's
     # async_start() runs; both read it directly off the coordinator from
