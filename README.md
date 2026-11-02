@@ -1,5 +1,5 @@
 [![Made for Home Assistant](https://img.shields.io/badge/Made%20for-Home%20Assistant-blue?style=for-the-badge&logo=homeassistant)](https://www.home-assistant.io/)
-[![hacs_badge](https://img.shields.io/badge/HACS-Default-orange.svg?style=for-the-badge)](https://github.com/hacs/integration)
+[![marketplace_badge](https://img.shields.io/badge/Marketplace-Default-orange.svg?style=for-the-badge)](https://contributors.home-assistant.io/marketplace/)
 
 # Update Manager: Home Assistant helper integration
 
@@ -40,11 +40,11 @@ auto-install and most of that becomes something you never have to think about ag
 
 ## Installation
 
-This integration is available via [HACS](https://hacs.xyz/).
+This integration is available via Home Assistant's built-in [Marketplace](https://contributors.home-assistant.io/marketplace/).
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=HA-Update-Manager&repository=ha-update-manager&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Marketplace.](https://my.home-assistant.io/badges/marketplace_repository.svg)](https://my.home-assistant.io/redirect/marketplace_repository/?owner=HA-Update-Manager&repository=ha-update-manager&category=integration)
 
-1. Go to HACS in your Home Assistant.
+1. Go to the Marketplace in your Home Assistant.
 2. Search for "Update Manager" and download it.
 3. Restart Home Assistant.
 
@@ -155,7 +155,7 @@ every 15 minutes.
 
 * Staging rules apply per update *size* (small/medium/large), not per individual entity: an entity can be
   excluded entirely, but can't get its own, different waiting period.
-* Voting only works for entities identifiable as a HACS integration, Home Assistant Core/Supervisor/OS,
+* Voting only works for entities identifiable as a Marketplace integration, Home Assistant Core/Supervisor/OS,
   a recognized Zigbee device model, or an app.
 * Voting requires linking a GitHub account (a quick one-time device-flow step); reading verdicts doesn't.
 * A vote (and the community block) applies to the *exact* version jump. A negative verdict on 1.0.0 to
@@ -192,7 +192,7 @@ every 15 minutes.
 
 1. Go to **Settings > Devices & Services**, find **Update Manager**, and remove it (the three-dot menu
    on its card, or open the entry and use Delete).
-2. If you added it as a HACS custom repository, remove it from HACS too (Integrations tab, three-dot
+2. If you added it as a Marketplace custom repository, remove it from the Marketplace too (Integrations tab, three-dot
    menu on Update Manager's own card).
 
 Nothing outside Home Assistant's own storage is touched by this integration (no separate service,
