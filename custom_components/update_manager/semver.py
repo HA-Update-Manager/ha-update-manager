@@ -71,6 +71,20 @@ _SHORT_SEMVER_RE = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
+# Exactly major.minor.patch.hotfix -- a fourth, non-standard component some
+# projects add for an in-place hotfix of an already-tagged patch release,
+# found live 2026-11-02: v0.5.8 -> v0.5.9.1 was classified "large" (neither
+# strict semver, which requires exactly three components, nor short semver,
+# which requires exactly two, matched it) despite being an ordinary patch
+# bump. Distinct from a build-metadata suffix (which strict semver already
+# parses and ignores, see _SEMVER_RE) -- this is a genuine fourth numeric
+# tier, not metadata.
+_EXTENDED_SEMVER_RE = re.compile(
+    r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
+    r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
+
 
 class ParsedVersion(NamedTuple):
     major: int
@@ -140,6 +154,15 @@ def is_short_semver_version(version: str) -> bool:
     return bool(_SHORT_SEMVER_RE.match(strip_version_prefix(version)))
 
 
+def is_extended_semver_version(version: str) -> bool:
+    """True for a four-component major.minor.patch.hotfix version, e.g.
+    "0.5.9.1" -- checked independently of parse_semver, same reasoning as
+    is_short_semver_version above. The trailing "$" anchor means a version
+    with only three components (plain strict semver) never matches this
+    too, same non-ambiguity between the two shapes."""
+    return bool(_EXTENDED_SEMVER_RE.match(strip_version_prefix(version)))
+
+
 def _parse_calendar(version: str) -> ParsedVersion:
     """Parses a calendar-style version (year.month.patch) into the same
     shape parse_semver returns, so the jump-comparison logic below can be
@@ -180,6 +203,26 @@ def _parse_semver_or_short(version: str) -> ParsedVersion | None:
     return _parse_short_semver(version) if is_short_semver_version(version) else None
 
 
+def _parse_major_minor_patch_hotfix(version: str) -> tuple[int, int, int, int] | None:
+    """(major, minor, patch, hotfix) for short semver/strict semver (via
+    _parse_semver_or_short above, hotfix implicitly 0) or extended semver
+    (is_extended_semver_version, the real fourth component) -- one shared,
+    uniform 4-tuple so classify_version_size's own comparison below never
+    needs to know how many trailing components either side actually had,
+    the same "a missing component defaults to 0" reasoning
+    _parse_semver_or_short already applies between short and strict
+    semver. None for anything matching none of these three shapes."""
+    normal = _parse_semver_or_short(version)
+    if normal is not None:
+        return (normal.major, normal.minor, normal.patch, 0)
+    if not is_extended_semver_version(version):
+        return None
+    candidate = strip_version_prefix(version)
+    core = candidate.split("-", 1)[0].split("+", 1)[0]
+    major, minor, patch, hotfix = (int(part) for part in core.split("."))
+    return (major, minor, patch, hotfix)
+
+
 def classify_version_size(previous: str, current: str) -> Size:
     """Classify how big a change the jump from `previous` to `current` is.
 
@@ -209,6 +252,16 @@ def classify_version_size(previous: str, current: str) -> Size:
     found live 2026-07-27: this used to fall through to "large" for not being
     strict three-part semver *and* not being short on both sides at once.
 
+    A fourth, non-standard hotfix component (is_extended_semver_version,
+    e.g. "0.5.9.1") is handled the same way again: major/minor changing is
+    still "large"/"medium" exactly as above, but a change confined to the
+    patch *or* this fourth component (with major/minor unchanged) is
+    "small" either way, the same "any change below minor is small"
+    reasoning the plain three-part case already applies to its own patch
+    component. Found live 2026-11-02: "0.5.8" -> "0.5.9.1" fell through to
+    "large" before this, for matching neither strict semver (exactly three
+    components) nor short semver (exactly two).
+
     "large" (treated conservatively, i.e. as if it might be a breaking change)
     covers everything else: either side not recognized as semver or short
     semver at all, exactly one side (not both) using HA Core's calendar
@@ -237,14 +290,32 @@ def classify_version_size(previous: str, current: str) -> Size:
     if prev_is_commit or curr_is_commit:
         return "large"
 
-    prev = _parse_semver_or_short(previous)
-    curr = _parse_semver_or_short(current)
+    prev = _parse_major_minor_patch_hotfix(previous)
+    curr = _parse_major_minor_patch_hotfix(current)
     if prev is None or curr is None:
         return "large"
     if curr <= prev:
         return "large"
-    if curr.major != prev.major:
+    if curr[0] != prev[0]:
         return "large"
-    if curr.minor != prev.minor:
+    if curr[1] != prev[1]:
         return "medium"
     return "small"
+
+
+def ha_core_version_satisfies(current: str, required: str) -> bool:
+    """True if `current` (Home Assistant Core's own running version,
+    always calendar-style) is the same as or newer than `required` (a
+    minimum HA version a repository's manifest demands -- both HACS and
+    its Marketplace successor only ever express this as a plain HA release
+    version, see install_manager.py's own _postponed). True on anything
+    that doesn't parse as a calendar version on either side: this is only
+    ever used to decide whether a *known*-insufficient version has become
+    sufficient without re-attempting a real install, never to block one
+    that might otherwise be fine, so failing open (try again, worst case
+    one wasted attempt re-confirms the same postponed state) beats failing
+    closed (stuck postponed forever on a version string that doesn't
+    parse)."""
+    if not is_calendar_version(current) or not is_calendar_version(required):
+        return True
+    return _parse_calendar(current) >= _parse_calendar(required)

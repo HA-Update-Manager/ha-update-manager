@@ -103,5 +103,19 @@
         "unknown_update_entity": {
             "message": "{entity_id} is geen op dit moment gevolgde update-entiteit."
         }
+    },
+    "triggers": {
+        "scheduled_auto_install": {
+            "name": "Geplande auto-install",
+            "description": "Triggert wanneer een update wordt aangekondigd voor een geplande automatische installatie (het starten van de wachttijd, niet de installatie zelf)."
+        },
+        "installed": {
+            "name": "Geïnstalleerd",
+            "description": "Triggert zodra een update klaar is met installeren, automatisch of handmatig."
+        },
+        "install_failed": {
+            "name": "Installatie mislukt",
+            "description": "Triggert wanneer een installatiepoging mislukt."
+        }
     }
 }

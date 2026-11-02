@@ -142,6 +142,13 @@ export const TRANSLATIONS = {
     // other way to say what's happening right now.
     status_installing: "Installing…",
     status_pending_install: (when) => `Will update automatically ${when}`,
+    // Same "Postponed" group as status_waiting_soon/status_pending_install
+    // above, just a different, known reason (see install_manager.py's own
+    // self._postponed): a first install attempt already found out this
+    // needs a newer HA Core than what's running, no further install
+    // attempt happens until that changes.
+    status_postponed: (version) => `Postponed until Home Assistant ${version} or newer`,
+    timer_postponed: (version) => `HA ${version}+`,
     // Plain " ⋅ " separator, not a parenthetical -- same separator already
     // used elsewhere in this file (e.g. the history entry's
     // "from → to ⋅ when" line) to combine two independent facts.
@@ -194,6 +201,12 @@ export const TRANSLATIONS = {
     // a restatement of it -- shown on the Auto-install step whenever
     // heldBackByCommunity is true.
     dialog_timeline_held_back_pointer: "Held back by the community verdict.",
+    // Its own step (see Step 3b in the dialog's own build method), title
+    // kept short, the actual explanation (with the version comparison)
+    // lives in dialog_timeline_postponed_detail below.
+    dialog_timeline_postponed: "Postponed",
+    dialog_timeline_postponed_detail: (required, current) =>
+      `Requires Home Assistant ${required}. You're on ${current}. This will resume automatically once you update Home Assistant itself.`,
     dialog_community_verdict_disclaimer:
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
     // Also the "nothing at all" row of the Community section's own fact
@@ -545,6 +558,8 @@ export const TRANSLATIONS = {
     status_skipped_suffix: "overgeslagen",
     status_installing: "Bezig met installeren…",
     status_pending_install: (when) => `Wordt automatisch geüpdatet ${when}`,
+    status_postponed: (version) => `Uitgesteld tot Home Assistant ${version} of nieuwer`,
+    timer_postponed: (version) => `HA ${version}+`,
     always_manual_suffix: " ⋅ Altijd handmatig",
     field_excluded_entities: "Nooit automatisch updaten",
     field_excluded_entities_helper:
@@ -579,6 +594,9 @@ export const TRANSLATIONS = {
     dialog_timeline_update_available: "Update beschikbaar",
     dialog_timeline_auto_install: "Auto-install",
     dialog_timeline_held_back_pointer: "Tegengehouden door het communityoordeel.",
+    dialog_timeline_postponed: "Uitgesteld",
+    dialog_timeline_postponed_detail: (required, current) =>
+      `Vereist Home Assistant ${required}. Jij hebt ${current}. Dit gaat automatisch verder zodra je Home Assistant zelf update.`,
     dialog_community_verdict_disclaimer:
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
     community_not_yet_rated: "Niemand heeft nog iets over deze sprong gemeld.",

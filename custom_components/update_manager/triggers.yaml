@@ -1,0 +1,8 @@
+.trigger_target: &trigger_target
+  target:
+    entity:
+      domain: update
+
+scheduled_auto_install: *trigger_target
+installed: *trigger_target
+install_failed: *trigger_target

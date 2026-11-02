@@ -21,6 +21,7 @@ from typing import Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.update import UpdateEntityFeature
+from homeassistant.const import __version__ as HA_CORE_VERSION
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -50,8 +51,73 @@ from .const import (
 from .coordinator import UpdateManagerCoordinator
 from .entity_rename import relabel_key
 from .rollout_manager import RolloutManager
+from .semver import ha_core_version_satisfies, is_calendar_version
 
 _LOGGER = logging.getLogger(__name__)
+
+# Both HACS (a plain-text HacsException message, wrapped into a bare
+# HomeAssistantError by its own update.py) and its Marketplace successor
+# (a MarketplaceError with a real translation_key/translation_placeholders)
+# raise this when a release's own manifest needs a newer HA Core than
+# what's actually running, found live 2026-11-02 -- verified against both
+# integrations' real source (hacs/integration's repositories/base.py
+# _ensure_download_capabilities, home-assistant/core's marketplace/
+# repositories/base.py _check_minimum_version). Checked structurally first
+# (Marketplace's own translation_key), the regex only exists for HACS,
+# whose own exception carries no translation_key at all -- still HACS's
+# own generated string (the version comes from its own parsed hacs.json,
+# not typed by a person), not arbitrary input.
+_MARKETPLACE_MIN_HA_VERSION_KEY = "requires_newer_home_assistant"
+_HACS_MIN_HA_VERSION_RE = re.compile(r"requires Home Assistant ([\d.]+) or newer", re.IGNORECASE)
+
+# Marketplace's own one-time, per-admin "first-run warning" gate (see
+# STANDARDS.md, 2026-11-02): until any admin opens its panel and accepts
+# it, update.install fails with this translation_key for every context-
+# less call (ours included), regardless of which update it's for. No
+# min-version-style structured detail to extract here, just a reason to
+# label this specific failure with a clearer message than the generic one
+# (see _FAILED_NOTIFICATION_STRINGS's own "item_warning_not_accepted").
+_MARKETPLACE_WARNING_NOT_ACCEPTED_KEY = "warning_not_accepted"
+
+
+def min_ha_version_required(exception: BaseException) -> str | None:
+    """The minimum HA Core version a failed install's own exception says
+    it needs, or None if this failure wasn't about that at all -- also None
+    for an extracted version ha_core_version_satisfies can't actually
+    compare (not a plain calendar version), rather than one it can never
+    stop reporting as newly-satisfied. Found by code review, 2026-11-02:
+    a repository manifest that states this as anything other than a full
+    "YYYY.M.P" (e.g. a 2-part "2026.11") makes
+    ha_core_version_satisfies fail open on every single evaluation, not
+    just once -- the same fixed, unparseable string compares the same way
+    forever, so the entity would clear self._postponed, re-attempt the
+    same doomed install, and land right back in self._postponed every
+    single tick, the exact retry storm this feature exists to prevent.
+    Falling through to the ordinary backoff-based failure path instead
+    (min_ha_version_required returning None here) is strictly better for
+    this case: real backoff, a real "Failed updates" entry, no silent
+    forever-loop."""
+    if getattr(exception, "translation_key", None) == _MARKETPLACE_MIN_HA_VERSION_KEY:
+        placeholders = getattr(exception, "translation_placeholders", None) or {}
+        version = placeholders.get("version")
+    else:
+        match = _HACS_MIN_HA_VERSION_RE.search(str(exception))
+        version = match.group(1) if match else None
+    return version if version and is_calendar_version(version) else None
+
+
+def is_marketplace_warning_not_accepted(exception: BaseException) -> bool:
+    return getattr(exception, "translation_key", None) == _MARKETPLACE_WARNING_NOT_ACCEPTED_KEY
+
+
+def failure_reason_for(exception: BaseException) -> str | None:
+    """The specific, labeled reason for a failed install's "Failed updates"
+    notification, or None for the generic case. Shared by
+    _async_run_install's own except-branch below and websocket_api.py's
+    _async_run_manual_install, found duplicated verbatim by code review,
+    2026-11-02 -- one shared place to extend if a third labeled reason is
+    ever added."""
+    return "warning_not_accepted" if is_marketplace_warning_not_accepted(exception) else None
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}_pending_installs"
@@ -139,6 +205,10 @@ _FAILED_NOTIFICATION_STRINGS = {
             "[Update Manager]({url})."
         ),
         "item": "* **{name}** to version {to_version}",
+        "item_warning_not_accepted": (
+            "* **{name}** to version {to_version}. Needs you to open Marketplace once "
+            "and accept its first-run warning."
+        ),
     },
     "nl": {
         "title": "Mislukte updates",
@@ -148,6 +218,10 @@ _FAILED_NOTIFICATION_STRINGS = {
             "[Update Manager]({url})."
         ),
         "item": "* **{name}** naar versie {to_version}",
+        "item_warning_not_accepted": (
+            "* **{name}** naar versie {to_version}. Vereist dat je eenmalig Marketplace "
+            "opent en de eerste-keer-waarschuwing accepteert."
+        ),
     },
 }
 
@@ -226,6 +300,24 @@ class InstallManager:
         # bookkeeping itself resets after a restart, not the retry time a
         # user is actually shown.
         self._failure_counts: dict[str, tuple[str, int]] = {}
+        # entity_id -> a reason tag for the current self._failed entry,
+        # purely for _refresh_failed_notification's own item text (e.g.
+        # "warning_not_accepted" gets a specific instruction instead of the
+        # generic "check the logs"). Not persisted, same reasoning as
+        # self._failed itself.
+        self._failed_reason: dict[str, str] = {}
+        # entity_id -> (to_version, required HA Core version) for an
+        # install blocked by min_ha_version_required above -- deliberately
+        # its own bucket, not a self._pending/self._failed entry: unlike a
+        # generic failure, blindly retrying this on the usual backoff
+        # schedule would cost a real backup-restore cycle (HACS/Marketplace
+        # both do one before this check even runs) every single time, for
+        # something we already know won't succeed until the user's own HA
+        # Core version changes -- see _async_evaluate_one's own postponed
+        # guard, which checks that cheaply instead of reattempting. Not
+        # persisted: a restart just means one extra real attempt to
+        # rediscover it, same as any other in-memory-only bookkeeping here.
+        self._postponed: dict[str, tuple[str, str]] = {}
         # Serializes every _async_tick pass against every other one: same
         # fix, and same underlying race, as staging_skip.py's own StagingSkipManager
         # lock (see its docstring for the full incident this closes). _on_recompute
@@ -238,6 +330,26 @@ class InstallManager:
         # something confirmed live yet, but the exact same shape of bug
         # staging_skip.py already had to fix once.
         self._lock = asyncio.Lock()
+        # Serializes the actual update.install dispatches from
+        # _async_run_install against each other, distinct from self._lock
+        # above (which only serializes whole tick passes, not the installs
+        # a single tick's own asyncio.gather fires concurrently). Found
+        # live, 2026-11-02: a batch of simultaneous auto-installs (several
+        # HACS integrations becoming eligible in the same tick) each called
+        # update.install at the same time, and HACS's own backup step
+        # (custom_components/hacs/utils/backup.py's _init_backup_dir) does a
+        # shutil.rmtree on a single shared /tmp/hacs_backup directory, not a
+        # per-install tempdir -- two of those running at once raced and
+        # raised OSError: Directory not empty. _async_run_install is still
+        # dispatched via its own hass.async_create_task (not awaited inline
+        # by _async_execute), so a slow install still doesn't hold up
+        # evaluating the rest of the batch; only the actual service call
+        # itself now waits its turn. Doesn't cover RolloutManager's own
+        # Zigbee-queued dispatches (rollout_manager.py's _async_dispatch,
+        # already paced per Zigbee network) or a manual Update All click
+        # (websocket_api.py, outside this class entirely) -- neither of
+        # those reproduced the reported race, both deliberately left alone.
+        self._install_lock = asyncio.Lock()
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -269,6 +381,14 @@ class InstallManager:
 
     def pending_for(self, entity_id: str) -> PendingAnnouncement | None:
         return self._pending.get(entity_id)
+
+    def postponed_for(self, entity_id: str) -> str | None:
+        """The minimum HA Core version entity_id's own pending auto-install
+        is still waiting for, or None if it isn't postponed for that
+        reason at all -- read by websocket_api.py's own _handle_updates,
+        see update-manager-panel.js's own "Postponed" badge/section."""
+        postponed = self._postponed.get(entity_id)
+        return postponed[1] if postponed is not None else None
 
     def is_cancelled(self, entity_id: str, to_version: str) -> bool:
         """Whether async_cancel was already called for this exact entity/
@@ -388,6 +508,8 @@ class InstallManager:
         if relabel_key(self._failed, old_entity_id, new_entity_id) is not None:
             self._refresh_failed_notification()
         relabel_key(self._failure_counts, old_entity_id, new_entity_id)
+        relabel_key(self._failed_reason, old_entity_id, new_entity_id)
+        relabel_key(self._postponed, old_entity_id, new_entity_id)
 
     async def _async_tick(self, now: datetime) -> None:
         # Every entity the coordinator currently tracks, plus any entity
@@ -415,7 +537,13 @@ class InstallManager:
         # below) is still fully parallel, only two separate ticks can no
         # longer run their own read-decide-write sequence interleaved.
         async with self._lock:
-            entity_ids = set(self._coordinator.cache) | set(self._pending)
+            # self._postponed included for the same reason self._pending is:
+            # an entity postponed for a too-old HA Core version that then
+            # drops out of coordinator.cache entirely (removed, excluded)
+            # would otherwise never be visited again, leaving a stale
+            # postponed marker in memory forever -- found by code review,
+            # 2026-11-02.
+            entity_ids = set(self._coordinator.cache) | set(self._pending) | set(self._postponed)
             self._dirty = False
             await asyncio.gather(*(self._async_evaluate_one(entity_id, now) for entity_id in entity_ids))
             if self._dirty:
@@ -470,6 +598,26 @@ class InstallManager:
 
         cached = self._coordinator.cache.get(entity_id)
         current_to_version = cached["latest_version"] if cached else None
+
+        postponed = self._postponed.get(entity_id)
+        if postponed is not None:
+            postponed_to_version, required_version = postponed
+            if postponed_to_version != current_to_version:
+                # A newer version appeared since the postponed one -- no
+                # reason to assume it has the same requirement, let it be
+                # evaluated fresh below instead of carrying the old one's
+                # postponed state over to it.
+                del self._postponed[entity_id]
+            elif not ha_core_version_satisfies(HA_CORE_VERSION, required_version):
+                return
+            else:
+                # Core itself now satisfies what this was waiting for --
+                # drop the postponed marker and fall straight through to a
+                # perfectly normal evaluation below, same as any other
+                # ready entity (direct user feedback, 2026-11-02: no
+                # separate "resume" step, it should just behave normally
+                # again).
+                del self._postponed[entity_id]
 
         # A stale cancellation (the entity has since moved to a different
         # target version) has no effect either way -- prune it so it
@@ -735,12 +883,28 @@ class InstallManager:
 
     async def _async_run_install(self, entity_id: str, to_version: str, service_data: dict[str, Any]) -> None:
         try:
-            await self.hass.services.async_call("update", "install", service_data, blocking=True)
-        except Exception:
+            async with self._install_lock:
+                await self.hass.services.async_call("update", "install", service_data, blocking=True)
+        except Exception as exception:
+            required_version = min_ha_version_required(exception)
+            if required_version is not None:
+                # Deliberately quieter than the generic failure's own
+                # _LOGGER.exception below: this is a known, recoverable
+                # condition (see self._postponed's own comment), not
+                # something actually wrong, and it'll keep rediscovering
+                # the exact same thing on every tick until the user's own
+                # HA Core version changes.
+                _LOGGER.debug(
+                    "Update Manager postponed %s: needs Home Assistant %s or newer",
+                    entity_id,
+                    required_version,
+                )
+                self._postponed[entity_id] = (to_version, required_version)
+                return
             _LOGGER.exception("Update Manager's auto-install failed for %s", entity_id)
-            self.handle_install_failure(entity_id, to_version)
+            self.handle_install_failure(entity_id, to_version, reason=failure_reason_for(exception))
 
-    def handle_install_failure(self, entity_id: str, to_version: str) -> None:
+    def handle_install_failure(self, entity_id: str, to_version: str, *, reason: str | None = None) -> None:
         """Shared by _async_run_install's own except-branch above and
         rollout_manager.py (via the setter it's given in __init__.py, same
         pattern as set_recently_executed_setter): a queued entry's install
@@ -751,8 +915,15 @@ class InstallManager:
         panel's own explicit Install button, which marks the same failure
         but never schedules a retry of its own (direct user feedback,
         2026-10-24: a deliberate, one-off click shouldn't silently turn
-        into an ongoing automatic retry loop the user never asked for)."""
-        if not self._mark_failed(entity_id, to_version):
+        into an ongoing automatic retry loop the user never asked for).
+
+        `reason` (e.g. "warning_not_accepted", see _is_marketplace_warning_
+        not_accepted above) is purely for _refresh_failed_notification's
+        own item text -- unlike a required HA Core version (see
+        self._postponed), there's nothing to check for cheaply before
+        retrying, so this still goes through the exact same backoff
+        schedule as a generic failure, just labeled more usefully."""
+        if not self._mark_failed(entity_id, to_version, reason=reason):
             return
 
         # Escalating backoff (see _FAILURE_BACKOFF_SCHEDULE's own comment):
@@ -784,7 +955,7 @@ class InstallManager:
         self._dirty = True
         self._refresh_pending_notification()
 
-    def handle_manual_install_failure(self, entity_id: str, to_version: str) -> None:
+    def handle_manual_install_failure(self, entity_id: str, to_version: str, *, reason: str | None = None) -> None:
         """websocket_api.py's own _handle_install (the panel's explicit
         Install/Install all button) dispatches update.install the exact
         same fire-and-forget way _async_run_install does, but never used to
@@ -795,9 +966,9 @@ class InstallManager:
         notification, but deliberately doesn't call into
         handle_install_failure's own backoff (see that method's own
         docstring for why)."""
-        self._mark_failed(entity_id, to_version)
+        self._mark_failed(entity_id, to_version, reason=reason)
 
-    def _mark_failed(self, entity_id: str, to_version: str) -> bool:
+    def _mark_failed(self, entity_id: str, to_version: str, *, reason: str | None = None) -> bool:
         """Shared by handle_install_failure (auto) and
         handle_manual_install_failure (manual) above: records the failure
         in the shared "Failed updates" notification and fires
@@ -819,7 +990,11 @@ class InstallManager:
         as a second, more general safety net: whatever the caller, and
         however it happened, an entity already sitting on the version this
         failure is about never needs a failure notification (or a
-        backoff retry) for it."""
+        backoff retry) for it.
+
+        `reason` (currently only ever "warning_not_accepted") only changes
+        _refresh_failed_notification's own item text for this entity, see
+        that method's own comment."""
         # Otherwise this stays recorded forever (was_auto_installed is the
         # only other place that clears it, and it's never called if
         # installed_version never actually changes), a later, wholly
@@ -842,6 +1017,10 @@ class InstallManager:
             return False
 
         self._failed[entity_id] = to_version
+        if reason is not None:
+            self._failed_reason[entity_id] = reason
+        else:
+            self._failed_reason.pop(entity_id, None)
         self._refresh_failed_notification()
         # See const.py's own EVENT_ANNOUNCED docstring for the events
         # design overall.
@@ -877,19 +1056,27 @@ class InstallManager:
         if self._failed.pop(entity_id, None) is not None:
             self._refresh_failed_notification()
         self._failure_counts.pop(entity_id, None)
+        self._failed_reason.pop(entity_id, None)
+        self._postponed.pop(entity_id, None)
 
     @callback
     def _refresh_failed_notification(self) -> None:
         """Rebuilds the single "Failed updates" notification from
         self._failed's own complete, current contents, same
         one-notification-total reasoning as _refresh_pending_notification.
-        Dismissed entirely once nothing is left failed."""
+        Dismissed entirely once nothing is left failed. An entity with a
+        recognized self._failed_reason (see _mark_failed) gets a specific
+        item template (e.g. "item_warning_not_accepted") instead of the
+        generic one -- same strings dict, just a different key, falling
+        back to "item" for anything unrecognized or unset."""
         if not self._failed:
             persistent_notification.async_dismiss(self.hass, _FAILED_NOTIFICATION_ID)
             return
         strings = localized_strings(self.hass, _FAILED_NOTIFICATION_STRINGS)
         items = "\n".join(
-            strings["item"].format(name=_friendly_name(self.hass, entity_id), to_version=to_version)
+            strings.get(f"item_{self._failed_reason.get(entity_id)}", strings["item"]).format(
+                name=_friendly_name(self.hass, entity_id), to_version=to_version
+            )
             for entity_id, to_version in self._failed.items()
         )
         persistent_notification.async_create(

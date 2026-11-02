@@ -94,6 +94,17 @@ const ICON_AUTO_DOWNLOAD =
   "M22 17V19H11V17H22M19 4.5V9.5H22L16.5 15L11 9.5H14V4.5H19M10.7 15H8.8L8.1 13H4.9L4.2 15H2.3L5.5 6H7.5L10.7 15M7.65 11.65L6.5 8L5.35 11.65H7.65Z";
 const ICON_CLOCK_OUTLINE =
   "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
+// "Postponed" (an update blocked on a newer HA Core version, not a plain
+// staging wait) gets its own icon, deliberately distinct from
+// ICON_CLOCK_OUTLINE above ("waiting") -- a paused symbol reads as
+// "stopped until something changes", not "counting down on its own".
+// (mdi:timer-sand-paused was tried first, but that icon is genuinely
+// drawn sideways by MDI itself -- its pinch point is centered on the
+// x-axis, unlike mdi:timer-sand/timer-sand-complete's own upright,
+// y-centered one -- which read as a rendering bug, not a deliberate
+// "sand can't flow lying down" metaphor, at this badge's small size.)
+const ICON_PAUSE_CIRCLE_OUTLINE =
+  "M13,16V8H15V16H13M9,16V8H11V16H9M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4Z";
 // mdiChevronDown: the history dialog's own "expand this entry" chevron
 // (see _openDetailDialog), rotated 180deg via .open instead of relying on
 // ha-expansion-panel's own built-in one: that component's row looked
@@ -484,6 +495,20 @@ function statusText(tr, u, settings, hass) {
   // now (direct user feedback: seeing a stale "Postponed"/"Skipped" while
   // an install you just started was already running read as wrong).
   if (updateIsInstalling(entityState(hass, u.entity_id))) return tr.status_installing;
+  // Checked before the regular status branches below, same reasoning as
+  // updateIsInstalling above: an install that already failed once on a
+  // too-old HA Core no longer reads as a plain "ready"/"pending_install"
+  // update, see groupUpdates' own isPostponedUpdate.
+  if (u.postponed_min_ha_version) {
+    // Found by code review, 2026-11-02: this early return used to skip the
+    // auto_install_excluded suffix below entirely. Reachable whenever an
+    // entity becomes postponed while auto-install-eligible, then gets
+    // excluded afterwards -- the postponed marker has no reason to clear
+    // just because that setting changed later.
+    let text = tr.status_postponed(u.postponed_min_ha_version);
+    if (u.auto_install_excluded) text += tr.always_manual_suffix;
+    return text;
+  }
   let text;
   // status checked first, not pending_install -- announcer.py's
   // decide_action is deliberately sequential (2026-07-17, direct user
@@ -535,6 +560,9 @@ function timerBadge(tr, u, settings, hass) {
   // _buildListRow) replaces the normal countdown pill entirely while an
   // install is actually running.
   if (updateIsInstalling(entityState(hass, u.entity_id))) return { installing: true };
+  if (u.postponed_min_ha_version) {
+    return { icon: ICON_PAUSE_CIRCLE_OUTLINE, text: tr.timer_postponed(u.postponed_min_ha_version) };
+  }
   if (u.status === "waiting") {
     const projected = projectedAutoInstallTime(u, settings);
     if (projected) return { icon: ICON_AUTO_DOWNLOAD, text: capitalize(absoluteWhen(tr, projected, hass, true)) };
@@ -970,6 +998,17 @@ function isNotInstallableUpdate(u) {
 function isSkippedUpdate(u) {
   return u.installable && u.status === "skipped";
 }
+// A "ready" update whose own auto-install already found out it needs a
+// newer HA Core (see install_manager.py's own self._postponed) is still,
+// at heart, an update that isn't proceeding right now -- exactly what the
+// existing "waiting"/group_waiting ("Postponed") bucket already means, so
+// it's folded into that same group below rather than getting a second,
+// confusingly-similarly-named one of its own. statusText/timerBadge still
+// give it its own specific text/icon within that group (see their own
+// postponed_min_ha_version checks), so the reason is never ambiguous.
+function isPostponedUpdate(u) {
+  return u.installable && u.status !== "skipped" && !!u.postponed_min_ha_version;
+}
 
 function groupUpdates(tr, updates, showSkipped = true, showNotInstallable = true) {
   const notInstallable = updates.filter(isNotInstallableUpdate);
@@ -978,7 +1017,8 @@ function groupUpdates(tr, updates, showSkipped = true, showNotInstallable = true
 
   const byStatus = { ready: [], waiting: [], blocked: [] };
   installable.forEach((u) => {
-    (byStatus[u.status] || byStatus[_FALLBACK_STATUS]).push(u);
+    const bucket = isPostponedUpdate(u) ? "waiting" : u.status;
+    (byStatus[bucket] || byStatus[_FALLBACK_STATUS]).push(u);
   });
 
   const groups = [];
@@ -4649,6 +4689,34 @@ class UpdateManagerPanel extends HTMLElement {
           await this._afterDialogAction(entityId);
         });
       }
+    }
+
+    // Step 3b: Postponed (needs a newer HA Core) -- its own, independent
+    // condition, not nested in Step 3 above: a postponed entity has
+    // neither a real pending_install (deliberately never created for this,
+    // see install_manager.py's own self._postponed) nor an
+    // autoInstallProjected preview. Shows the running Core version
+    // alongside the required one (direct user feedback, 2026-11-02: the
+    // required version alone doesn't say how far off you actually are),
+    // same Cancel affordance as any other not-yet-dispatched auto-install
+    // (install_manager.py's own async_cancel already clears a postponed
+    // entity exactly the same way it clears a real pending one, see that
+    // method's own docstring).
+    if (u.postponed_min_ha_version) {
+      // "var(--warning-color)", no notEnabled -- a real, current blocking
+      // condition (a first attempt already happened and failed), not a
+      // merely-projected future action, same treatment as the
+      // heldBackByCommunity step above.
+      const step = addStep("var(--warning-color)", ICON_PAUSE_CIRCLE_OUTLINE, tr.dialog_timeline_postponed, null);
+      addDetail(step, tr.dialog_timeline_postponed_detail(u.postponed_min_ha_version, this._hass.config.version));
+      addAction(step, tr.cancel_auto_install, async () => {
+        await this._hass.callWS({
+          type: "update_manager/cancel_pending_install",
+          entity_id: entityId,
+          to_version: u.latest_version,
+        });
+        await this._afterDialogAction(entityId);
+      });
     }
 
     // Step 4: Installing -- only while genuinely blocked by the Zigbee

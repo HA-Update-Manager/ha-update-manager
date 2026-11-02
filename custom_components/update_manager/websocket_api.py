@@ -74,7 +74,7 @@ from .device_identity import resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
-from .install_manager import auto_install_rules_from_options
+from .install_manager import auto_install_rules_from_options, failure_reason_for
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
 from .semver import strip_version_prefix
 from .vote_issue_body import REASON_CATEGORIES
@@ -191,6 +191,12 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
                     if pending is not None
                     else None
                 ),
+                # See install_manager.py's own postponed_for docstring:
+                # the HA Core version this entity's auto-install is still
+                # waiting for, or None if it isn't postponed for that
+                # reason -- update-manager-panel.js's own "Postponed"
+                # badge/section.
+                "postponed_min_ha_version": install_manager.postponed_for(entry["entity_id"]),
             }
         )
     connection.send_result(
@@ -772,10 +778,12 @@ async def _async_run_manual_install(
     method's own docstring)."""
     try:
         await hass.services.async_call("update", "install", service_data, blocking=True, context=ha_context)
-    except Exception:
+    except Exception as exception:
         _LOGGER.exception("Update Manager's manual install failed for %s", entity_id)
         if data and to_version:
-            data.install_manager.handle_manual_install_failure(entity_id, to_version)
+            data.install_manager.handle_manual_install_failure(
+                entity_id, to_version, reason=failure_reason_for(exception)
+            )
 
 
 @websocket_api.require_admin

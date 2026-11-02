@@ -663,14 +663,22 @@ class UpdateManagerCoordinator:
         just armed a moment earlier in this same async_start), so it's
         suppressed every single time for a transition discovered this way;
         skipping the follow-up unconditionally, as a prior fix here did,
-        left nothing to ever actually log it."""
+        left nothing to ever actually log it.
+
+        Home Assistant's own Core/Supervisor/OS update entities are exempt
+        from the grace window below entirely -- see that condition's own
+        comment for why (2026-11-02)."""
         new_installed = state.attributes.get("installed_version")
         if not new_installed or new_installed == _PLACEHOLDER_INSTALLED_VERSION:
             return True
         key = self._stable_key(entity_id)
         old_installed = self._last_installed_version.get(key)
         if old_installed and old_installed != _PLACEHOLDER_INSTALLED_VERSION and old_installed != new_installed:
-            if retroactive and self._within_startup_grace():
+            if (
+                retroactive
+                and self._within_startup_grace()
+                and home_assistant_component_for_entity(self.hass, entity_id) is None
+            ):
                 # Contradicts a baseline persisted from before this
                 # process's own current run. See _within_startup_grace's
                 # own docstring and _RESTART_LAG_GRACE's own comment. Trust
@@ -690,6 +698,30 @@ class UpdateManagerCoordinator:
                 # A live event is, by definition, a real observation right
                 # now, not something to second-guess the way a retroactive
                 # snapshot with no reliable timestamp has to be.
+                #
+                # Home Assistant's own Core/Supervisor/OS update entities
+                # (found live, 2026-11-02: a Core update went undetected for
+                # a full week) are exempted from this suppression entirely:
+                # unlike a HACS-managed integration that can take a moment
+                # to rescan and report its true state after restarting, all
+                # three read their installed_version synchronously at setup
+                # (homeassistant.const.__version__ for Core, a direct
+                # Supervisor/OS API call for the other two), so there's
+                # nothing here for the grace window to actually guard
+                # against. Suppressing them anyway was actively harmful:
+                # once installed, all three immediately stop being a
+                # pending update and drop out of self.cache, so
+                # _async_periodic_recheck's own self-healing loop (which
+                # only ever walks self.cache) can never reach them again --
+                # the only thing left to catch a suppressed transition here
+                # was pure chance, whichever future restart happened to
+                # observe it outside its own new grace window. Safe to
+                # evaluate immediately instead: _on_install's own retroactive
+                # branch already always resolves to "manual" for these
+                # three regardless (see this method's own docstring,
+                # "Core/Supervisor/OS themselves are hard-excluded from
+                # auto-install entirely"), so there's no misattribution risk
+                # being skipped here either.
                 return False
             self._fire_install_listeners(entity_id, old_installed, new_installed, state, retroactive)
         if old_installed != new_installed:

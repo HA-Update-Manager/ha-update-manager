@@ -155,6 +155,25 @@ class TestIsShortSemverVersion:
         assert semver.is_short_semver_version("18.1+build.5")
 
 
+class TestIsExtendedSemverVersion:
+    def test_matches_four_part_version(self):
+        assert semver.is_extended_semver_version("0.5.9.1")
+        assert semver.is_extended_semver_version("v0.5.9.1")
+
+    def test_does_not_match_three_part_version(self):
+        assert not semver.is_extended_semver_version("1.2.3")
+
+    def test_rejects_leading_zeros(self):
+        assert not semver.is_extended_semver_version("1.2.3.04")
+
+    def test_rejects_non_numeric_component(self):
+        assert not semver.is_extended_semver_version("1.2.3.x")
+
+    def test_prerelease_and_build_metadata_ignored(self):
+        assert semver.is_extended_semver_version("0.5.9.1-beta.1")
+        assert semver.is_extended_semver_version("0.5.9.1+build.5")
+
+
 class TestClassifyVersionSize:
     def test_small(self):
         assert semver.classify_version_size("1.2.3", "1.2.4") == "small"
@@ -259,6 +278,27 @@ class TestClassifyVersionSize:
         # the small/medium/large tiering, not just major/minor.
         assert semver.classify_version_size("1.2", "1.2.3") == "small"
 
+    def test_extended_semver_hotfix_only_change_is_small(self):
+        # Found live, 2026-11-02: v0.5.8 -> v0.5.9.1 was "large" before the
+        # fourth component was recognized at all.
+        assert semver.classify_version_size("0.5.8", "0.5.9.1") == "small"
+        assert semver.classify_version_size("0.5.9.1", "0.5.9.2") == "small"
+
+    def test_extended_semver_minor_change_is_medium(self):
+        assert semver.classify_version_size("0.5.9.1", "0.6.0.0") == "medium"
+
+    def test_extended_semver_major_change_is_large(self):
+        assert semver.classify_version_size("0.5.9.1", "1.0.0.0") == "large"
+
+    def test_mixed_strict_semver_and_extended_semver_hotfix_only_change_is_small(self):
+        # The plain side's implicit hotfix=0 still participates normally,
+        # same reasoning as the short/full semver mix above.
+        assert semver.classify_version_size("0.5.9", "0.5.9.1") == "small"
+
+    def test_extended_semver_not_actually_newer_is_large(self):
+        assert semver.classify_version_size("0.5.9.2", "0.5.9.1") == "large"
+        assert semver.classify_version_size("0.5.9.1", "0.5.9.1") == "large"
+
 
 class TestNonStringVersionInput:
     """Regression tests for HA-Update-Manager/ha-update-manager#1: a real
@@ -286,3 +326,22 @@ class TestNonStringVersionInput:
 
     def test_is_git_commit_version_with_int(self):
         assert semver.is_git_commit_version(123456) is False
+
+
+class TestHaCoreVersionSatisfies:
+    def test_current_newer_than_required(self):
+        assert semver.ha_core_version_satisfies("2026.11.0", "2026.10.0")
+
+    def test_current_equal_to_required(self):
+        assert semver.ha_core_version_satisfies("2026.11.0", "2026.11.0")
+
+    def test_current_older_than_required(self):
+        assert not semver.ha_core_version_satisfies("2026.10.4", "2026.11.0")
+
+    def test_same_month_different_patch(self):
+        assert semver.ha_core_version_satisfies("2026.11.2", "2026.11.0")
+        assert not semver.ha_core_version_satisfies("2026.11.0", "2026.11.2")
+
+    def test_unparseable_version_fails_open(self):
+        assert semver.ha_core_version_satisfies("not-a-version", "2026.11.0")
+        assert semver.ha_core_version_satisfies("2026.11.0", "not-a-version")

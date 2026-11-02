@@ -87,6 +87,18 @@ _EXPIRY_SAFETY_MARGIN = timedelta(minutes=2)
 # See async_get_valid_access_token's own "error" branch for why this isn't 1.
 _MIN_CONSECUTIVE_REFRESH_FAILURES = 2
 
+# Found live, 2026-11-02: a batch of near-simultaneous callers (several
+# votes needing a token at once) each waited their turn on _refresh_lock,
+# then each immediately retried _async_refresh_token themselves (the
+# post-lock cache re-check in async_get_valid_access_token can't help,
+# since a *failed* refresh never updates access_token_expires_at) -- 13
+# identical "incorrect_client_credentials" responses within 15 seconds,
+# pure log noise and unnecessary load on GitHub's own token endpoint for
+# what's really one underlying problem, not 13 separate ones. This cooldown
+# makes every caller within it get an immediate None, with no new HTTP
+# request, instead of repeating a refresh that just failed.
+_REFRESH_FAILURE_COOLDOWN = timedelta(seconds=30)
+
 LinkStatus = Literal["idle", "pending", "linked", "failed", "expired"]
 
 
@@ -125,6 +137,10 @@ class GitHubAuthManager:
         # now waits for whichever refresh is already in flight and reuses
         # its result instead of starting a competing one.
         self._refresh_lock = asyncio.Lock()
+        # Not persisted, same "meaningful only for the current process"
+        # reasoning as self._link_status above -- see
+        # _REFRESH_FAILURE_COOLDOWN's own comment for why this exists.
+        self._last_refresh_failure_at: datetime | None = None
 
     async def async_load(self) -> None:
         self._data = await self._store.async_load() or {}
@@ -304,6 +320,12 @@ class GitHubAuthManager:
             if token is not None:
                 return token
 
+            if (
+                self._last_refresh_failure_at is not None
+                and dt_util.utcnow() - self._last_refresh_failure_at < _REFRESH_FAILURE_COOLDOWN
+            ):
+                return None
+
             refresh_expires_at = dt_util.parse_datetime(self._data.get("refresh_token_expires_at", ""))
             if refresh_expires_at is not None and dt_util.utcnow() >= refresh_expires_at:
                 await self._async_mark_broken()
@@ -327,6 +349,7 @@ class GitHubAuthManager:
                 payload = await response.json(content_type=None)
         except Exception:
             _LOGGER.debug("Couldn't refresh the GitHub access token", exc_info=True)
+            self._last_refresh_failure_at = dt_util.utcnow()
             return None
 
         if "error" in payload:
@@ -345,6 +368,7 @@ class GitHubAuthManager:
             streak = self._data.get("refresh_failure_streak", 0) + 1
             self._data["refresh_failure_streak"] = streak
             await self._store.async_save(self._data)
+            self._last_refresh_failure_at = dt_util.utcnow()
             if streak >= _MIN_CONSECUTIVE_REFRESH_FAILURES:
                 await self._async_mark_broken()
             return None
@@ -367,6 +391,7 @@ class GitHubAuthManager:
             "broken": False,
             "refresh_failure_streak": 0,
         }
+        self._last_refresh_failure_at = None
         await self._store.async_save(self._data)
         _async_clear_link_expired_issue(self.hass)
         return self._data["access_token"]

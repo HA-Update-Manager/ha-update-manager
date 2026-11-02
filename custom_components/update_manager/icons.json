@@ -28,5 +28,16 @@
                 }
             }
         }
+    },
+    "triggers": {
+        "scheduled_auto_install": {
+            "trigger": "mdi:timer-sand"
+        },
+        "installed": {
+            "trigger": "mdi:check-circle"
+        },
+        "install_failed": {
+            "trigger": "mdi:alert-circle-outline"
+        }
     }
 }

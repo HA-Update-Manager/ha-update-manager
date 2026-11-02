@@ -39,24 +39,34 @@ _HASSIO_DOMAIN = "hassio"
 # rather than imported: HACS isn't a dependency of this integration and
 # isn't guaranteed to be installed at all, same reasoning as "hassio"/"zha"
 # being hardcoded elsewhere in this module/zigbee.py.
+#
+# HA 2026.11 replaces HACS with a core "marketplace" integration; existing
+# HACS-installed update entities keep their entity_id but their
+# entity_registry entry's platform changes from "hacs" to "marketplace".
+# Both domains are checked so this keeps working across that migration
+# instead of silently losing every HACS-identified entity the moment a
+# user updates past 2026.11.
 _HACS_DOMAIN = "hacs"
+_MARKETPLACE_DOMAIN = "marketplace"
 
 
 def is_hacs_entity(hass: HomeAssistant, entity_id: str) -> bool:
-    """Whether entity_id's owning integration is HACS itself. Found live,
-    2026-07-22 (real bug hit on an ESPHome device's update entity, wrongly
-    identified as HACS): a plausible-looking https://github.com/... in
-    release_url is not enough on its own, plenty of built-in integrations
-    (ESPHome, for one) set a perfectly real GitHub release_url pointing at
-    their own upstream project, nothing to do with HACS at all. Verified
-    against hacs/integration's own source (custom_components/hacs/
-    update.py): every genuinely HACS-installed repo's update entity is
-    created by HacsRepositoryUpdateEntity, which belongs to HACS's own
-    integration domain -- including repos with no backend Python component
-    of their own at all (e.g. a pure Lovelace card), so this is the one
-    check that covers all of them, not just some."""
+    """Whether entity_id's owning integration is HACS itself (or, since HA
+    2026.11, its successor integration, Marketplace -- see _MARKETPLACE_DOMAIN
+    above). Found live, 2026-07-22 (real bug hit on an ESPHome device's
+    update entity, wrongly identified as HACS): a plausible-looking
+    https://github.com/... in release_url is not enough on its own, plenty
+    of built-in integrations (ESPHome, for one) set a perfectly real GitHub
+    release_url pointing at their own upstream project, nothing to do with
+    HACS at all. Verified against hacs/integration's own source
+    (custom_components/hacs/update.py): every genuinely HACS-installed
+    repo's update entity is created by HacsRepositoryUpdateEntity, which
+    belongs to HACS's own integration domain -- including repos with no
+    backend Python component of their own at all (e.g. a pure Lovelace
+    card), so this is the one check that covers all of them, not just
+    some."""
     entry = er.async_get(hass).async_get(entity_id)
-    return entry is not None and entry.platform == _HACS_DOMAIN
+    return entry is not None and entry.platform in (_HACS_DOMAIN, _MARKETPLACE_DOMAIN)
 
 # Real, literal identifier values hassio's own entity.py uses for its
 # non-add-on devices (Core/Supervisor/OS/host/mount), never a real add-on

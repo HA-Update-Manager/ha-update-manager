@@ -103,5 +103,19 @@
         "unknown_update_entity": {
             "message": "{entity_id} isn't a currently tracked update entity."
         }
+    },
+    "triggers": {
+        "scheduled_auto_install": {
+            "name": "Scheduled auto-install",
+            "description": "Triggers when an update is announced for a scheduled auto-install (the countdown starting, not the install itself)."
+        },
+        "installed": {
+            "name": "Installed",
+            "description": "Triggers once an update finishes installing, whether auto-installed or installed manually."
+        },
+        "install_failed": {
+            "name": "Install failed",
+            "description": "Triggers when an install attempt fails."
+        }
     }
 }
