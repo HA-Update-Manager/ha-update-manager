@@ -206,7 +206,10 @@ export const TRANSLATIONS = {
     // lives in dialog_timeline_postponed_detail below.
     dialog_timeline_postponed: "Postponed",
     dialog_timeline_postponed_detail: (required, current) =>
-      `Requires Home Assistant ${required}. You're on ${current}. This will resume automatically once you update Home Assistant itself.`,
+      `Requires Home Assistant ${required}. You're currently on ${current}.`,
+    dialog_timeline_native_auto_update: "Managed by Home Assistant",
+    dialog_timeline_native_auto_update_detail:
+      "Home Assistant's own “Auto update” toggle is on for this entity, so it installs this update itself, on its own schedule.",
     dialog_community_verdict_disclaimer:
       "A collected opinion from other users, not a guarantee. Be extra careful with safety-relevant devices (locks, alarms, smoke detectors).",
     // Also the "nothing at all" row of the Community section's own fact
@@ -596,7 +599,10 @@ export const TRANSLATIONS = {
     dialog_timeline_held_back_pointer: "Tegengehouden door het communityoordeel.",
     dialog_timeline_postponed: "Uitgesteld",
     dialog_timeline_postponed_detail: (required, current) =>
-      `Vereist Home Assistant ${required}. Jij hebt ${current}. Dit gaat automatisch verder zodra je Home Assistant zelf update.`,
+      `Vereist Home Assistant ${required}. Jij hebt nu ${current}.`,
+    dialog_timeline_native_auto_update: "Wordt beheerd door Home Assistant",
+    dialog_timeline_native_auto_update_detail:
+      "Home Assistant's eigen “Auto update” staat aan voor deze entiteit, dus hij installeert deze update zelf, op zijn eigen moment.",
     dialog_community_verdict_disclaimer:
       "Een verzamelde mening van andere gebruikers, geen garantie. Wees extra voorzichtig bij veiligheidsgevoelige apparaten (sloten, alarmen, rookmelders).",
     community_not_yet_rated: "Niemand heeft nog iets over deze sprong gemeld.",

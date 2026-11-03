@@ -231,6 +231,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # place) correctly reads as "postponed", not "skipped", from the
     # start.
     coordinator.set_own_skip_checker(staging_skip_manager.is_own_skip)
+    # Same reasoning/ordering as set_own_skip_checker just above -- see
+    # coordinator.py's own set_postponed_checker/self._is_postponed
+    # comments.
+    coordinator.set_postponed_checker(lambda entity_id: install_manager.postponed_for(entity_id) is not None)
 
     # staging_skip_manager.async_load() awaited on its own, *before*
     # coordinator.async_start() -- found live (well, found by review, not

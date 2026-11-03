@@ -164,6 +164,7 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
                 rules=rules,
                 master_enabled=self._coordinator.master_enabled,
                 auto_install_whitelisted=bool(u.get("auto_install_whitelisted")),
+                native_auto_update=bool(u.get("native_auto_update")),
             )
         ]
         self._attr_native_value = len(bucket)

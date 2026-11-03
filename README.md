@@ -164,6 +164,11 @@ every 15 minutes.
   install, or when this panel's own dialog is used for something already actively queued or held back.
   A single click on anything else opens Home Assistant's own native update dialog instead, which calls
   Home Assistant's own install service directly, with no way for Update Manager to see or pace it.
+* An entity with Home Assistant's own per-entity "Auto update" turned on (common for some Apps) is
+  installed by Home Assistant itself, on its own schedule, bypassing staging entirely. Update Manager
+  never announces or auto-installs it either, to avoid racing that, and the detail dialog says so. Hide
+  postponed updates still can't hide it though: Home Assistant's own skip service refuses to run on any
+  entity with this toggle on. Turn it off for anything you want Update Manager to actually manage.
 
 ## Troubleshooting
 

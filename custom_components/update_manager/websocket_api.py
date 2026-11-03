@@ -74,7 +74,7 @@ from .device_identity import resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
-from .install_manager import auto_install_rules_from_options, failure_reason_for
+from .install_manager import auto_install_rules_from_options, failure_reason_for, min_ha_version_required
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
 from .semver import strip_version_prefix
 from .vote_issue_body import REASON_CATEGORIES
@@ -781,9 +781,20 @@ async def _async_run_manual_install(
     except Exception as exception:
         _LOGGER.exception("Update Manager's manual install failed for %s", entity_id)
         if data and to_version:
-            data.install_manager.handle_manual_install_failure(
-                entity_id, to_version, reason=failure_reason_for(exception)
-            )
+            # Parked in self._postponed, same as install_manager.py's own
+            # auto-install path, rather than just a labeled "Failed updates"
+            # entry -- direct user feedback, 2026-11-02: a too-old HA Core
+            # is true regardless of which path discovered it, so a manual
+            # click learning it should update the same shared state auto-
+            # install itself will otherwise only rediscover much later, on
+            # its own schedule.
+            required_version = min_ha_version_required(exception)
+            if required_version is not None:
+                await data.install_manager.async_mark_postponed(entity_id, to_version, required_version)
+            else:
+                data.install_manager.handle_manual_install_failure(
+                    entity_id, to_version, reason=failure_reason_for(exception)
+                )
 
 
 @websocket_api.require_admin

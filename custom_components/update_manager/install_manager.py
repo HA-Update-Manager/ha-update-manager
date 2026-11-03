@@ -314,9 +314,19 @@ class InstallManager:
         # both do one before this check even runs) every single time, for
         # something we already know won't succeed until the user's own HA
         # Core version changes -- see _async_evaluate_one's own postponed
-        # guard, which checks that cheaply instead of reattempting. Not
-        # persisted: a restart just means one extra real attempt to
-        # rediscover it, same as any other in-memory-only bookkeeping here.
+        # guard, which checks that cheaply instead of reattempting.
+        #
+        # Persisted (found live, 2026-11-02: it originally wasn't, on the
+        # assumption a restart would just cost one extra real attempt to
+        # rediscover it, same as other in-memory-only bookkeeping here --
+        # wrong, because _async_execute already clears self._pending for
+        # this entity_id before dispatching the install that lands it here,
+        # so a restart while postponed left nothing in either dict: not
+        # this one, un-persisted, and not self._pending either, already
+        # cleared. The entity read as a brand-new, never-evaluated update,
+        # restarting its entire announce/wait cycle from scratch instead of
+        # one cheap re-check, hiding a known, still-true fact for as long
+        # as that whole wait period takes to elapse again).
         self._postponed: dict[str, tuple[str, str]] = {}
         # Serializes every _async_tick pass against every other one: same
         # fix, and same underlying race, as staging_skip.py's own StagingSkipManager
@@ -363,6 +373,10 @@ class InstallManager:
             for entity_id, entry in data.get("pending", {}).items()
         }
         self._cancelled = dict(data.get("cancelled", {}))
+        self._postponed = {
+            entity_id: (entry["to_version"], entry["required_version"])
+            for entity_id, entry in data.get("postponed", {}).items()
+        }
 
     async def _async_save(self) -> None:
         await self._store.async_save(
@@ -376,6 +390,10 @@ class InstallManager:
                     for entity_id, p in self._pending.items()
                 },
                 "cancelled": self._cancelled,
+                "postponed": {
+                    entity_id: {"to_version": to_version, "required_version": required_version}
+                    for entity_id, (to_version, required_version) in self._postponed.items()
+                },
             }
         )
 
@@ -608,6 +626,7 @@ class InstallManager:
                 # evaluated fresh below instead of carrying the old one's
                 # postponed state over to it.
                 del self._postponed[entity_id]
+                self._dirty = True
             elif not ha_core_version_satisfies(HA_CORE_VERSION, required_version):
                 return
             else:
@@ -616,8 +635,14 @@ class InstallManager:
                 # perfectly normal evaluation below, same as any other
                 # ready entity (direct user feedback, 2026-11-02: no
                 # separate "resume" step, it should just behave normally
-                # again).
+                # again). available_since is re-anchored to now, direct user
+                # feedback, 2026-11-02: the staging wait period should start
+                # once this is actually actionable, not have been counting
+                # down invisibly the whole time it sat blocked -- see
+                # coordinator.py's own async_reset_available_since docstring.
                 del self._postponed[entity_id]
+                self._dirty = True
+                await self._coordinator.async_reset_available_since(entity_id, postponed_to_version)
 
         # A stale cancellation (the entity has since moved to a different
         # target version) has no effect either way -- prune it so it
@@ -656,6 +681,7 @@ class InstallManager:
                 trusted_vote=cached.get("trusted_vote"),
                 community_problematic_count=(cached.get("community_verdict") or {}).get("problematic_count", 0),
                 auto_install_whitelisted=cached.get("auto_install_whitelisted", False),
+                native_auto_update=cached.get("native_auto_update", False),
             )
             trusted_voter_usernames = cached.get("trusted_voters_matched", []) if reason == "trusted_voter" else []
         else:
@@ -900,6 +926,7 @@ class InstallManager:
                     required_version,
                 )
                 self._postponed[entity_id] = (to_version, required_version)
+                self._dirty = True
                 return
             _LOGGER.exception("Update Manager's auto-install failed for %s", entity_id)
             self.handle_install_failure(entity_id, to_version, reason=failure_reason_for(exception))
@@ -955,6 +982,34 @@ class InstallManager:
         self._dirty = True
         self._refresh_pending_notification()
 
+    async def async_mark_postponed(self, entity_id: str, to_version: str, required_version: str) -> None:
+        """websocket_api.py's own _async_run_manual_install calls this when
+        a manual Install click hits the exact same "needs a newer HA Core
+        version" failure _async_run_install's own except-branch already
+        parks in self._postponed -- direct user feedback, 2026-11-02: the
+        fact that a given to_version needs a newer HA Core is true
+        regardless of which path discovered it, so a manual click learning
+        it should update the same shared state, not just show a one-off
+        "Failed updates" message and leave auto-install to rediscover the
+        exact same thing on its own, later schedule. Saved immediately
+        (like async_cancel above), not left to self._dirty and whatever
+        _async_tick's own batched save happens to catch next.
+
+        Also clears any existing self._pending announcement for this
+        entity -- found live, 2026-11-02: unlike _async_run_install's own
+        except-branch (reached only after _async_execute already cleared
+        self._pending for this entity_id, right before dispatching), this
+        method can be reached with a real, still-active announcement still
+        in place (e.g. auto-install already scheduled this same update for
+        tomorrow when the manual click happened), showing a contradictory
+        "will auto-install tomorrow" step alongside "Postponed" in the
+        detail dialog otherwise."""
+        self._postponed[entity_id] = (to_version, required_version)
+        if entity_id in self._pending:
+            del self._pending[entity_id]
+            self._refresh_pending_notification()
+        await self._async_save()
+
     def handle_manual_install_failure(self, entity_id: str, to_version: str, *, reason: str | None = None) -> None:
         """websocket_api.py's own _handle_install (the panel's explicit
         Install/Install all button) dispatches update.install the exact
@@ -968,7 +1023,9 @@ class InstallManager:
         docstring for why)."""
         self._mark_failed(entity_id, to_version, reason=reason)
 
-    def _mark_failed(self, entity_id: str, to_version: str, *, reason: str | None = None) -> bool:
+    def _mark_failed(
+        self, entity_id: str, to_version: str, *, reason: str | None = None
+    ) -> bool:
         """Shared by handle_install_failure (auto) and
         handle_manual_install_failure (manual) above: records the failure
         in the shared "Failed updates" notification and fires
@@ -992,9 +1049,11 @@ class InstallManager:
         failure is about never needs a failure notification (or a
         backoff retry) for it.
 
-        `reason` (currently only ever "warning_not_accepted") only changes
-        _refresh_failed_notification's own item text for this entity, see
-        that method's own comment."""
+        `reason` (currently only ever "warning_not_accepted" -- the other
+        labeled failure reason, a too-old HA Core, now goes through
+        async_mark_postponed instead, see that method's own docstring)
+        only changes _refresh_failed_notification's own item text for this
+        entity, see that method's own comment."""
         # Otherwise this stays recorded forever (was_auto_installed is the
         # only other place that clears it, and it's never called if
         # installed_version never actually changes), a later, wholly
@@ -1057,7 +1116,8 @@ class InstallManager:
             self._refresh_failed_notification()
         self._failure_counts.pop(entity_id, None)
         self._failed_reason.pop(entity_id, None)
-        self._postponed.pop(entity_id, None)
+        if self._postponed.pop(entity_id, None) is not None:
+            self._dirty = True
 
     @callback
     def _refresh_failed_notification(self) -> None:

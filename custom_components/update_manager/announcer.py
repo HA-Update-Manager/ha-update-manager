@@ -63,6 +63,7 @@ def effective_auto_install_state(
     trusted_vote: str | None,
     community_problematic_count: int = 0,
     auto_install_whitelisted: bool = False,
+    native_auto_update: bool = False,
 ) -> tuple[bool, bool, AutoInstallReason | None]:
     """(is_ready, auto_install_enabled, reason) after folding in (a)
     auto_install_whitelisted, the standing "always auto-update" override
@@ -88,7 +89,17 @@ def effective_auto_install_state(
     reasoning as auto_install_excluded. An entity can never be both
     excluded and whitelisted at once (see CONF_WHITELISTED_ENTITIES's own
     comment), so there's no ordering question between those two to resolve
-    here -- only ever one or the other, or neither. `installable` isn't a
+    here -- only ever one or the other, or neither.
+
+    native_auto_update is the same hard, unconditional gate as
+    auto_install_excluded: Home Assistant's own per-entity "Auto update"
+    toggle (state.attributes["auto_update"]) means Home Assistant installs
+    this update on its own schedule regardless of what's decided here, so
+    announcing or executing our own install on top of that would just race
+    it. Unlike auto_install_excluded, this never counts as needing manual
+    action either (needs_manual_action below returns False for it directly,
+    before ever reaching this function): nothing is actually left for the
+    user to do, Home Assistant is already handling it. `installable` isn't a
     parameter here at all: that's still install_manager.py's own separate,
     always-applies gate (announcer.py has never known about it,
     decide_action takes it as its own argument), unaffected by any of this.
@@ -130,7 +141,7 @@ def effective_auto_install_state(
     what feeds into it (whitelist is the one exception, see
     decide_action's own `instant` parameter)."""
     is_ready = status == "ready"
-    if auto_install_excluded or status == "skipped":
+    if auto_install_excluded or native_auto_update or status == "skipped":
         return is_ready, False, None
     if auto_install_whitelisted:
         return True, True, "whitelist"
@@ -151,6 +162,7 @@ def needs_manual_action(
     rules: AutoInstallRules,
     master_enabled: bool,
     auto_install_whitelisted: bool = False,
+    native_auto_update: bool = False,
 ) -> bool:
     """True for a "ready" update that won't be auto-installed -- the exact
     set install_manager.py's own periodic tick otherwise leaves for a
@@ -169,7 +181,15 @@ def needs_manual_action(
     installable isn't a parameter here, same as effective_auto_install_state
     itself -- callers are expected to already be iterating an
     installable-only set (e.g. update_status.py's own "ready" bucket, which
-    already excludes not-installable updates before this ever runs)."""
+    already excludes not-installable updates before this ever runs).
+
+    native_auto_update is checked first and returns False unconditionally:
+    Home Assistant's own "Auto update" toggle means it's already installing
+    this one itself, so there's genuinely nothing left for the user to do
+    through Update Manager, unlike auto_install_excluded (still manual,
+    just via a different click)."""
+    if native_auto_update:
+        return False
     if status != "ready":
         return False
     size_enabled = size_auto_install_enabled(version_size, rules)

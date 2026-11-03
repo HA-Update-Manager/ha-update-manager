@@ -443,7 +443,7 @@ function autoInstallEnabledFor(u, settings) {
   // off at once, matching install_manager.py's own _async_evaluate_one:
   // showing a "will update automatically" projection while paused would be
   // actively misleading, since nothing will actually happen.
-  if (!settings || settings.enabled === false || !u.installable || u.auto_install_excluded) return false;
+  if (!settings || settings.enabled === false || !u.installable || u.auto_install_excluded || u.native_auto_update) return false;
   // Whitelisted bypasses the size toggle entirely too, same as server-side
   // -- checked before communityBlocksAutoInstall below, though that
   // function itself already also special-cases this same field.
@@ -498,7 +498,7 @@ function statusText(tr, u, settings, hass) {
   // Checked before the regular status branches below, same reasoning as
   // updateIsInstalling above: an install that already failed once on a
   // too-old HA Core no longer reads as a plain "ready"/"pending_install"
-  // update, see groupUpdates' own isPostponedUpdate.
+  // update.
   if (u.postponed_min_ha_version) {
     // Found by code review, 2026-11-02: this early return used to skip the
     // auto_install_excluded suffix below entirely. Reachable whenever an
@@ -560,6 +560,15 @@ function timerBadge(tr, u, settings, hass) {
   // _buildListRow) replaces the normal countdown pill entirely while an
   // install is actually running.
   if (updateIsInstalling(entityState(hass, u.entity_id))) return { installing: true };
+  // Icon-only, no time, same pattern History's own auto-install badge
+  // already uses for an icon-only pill (see _buildTimerPill's own
+  // docstring): there's no countdown to show, Home Assistant's own "Auto
+  // update" toggle installs this on a schedule this panel doesn't control
+  // or know. Checked before postponed_min_ha_version/status below since
+  // none of those are ever actually reachable for this entity anyway (see
+  // effective_auto_install_state's own native_auto_update gate), but
+  // explicit here rather than relying on that.
+  if (u.native_auto_update) return { icon: ICON_AUTO_DOWNLOAD, title: tr.dialog_timeline_native_auto_update };
   if (u.postponed_min_ha_version) {
     return { icon: ICON_PAUSE_CIRCLE_OUTLINE, text: tr.timer_postponed(u.postponed_min_ha_version) };
   }
@@ -1001,15 +1010,15 @@ function isSkippedUpdate(u) {
 // A "ready" update whose own auto-install already found out it needs a
 // newer HA Core (see install_manager.py's own self._postponed) is still,
 // at heart, an update that isn't proceeding right now -- exactly what the
-// existing "waiting"/group_waiting ("Postponed") bucket already means, so
-// it's folded into that same group below rather than getting a second,
-// confusingly-similarly-named one of its own. statusText/timerBadge still
-// give it its own specific text/icon within that group (see their own
+// existing "waiting"/group_waiting ("Postponed") bucket already means.
+// coordinator.py's own status computation already reports "waiting" for
+// one of these (see its own self._is_postponed, 2026-11-02 -- sensor.py's
+// per-status counts and staging_skip.py's hide_postponed eligibility both
+// read that same cached status, so they needed to agree without each
+// learning about self._postponed separately too), so u.status alone is
+// enough here now, no separate check needed. statusText/timerBadge still
+// give it its own specific text/icon within the group (see their own
 // postponed_min_ha_version checks), so the reason is never ambiguous.
-function isPostponedUpdate(u) {
-  return u.installable && u.status !== "skipped" && !!u.postponed_min_ha_version;
-}
-
 function groupUpdates(tr, updates, showSkipped = true, showNotInstallable = true) {
   const notInstallable = updates.filter(isNotInstallableUpdate);
   const skipped = updates.filter(isSkippedUpdate);
@@ -1017,8 +1026,7 @@ function groupUpdates(tr, updates, showSkipped = true, showNotInstallable = true
 
   const byStatus = { ready: [], waiting: [], blocked: [] };
   installable.forEach((u) => {
-    const bucket = isPostponedUpdate(u) ? "waiting" : u.status;
-    (byStatus[bucket] || byStatus[_FALLBACK_STATUS]).push(u);
+    (byStatus[u.status] || byStatus[_FALLBACK_STATUS]).push(u);
   });
 
   const groups = [];
@@ -2993,6 +3001,22 @@ class UpdateManagerPanel extends HTMLElement {
     for (const u of this._updates) {
       const state = entityState(this._hass, u.entity_id);
       const installing = this._isEffectivelyInstalling(u.entity_id, state);
+      // The bare, un-grace-adjusted live reading, tracked separately from
+      // `installing` above -- found live, 2026-11-02: a fast-failing
+      // manual install (e.g. rejected immediately for needing a newer HA
+      // Core) could leave the spinner stuck forever, not just briefly.
+      // this._recentlyInstalling is a snapshot from the last _loadAll(),
+      // and _isEffectivelyInstalling's own flicker-grace timer (see its
+      // own comment) re-arms itself on every call that finds in_progress
+      // OR this stale snapshot true -- so once a stale recently_installing
+      // entry starts stretching `installing` past the real event, nothing
+      // ever flips it back on its own: the only thing that could refresh
+      // the stale snapshot (a reload, triggered below) never fires,
+      // because nothing here looked like it changed. The raw reading has
+      // no such memory, so its own true -> false edge still reaches the
+      // installingChanged check below even while `installing` itself
+      // stays artificially stuck, breaking the deadlock.
+      const rawInstalling = updateIsInstalling(state);
       const installedVersion = state && state.attributes && state.attributes.installed_version;
       // Direct user feedback, 2026-08-02: "als er op de achtergrond ontdekt
       // wordt dat er een nieuwe update beschikbaar voor is, dan ververst de
@@ -3014,7 +3038,7 @@ class UpdateManagerPanel extends HTMLElement {
       // caught it; a real skip (this panel's own Skip button, or HA's) has
       // the identical blind spot for the same reason.
       const skippedVersion = state && state.attributes && state.attributes.skipped_version;
-      next.set(u.entity_id, { installing, installedVersion, latestVersion, skippedVersion });
+      next.set(u.entity_id, { installing, rawInstalling, installedVersion, latestVersion, skippedVersion });
       // Every push while installing, not gated on installingChanged below --
       // see _patchListRowProgress's own comment for why this needs its own,
       // more frequent hook.
@@ -3044,7 +3068,7 @@ class UpdateManagerPanel extends HTMLElement {
       }
       const prev = previous.get(u.entity_id);
       if (!prev) continue;
-      if (prev.installing !== installing) installingChanged = true;
+      if (prev.installing !== installing || prev.rawInstalling !== rawInstalling) installingChanged = true;
       if (prev.installedVersion !== installedVersion || prev.latestVersion !== latestVersion || prev.skippedVersion !== skippedVersion) {
         anyVersionChanged = true;
         if (u.entity_id === this._dialogEntityId) dialogEntityVersionChanged = true;
@@ -4509,6 +4533,16 @@ class UpdateManagerPanel extends HTMLElement {
         absoluteWhen(tr, u.available_since, this._hass)
       );
       addDetail(step1, `${u.installed_version} → ${u.latest_version} (${size})`);
+      // Moved here from each individual status branch below (skipped/
+      // waiting/ready/postponed each used to carry their own copy) --
+      // direct user feedback, 2026-11-02: this is about the version jump
+      // itself (shown right above, on this exact step), not about
+      // whatever status this entity currently happens to be in, and Step 1
+      // is the one step that always renders regardless of status, so one
+      // copy here covers every case instead of four duplicated ones.
+      addCommunityDetail(step1);
+      addOtherJumpsDetail(step1);
+      addReportControls(step1);
 
       // Step 2: Ready to update (absorbs Announcement as an annotation).
       // Fixed icon (ICON_CHECK_CIRCLE) regardless of upcoming/done, same
@@ -4560,35 +4594,28 @@ class UpdateManagerPanel extends HTMLElement {
       // the footer (was its own separate ha-progress-button there before
       // this fix) -- same "the button belongs on the step it actually
       // unlocks" reasoning already applied to Force ready above.
-      if (u.status === "skipped") {
+      if (u.postponed_min_ha_version) {
+        // Nothing here -- Step 3b below already covers this entity's
+        // current state. Neither the "ready, Install now" step nor the
+        // "waiting, Force ready" one make sense while genuinely blocked on
+        // a too-old HA Core, 2026-11-02: both offer an action that would
+        // just fail again with the exact same error.
+      } else if (u.status === "skipped") {
         const step = addStep("var(--primary-color)", ICON_CANCEL, tr.status_skipped, null);
-        // Community content + report action now shown here too (direct
-        // user feedback, 2026-08-19: an already-skipped update had no way
-        // at all to see or report a community verdict before this, even
-        // though it's exactly the same jump every other step already
-        // covers). Unskip -- this step's own primary, expected action --
-        // comes right after the facts, before the report toggle: direct
-        // user feedback, 2026-08-19, "eerst de hoofdactie, daarna pas de
-        // report-toggle als secundaire optie" (tried facts-then-report-
-        // then-action first, read as burying the actual point of the step
-        // under an optional aside).
-        addCommunityDetail(step);
-        addOtherJumpsDetail(step);
+        // Community content/report controls moved to Step 1 (see its own
+        // comment, 2026-11-02) -- Unskip is this step's own, status-
+        // specific action, the only thing still needed here.
         addAction(step, tr.dialog_unskip, async () => {
           await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
           await this._afterDialogAction(entityId);
         });
-        addReportControls(step);
       } else if (u.status === "waiting") {
         const step = addStep(null, ICON_CHECK_CIRCLE, tr.group_ready, absoluteWhen(tr, u.ready_at, this._hass), { notEnabled: true });
-        addCommunityDetail(step);
-        addOtherJumpsDetail(step);
-        // Force ready unlocks this step specifically (skips straight to
-        // "ready"), not "Update available" above it -- direct user
-        // feedback, 2026-08-12: the button belongs on the step it
-        // actually unlocks. Comes before addReportControls, same "hoofdactie
-        // eerst" ordering as the "skipped" branch above -- see that
-        // branch's own comment.
+        // Community content/report controls moved to Step 1 (see its own
+        // comment, 2026-11-02). Force ready unlocks this step specifically
+        // (skips straight to "ready"), not "Update available" above it --
+        // direct user feedback, 2026-08-12: the button belongs on the step
+        // it actually unlocks.
         addAction(
           step,
           tr.dialog_force_ready,
@@ -4611,20 +4638,81 @@ class UpdateManagerPanel extends HTMLElement {
           // do".
           { appearance: "filled" }
         );
-        addReportControls(step);
       } else {
         const readySince = (u.pending_install && u.pending_install.announced_at) || u.ready_since;
-        const step = addStep("var(--success-color)", ICON_CHECK_CIRCLE, tr.group_ready, readySince ? absoluteWhen(tr, readySince, this._hass) : null);
-        addCommunityDetail(step);
-        addOtherJumpsDetail(step);
-        addReportControls(step);
+        addStep("var(--success-color)", ICON_CHECK_CIRCLE, tr.group_ready, readySince ? absoluteWhen(tr, readySince, this._hass) : null);
       }
     }
 
-    // Step 3: Auto-install (absorbs Installed) -- omitted entirely when
-    // it doesn't apply to this size/entity at all.
-    if (u.pending_install || autoInstallProjected) {
-      if (u.pending_install) {
+    // Step 3b: Postponed (needs a newer HA Core) -- shown before Step 3
+    // below, not after, matching the natural order these actually happen
+    // in. Its own, independent condition, not nested in Step 3: a
+    // postponed entity has neither a real pending_install (deliberately
+    // never created for this, see install_manager.py's own
+    // self._postponed) nor a *meaningful* autoInstallProjected preview
+    // (see Step 3's own comment on why that projection is shown with no
+    // date while postponed). Shows the running Core version alongside the
+    // required one -- the required version alone doesn't say how far off
+    // you actually are. No Cancel action here: there's no countdown to
+    // interrupt, and update_manager/cancel_pending_install works by
+    // recording self._cancelled[entity_id] = to_version, which suppresses
+    // auto-install for that exact to_version until a newer one appears --
+    // HA Core updating doesn't change to_version, so clicking it would
+    // permanently break the dialog's own "becomes a normal update again"
+    // promise.
+    if (u.postponed_min_ha_version) {
+      // "var(--warning-color)", no notEnabled -- a real, current blocking
+      // condition (a first attempt already happened and failed), not a
+      // merely-projected future action, same treatment as the
+      // heldBackByCommunity step below.
+      const step = addStep("var(--warning-color)", ICON_PAUSE_CIRCLE_OUTLINE, tr.dialog_timeline_postponed, null);
+      addDetail(step, tr.dialog_timeline_postponed_detail(u.postponed_min_ha_version, this._hass.config.version));
+    }
+
+    // Step 3c: Managed by Home Assistant, shown instead of Step 3 below
+    // whenever Home Assistant's own per-entity "Auto update" toggle is on
+    // (coordinator.py's own native_auto_update). That toggle means Home
+    // Assistant installs this update itself, on its own schedule,
+    // regardless of this panel's own staging/community/auto-install rules
+    // (announcer.py's own effective_auto_install_state treats it as the
+    // same hard gate as auto_install_excluded). Without this step,
+    // Auto-install would simply never appear, with nothing explaining why.
+    if (u.native_auto_update) {
+      const step = addStep(null, ICON_AUTO_DOWNLOAD, tr.dialog_timeline_native_auto_update, null, { notEnabled: true });
+      addDetail(step, tr.dialog_timeline_native_auto_update_detail);
+    } else if (u.pending_install || autoInstallProjected) {
+      // Step 3: Auto-install (absorbs Installed) -- omitted entirely when
+      // it doesn't apply to this size/entity at all. While postponed,
+      // u.pending_install is already cleared (install_manager.py's own
+      // async_mark_postponed/_async_run_install both do this), but
+      // autoInstallProjected is a pure, staging-rules-only client projection
+      // with no awareness of postponed_min_ha_version, so it still computes
+      // a date -- one that's stale until coordinator.py's own
+      // async_reset_available_since re-anchors available_since the moment
+      // this actually resumes. Shown anyway with that date suppressed rather
+      // than the whole step hidden, and deliberately with no detail text
+      // either: whether this installs immediately once the HA Core
+      // requirement is met or still waits out its own staging period first
+      // depends on this entity's settings, so no single sentence here would
+      // be accurate for every case. No Cancel action for the same
+      // permanent-block reason the Postponed step above has none.
+      if (u.postponed_min_ha_version) {
+        const step = addStep(null, ICON_AUTO_DOWNLOAD, tr.dialog_timeline_auto_install, null, { notEnabled: true });
+        // Direct user feedback, 2026-11-02: this is a genuine "don't
+        // auto-install this version at all" choice, same as the plain
+        // projected-preview branch further down already offers -- unlike
+        // the Postponed step's own (deliberately removed) Cancel, this one
+        // isn't about the HA Core requirement, it's about whether this
+        // to_version should auto-install once that's no longer a blocker.
+        addAction(step, tr.cancel_auto_install, async () => {
+          await this._hass.callWS({
+            type: "update_manager/cancel_pending_install",
+            entity_id: entityId,
+            to_version: u.latest_version,
+          });
+          await this._afterDialogAction(entityId);
+        });
+      } else if (u.pending_install) {
         if (heldBackByCommunity) {
           const step = addStep(
             "var(--warning-color)",
@@ -4689,34 +4777,6 @@ class UpdateManagerPanel extends HTMLElement {
           await this._afterDialogAction(entityId);
         });
       }
-    }
-
-    // Step 3b: Postponed (needs a newer HA Core) -- its own, independent
-    // condition, not nested in Step 3 above: a postponed entity has
-    // neither a real pending_install (deliberately never created for this,
-    // see install_manager.py's own self._postponed) nor an
-    // autoInstallProjected preview. Shows the running Core version
-    // alongside the required one (direct user feedback, 2026-11-02: the
-    // required version alone doesn't say how far off you actually are),
-    // same Cancel affordance as any other not-yet-dispatched auto-install
-    // (install_manager.py's own async_cancel already clears a postponed
-    // entity exactly the same way it clears a real pending one, see that
-    // method's own docstring).
-    if (u.postponed_min_ha_version) {
-      // "var(--warning-color)", no notEnabled -- a real, current blocking
-      // condition (a first attempt already happened and failed), not a
-      // merely-projected future action, same treatment as the
-      // heldBackByCommunity step above.
-      const step = addStep("var(--warning-color)", ICON_PAUSE_CIRCLE_OUTLINE, tr.dialog_timeline_postponed, null);
-      addDetail(step, tr.dialog_timeline_postponed_detail(u.postponed_min_ha_version, this._hass.config.version));
-      addAction(step, tr.cancel_auto_install, async () => {
-        await this._hass.callWS({
-          type: "update_manager/cancel_pending_install",
-          entity_id: entityId,
-          to_version: u.latest_version,
-        });
-        await this._afterDialogAction(entityId);
-      });
     }
 
     // Step 4: Installing -- only while genuinely blocked by the Zigbee
