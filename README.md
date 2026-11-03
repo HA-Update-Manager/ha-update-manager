@@ -169,6 +169,9 @@ every 15 minutes.
   never announces or auto-installs it either, to avoid racing that, and the detail dialog says so. Hide
   postponed updates still can't hide it though: Home Assistant's own skip service refuses to run on any
   entity with this toggle on. Turn it off for anything you want Update Manager to actually manage.
+  Toggling it can itself take up to 15 minutes to show up here: that's how often Home Assistant's own
+  Supervisor integration polls for it, confirmed against its real source, not something Update Manager
+  can speed up since it only ever sees what that entity itself reports.
 
 ## Troubleshooting
 
