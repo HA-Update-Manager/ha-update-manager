@@ -7,7 +7,8 @@ Updates pile up, and it's never quite obvious which ones are safe to just let ha
 watches them for you and decides when an update has actually earned your trust: it gives a fresh release
 time to prove itself, listens for anyone else who's already made the same jump and hit trouble, and
 installs everything in an order that won't leave Home Assistant restarting mid-update. Turn on
-auto-install and most of that becomes something you never have to think about again.
+auto-install and most of that becomes something you never have to think about again, all from a panel
+that looks and feels like it's always been part of Home Assistant.
 
 ---
 
@@ -19,22 +20,17 @@ auto-install and most of that becomes something you never have to think about ag
 
 ## Why you'll like it
 
-* **A waiting period sized to the risk.** A small integration bump and a major Core jump don't deserve the
-  same caution, so each gets its own configurable buffer before it counts as ready. Optionally restrict
-  that further to specific weekdays, or even a specific time of day, e.g. only ever ready on Saturdays.
-* **A second opinion before you commit.** See whether others already made your exact version jump safely,
-  cast your own vote, and let one person you trust override your own rules the moment they vouch for a
-  release.
-* **Nothing installs in a risky order.** Core, Supervisor, OS, and device firmware queue up in the order
-  that keeps a restart from cutting off something else mid-install, and Zigbee devices on the same network
-  never reflash all at once.
-* **Auto-install that still asks first.** A cancellable countdown announces what's coming and when, with
-  an automatic backup when the update supports one, and a master switch to pause all of it in one click.
-* **Release notes worth reading.** Real GitHub notes, compiled across every version a jump skips over, plus
-  a wrapped app's own upstream notes (Zigbee2MQTT, Mealie, Matterbridge) alongside the short version.
-* **A panel that feels like it's always been there.** Live progress, a full History audit trail, and an
-  autosaving Settings tab, built from Home Assistant's own components so it looks and behaves like part of
-  the app, not a separate thing bolted on.
+* **A second opinion before you commit.** See whether others already made your exact jump safely, vote
+  yourself, and let someone you trust override your own rules the moment they vouch for a release.
+* **Nothing installs in a risky order.** Core, Supervisor, OS, and device firmware queue up to avoid a
+  restart cutting off something else mid-install; Zigbee devices on the same network never reflash at once.
+* **A waiting period sized to the risk.** A small bump and a major Core jump don't deserve the same
+  caution, so each size gets its own buffer before it counts as ready. Restrict further to specific
+  weekdays or times, e.g. only ever ready on Saturdays.
+* **Auto-install that still asks first.** A cancellable countdown announces what's coming, with an
+  automatic backup when the update supports one, and a master switch to pause all of it in one click.
+* **Release notes worth reading.** Real GitHub notes compiled across every skipped version, plus a
+  wrapped app's own upstream notes (Zigbee2MQTT, Mealie, Matterbridge) alongside the short version.
 
 ---
 
@@ -66,36 +62,29 @@ Settings tab.
 
 For a specific entity's pending update, in this exact order:
 
-1. **Hard gates, nothing overrides these:** anything in Excluded entities never auto-installs, nor does
-   anything skipped via Home Assistant's own "Skip this version." Home Assistant's own Core, Supervisor,
-   and OS updates start out as pre-populated members of Excluded entities, so they stay manual by
-   default too, but you can remove them from that list if you want them eligible for auto-install
-   like anything else.
-2. **A trusted voter's "healthy" vote on this exact jump wins outright**, skipping the waiting period and
-   the per-size toggle, even over someone else's problem report on the same jump.
-3. **Any problematic community vote blocks it** (unless step 2 already overrode it): one vote, from
-   anyone, is enough. No quorum, no percentage, and no trusted voters need to be configured for this.
+1. **Hard gates:** Excluded entities and anything skipped via Home Assistant's own "Skip this version"
+   never auto-install. Core, Supervisor, and OS start out excluded by default; remove them from that
+   list to make them eligible like anything else.
+2. **A trusted voter's "healthy" vote on this exact jump wins outright**, skipping the wait and the size
+   toggle, even over someone else's problem report on the same jump.
+3. **Any problematic community vote blocks it** (unless step 2 already overrode it): one vote from
+   anyone is enough, no quorum needed.
 4. **Otherwise, your own size-based rules apply**: waiting period elapsed, size toggle on, announce, then
    install.
 
-A blocked update shows an "Auto-install held back" alert on its dialog, naming the trusted voter or the
-reported count; the Community section on that dialog shows each reported reason.
-
-Scoping note: a vote (and this block) applies to the *exact* version jump, not any known issue along the
-way. See Known limitations below.
+A blocked update shows an "Auto-install held back" alert naming the trusted voter or reported count; the
+Community section on that dialog shows each reported reason. A vote (and this block) applies to the
+*exact* version jump, not any known issue along the way.
 
 ## Automating
 
 Every entity Update Manager creates lives under its own "Update Manager" device.
 
-* **Status sensors**: one per status the Updates tab itself groups by: `sensor.update_manager_ready`
-  ("Ready to update"), `_waiting` ("Postponed"), `_blocked` ("Discouraged"), `_skipped` ("Skipped"), and
-  `_not_installable` ("Not installable"). Each sensor's state is that status's own count, with the
-  affected entities (entity_id, installed/latest version) listed in its attributes: point a
-  `numeric_state` trigger at one directly, e.g. to notify when anything becomes Discouraged.
-  `sensor.update_manager_needs_manual_action` is a related but different count: of everything currently
-  "Ready to update", how many won't be auto-installed on their own, i.e. what's actually left for you to
-  install yourself.
+* **Status sensors**: one per status the Updates tab groups by (`sensor.update_manager_ready`, `_waiting`,
+  `_blocked`, `_skipped`, `_not_installable`). Each sensor's state is that status's own count, with
+  affected entities listed in its attributes; point a `numeric_state` trigger at one directly, e.g. to
+  notify when anything becomes Discouraged. `sensor.update_manager_needs_manual_action` separately counts
+  "Ready to update" entities that won't auto-install on their own, i.e. what's left for you to do yourself.
 * **Events**, fired on `hass.bus` for the three discrete moments an automation might want to react to:
 
   | Event | Fired when | Data |
@@ -104,13 +93,11 @@ Every entity Update Manager creates lives under its own "Update Manager" device.
   | `update_manager_installed` | An install completes, auto or manual alike | `entity_id`, `from_version`, `to_version`, `auto_installed`, `install_method`, `auto_install_reason`, `trusted_voter_usernames` |
   | `update_manager_install_failed` | An auto-install's `update.install` call raised | `entity_id`, `to_version` |
 
-  Ongoing status (which updates are currently Ready/Postponed/etc.) is already covered by the sensors
-  above; these events are only for the moments in between. `install_method` is one of `auto`, `manual`,
-  or `external` (an entity that updated itself outside Home Assistant entirely, only noticed here after
-  the fact, e.g. a device with its own separate auto-update setting).
+  Ongoing status is already covered by the sensors above; these events are only for the moments in
+  between. `install_method` is `auto`, `manual`, or `external` (updated itself outside Home Assistant,
+  e.g. a device with its own separate auto-update setting).
 * **Services** (Developer Tools > Actions), so an automation can act on `update_manager_announced` without
-  the panel involved at all, e.g. running its own analysis of the release notes before deciding whether to
-  let a scheduled auto-install proceed:
+  the panel involved, e.g. analyzing release notes before letting a scheduled auto-install proceed:
 
   | Service | Does |
   | --- | --- |
@@ -137,12 +124,10 @@ automation:
             Update Manager wants to update {{ device_name }} to version {{ trigger.event.data.to_version }}
             on {{ as_timestamp(trigger.event.data.execute_at) | timestamp_custom('%d-%m-%Y %H:%M') }}.
           data:
-            url: /update-manager/updates          # opens the Update Manager page on tap, iOS
-            clickAction: /update-manager/updates   # same, for Android
-            group: update_manager_announced        # bundles every one of these together in the notification shade
-            tag: "{{ device_name }}"               # a newer announcement for the same device replaces the old one instead of stacking
-            push:
-              interruption-level: passive          # iOS only, quiet, no sound/wake, doesn't override Focus modes
+            url: /update-manager/updates
+            clickAction: /update-manager/updates
+            group: update_manager_announced  # bundles these together in the notification shade
+            tag: "{{ device_name }}"         # a newer announcement for the same device replaces the old one
 ```
 
 ## How data updates
@@ -160,40 +145,33 @@ every 15 minutes.
 * Voting requires linking a GitHub account (a quick one-time device-flow step); reading verdicts doesn't.
 * A vote (and the community block) applies to the *exact* version jump. A negative verdict on 1.0.0 to
   1.0.1 has no bearing on a direct 1.0.0 to 1.0.2 jump: those are tracked as entirely separate votes.
-* Zigbee rollout pacing and the safe install order only apply when Update all or auto-install triggers the
-  install, or when this panel's own dialog is used for something already actively queued or held back.
-  A single click on anything else opens Home Assistant's own native update dialog instead, which calls
-  Home Assistant's own install service directly, with no way for Update Manager to see or pace it.
-* An entity with Home Assistant's own per-entity "Auto update" turned on (common for some Apps) is
-  installed by Home Assistant itself, on its own schedule, bypassing staging entirely. Update Manager
-  never announces or auto-installs it either, to avoid racing that, and the detail dialog says so. Hide
+* Zigbee rollout pacing and the safe install order only apply when Update all, auto-install, or this
+  panel's own dialog triggers the install. A single click anywhere else opens Home Assistant's own native
+  update dialog instead, which Update Manager can't see or pace.
+* An update needing a newer Home Assistant Core than you're running shows as "Postponed" (required version
+  included) instead of being retried or failing; resumes automatically once your Core catches up.
+* An entity with Home Assistant's own per-entity "Auto update" on (common for some Apps) is installed by
+  Home Assistant itself, so Update Manager never announces or auto-installs it, to avoid racing that. Hide
   postponed updates still can't hide it though: Home Assistant's own skip service refuses to run on any
-  entity with this toggle on. Turn it off for anything you want Update Manager to actually manage.
-  Toggling it can itself take up to 15 minutes to show up here: that's how often Home Assistant's own
-  Supervisor integration polls for it, confirmed against its real source, not something Update Manager
-  can speed up since it only ever sees what that entity itself reports.
+  entity with this toggle on, turn it off for anything you want Update Manager to actually manage. A live
+  toggle can take up to 15 minutes to show up here, that's Home Assistant's own Supervisor polling
+  interval, not something Update Manager controls.
 
 ## Troubleshooting
 
 * **A pending update isn't showing as "ready" yet**: staging recomputes every 15 minutes, so it can lag
-  the exact wait-days boundary by up to that long.
-* **A History entry says "Install method: External"**: this update happened outside Home Assistant
-  entirely (a device or app with its own separate auto-update setting, e.g. a UniFi switch's own
-  firmware auto-upgrade), and was only noticed here once it already had a newer version. Not something
-  Update Manager or a person did through Home Assistant.
-* **No vote controls show for an entity**: it likely isn't identifiable for voting (see Known limitations).
-* **An update still auto-installed despite a negative vote I saw**: check the vote was on this exact
-  version jump (see Known limitations), and that no trusted voter's "healthy" vote was in play (it always
-  wins, see "How auto-install decides").
-* **A repair notification says my GitHub link has expired**: only appears once refreshing has failed twice
-  in a row, not a single blip. Re-link it from the Settings tab, or just wait: the next successful refresh
-  (e.g. the next time you vote) clears it on its own too, no re-link needed if it turns out to have been
-  temporary.
-* **A repair issue says "An update seems stuck"**: an install has been running noticeably longer than
-  usual without finishing (evidence-based when the entity reports progress, a flat duration otherwise).
-  This doesn't cancel the install, which may still finish on its own; it only stops that one entity from
-  holding up anything waiting behind it. The same "Stop waiting" action is also one click away from the
-  entity's own detail dialog, not only via **Settings > System > Repairs**.
+  the wait-days boundary by that much.
+* **A History entry says "Install method: External"**: happened outside Home Assistant entirely (a
+  device/app with its own auto-update, e.g. a UniFi switch), only noticed once it already had a newer
+  version.
+* **No vote controls show for an entity**: likely not identifiable for voting (see Known limitations).
+* **An update still auto-installed despite a negative vote**: check the vote was on this exact jump, and
+  that no trusted voter's "healthy" vote was in play (it always wins).
+* **A repair notification says my GitHub link has expired**: only after two failed refreshes in a row.
+  Re-link from the Settings tab, or wait: the next successful refresh clears it on its own too.
+* **A repair issue says "An update seems stuck"**: it's running longer than usual without finishing. Only
+  stops that one entity from holding up anything waiting behind it, doesn't cancel the install itself.
+  The same "Stop waiting" action is also one click away from the entity's own detail dialog.
 * Check **Settings > System > Logs** (filter on "update_manager") for anything at warning level or above.
 
 ## Removal
