@@ -78,8 +78,8 @@ const WS_ERR_CONNECTION_LOST = 3;
 const LOAD_ERROR_CONNECTION_LOST = Symbol("connection_lost");
 // _loadAll's own catch used to fall straight through to String(err) for
 // anything without a usable err.message, which for a plain object (not an
-// Error instance) reads as the literal, meaningless "[object Object]" --
-// found live, 2026-11-03, for a hass.callWS rejection shaped like
+// Error instance) reads as the literal, meaningless "[object Object]".
+// Found live, 2026-11-03, for a hass.callWS rejection shaped like
 // {code, message: ""} (an empty message is falsy, same fallthrough as a
 // missing one). JSON.stringify at least shows the real shape of whatever
 // came back, still far from pretty, but never this literal string.
@@ -87,11 +87,20 @@ function describeLoadError(err) {
   if (err && typeof err.message === "string" && err.message) return err.message;
   if (err && typeof err.code === "string" && err.code) return err.code;
   if (typeof err === "string" && err) return err;
+  // JSON.stringify(undefined) returns the actual value undefined, not a
+  // string, same for a function/symbol. Found by code review, 2026-11-03:
+  // a bare `throw;`/empty rejection reached this with none of the guards
+  // above matching, so this._loadError ended up undefined, which the
+  // `if (this._loadError)` render check then treated as "no error at all",
+  // silently hiding the banner instead of showing anything.
   try {
-    return JSON.stringify(err);
+    const json = JSON.stringify(err);
+    if (json !== undefined) return json;
   } catch {
-    return String(err);
+    // Falls through to String(err) below, same as a plain JSON.stringify
+    // failure (e.g. a circular reference) already did.
   }
+  return String(err);
 }
 
 const ICON_UPDATE =
@@ -113,12 +122,12 @@ const ICON_CLOCK_OUTLINE =
   "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
 // "Postponed" (an update blocked on a newer HA Core version, not a plain
 // staging wait) gets its own icon, deliberately distinct from
-// ICON_CLOCK_OUTLINE above ("waiting") -- a paused symbol reads as
+// ICON_CLOCK_OUTLINE above ("waiting"): a paused symbol reads as
 // "stopped until something changes", not "counting down on its own".
 // (mdi:timer-sand-paused was tried first, but that icon is genuinely
-// drawn sideways by MDI itself -- its pinch point is centered on the
+// drawn sideways by MDI itself, its pinch point is centered on the
 // x-axis, unlike mdi:timer-sand/timer-sand-complete's own upright,
-// y-centered one -- which read as a rendering bug, not a deliberate
+// y-centered one, which read as a rendering bug, not a deliberate
 // "sand can't flow lying down" metaphor, at this badge's small size.)
 const ICON_PAUSE_CIRCLE_OUTLINE =
   "M13,16V8H15V16H13M9,16V8H11V16H9M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4Z";
@@ -520,7 +529,7 @@ function statusText(tr, u, settings, hass) {
     // Found by code review, 2026-11-02: this early return used to skip the
     // auto_install_excluded suffix below entirely. Reachable whenever an
     // entity becomes postponed while auto-install-eligible, then gets
-    // excluded afterwards -- the postponed marker has no reason to clear
+    // excluded afterwards, the postponed marker has no reason to clear
     // just because that setting changed later.
     let text = tr.status_postponed(u.postponed_min_ha_version);
     if (u.auto_install_excluded) text += tr.always_manual_suffix;
@@ -1026,10 +1035,10 @@ function isSkippedUpdate(u) {
 }
 // A "ready" update whose own auto-install already found out it needs a
 // newer HA Core (see install_manager.py's own self._postponed) is still,
-// at heart, an update that isn't proceeding right now -- exactly what the
+// at heart, an update that isn't proceeding right now, exactly what the
 // existing "waiting"/group_waiting ("Postponed") bucket already means.
 // coordinator.py's own status computation already reports "waiting" for
-// one of these (see its own self._is_postponed, 2026-11-02 -- sensor.py's
+// one of these (see its own self._is_postponed, 2026-11-02; sensor.py's
 // per-status counts and staging_skip.py's hide_postponed eligibility both
 // read that same cached status, so they needed to agree without each
 // learning about self._postponed separately too), so u.status alone is
@@ -3017,15 +3026,14 @@ class UpdateManagerPanel extends HTMLElement {
     const finishedEntityIds = [];
     for (const u of this._updates) {
       const state = entityState(this._hass, u.entity_id);
-      const installing = this._isEffectivelyInstalling(u.entity_id, state);
       // The bare, un-grace-adjusted live reading, tracked separately from
-      // `installing` above -- found live, 2026-11-02: a fast-failing
+      // `installing` below. Found live, 2026-11-02: a fast-failing
       // manual install (e.g. rejected immediately for needing a newer HA
       // Core) could leave the spinner stuck forever, not just briefly.
       // this._recentlyInstalling is a snapshot from the last _loadAll(),
       // and _isEffectivelyInstalling's own flicker-grace timer (see its
       // own comment) re-arms itself on every call that finds in_progress
-      // OR this stale snapshot true -- so once a stale recently_installing
+      // OR this stale snapshot true, so once a stale recently_installing
       // entry starts stretching `installing` past the real event, nothing
       // ever flips it back on its own: the only thing that could refresh
       // the stale snapshot (a reload, triggered below) never fires,
@@ -3034,6 +3042,10 @@ class UpdateManagerPanel extends HTMLElement {
       // installingChanged check below even while `installing` itself
       // stays artificially stuck, breaking the deadlock.
       const rawInstalling = updateIsInstalling(state);
+      // Handed to _isEffectivelyInstalling so it doesn't recompute the
+      // exact same updateIsInstalling(state) reading internally -- this
+      // loop runs over every update entity on nearly every hass push.
+      const installing = this._isEffectivelyInstalling(u.entity_id, state, rawInstalling);
       const installedVersion = state && state.attributes && state.attributes.installed_version;
       // Direct user feedback, 2026-08-02: "als er op de achtergrond ontdekt
       // wordt dat er een nieuwe update beschikbaar voor is, dan ververst de
@@ -3272,7 +3284,7 @@ class UpdateManagerPanel extends HTMLElement {
       if (result.status !== "rejected") return;
       const entityId = entityIds[i];
       const err = result.reason;
-      let message = (err && err.message) || String(err);
+      let message = describeLoadError(err);
       if (message.includes(entityId)) {
         message = message.split(entityId).join(friendlyEntityName(this._hass, entityId));
       }
@@ -3306,7 +3318,7 @@ class UpdateManagerPanel extends HTMLElement {
       if (result.status !== "rejected") return;
       const entityId = entities[i].entity_id;
       const err = result.reason;
-      let message = (err && err.message) || String(err);
+      let message = describeLoadError(err);
       if (message.includes(entityId)) {
         message = message.split(entityId).join(friendlyEntityName(this._hass, entityId));
       }
@@ -3673,8 +3685,12 @@ class UpdateManagerPanel extends HTMLElement {
   // seen installing" from here on, without needing to keep re-consulting
   // the server. `state`, if the caller already has it, saves a redundant
   // entityState() lookup.
-  _isEffectivelyInstalling(entityId, state = entityState(this._hass, entityId)) {
-    if (updateIsInstalling(state) || this._recentlyInstalling.has(entityId)) {
+  // rawInstalling: lets a caller that already computed updateIsInstalling(state)
+  // for its own purposes (_updateInstallProgress's own rawInstalling, see its
+  // comment) pass that reading straight in instead of this method quietly
+  // redoing the same state check a second time.
+  _isEffectivelyInstalling(entityId, state = entityState(this._hass, entityId), rawInstalling = updateIsInstalling(state)) {
+    if (rawInstalling || this._recentlyInstalling.has(entityId)) {
       this._installingLastTrueAt.set(entityId, Date.now());
       return true;
     }
@@ -4551,8 +4567,8 @@ class UpdateManagerPanel extends HTMLElement {
       );
       addDetail(step1, `${u.installed_version} → ${u.latest_version} (${size})`);
       // Moved here from each individual status branch below (skipped/
-      // waiting/ready/postponed each used to carry their own copy) --
-      // direct user feedback, 2026-11-02: this is about the version jump
+      // waiting/ready/postponed each used to carry their own copy).
+      // Direct user feedback, 2026-11-02: this is about the version jump
       // itself (shown right above, on this exact step), not about
       // whatever status this entity currently happens to be in, and Step 1
       // is the one step that always renders regardless of status, so one
@@ -4612,7 +4628,7 @@ class UpdateManagerPanel extends HTMLElement {
       // this fix) -- same "the button belongs on the step it actually
       // unlocks" reasoning already applied to Force ready above.
       if (u.postponed_min_ha_version) {
-        // Nothing here -- Step 3b below already covers this entity's
+        // Nothing here, Step 3b below already covers this entity's
         // current state. Neither the "ready, Install now" step nor the
         // "waiting, Force ready" one make sense while genuinely blocked on
         // a too-old HA Core, 2026-11-02: both offer an action that would
@@ -4620,7 +4636,7 @@ class UpdateManagerPanel extends HTMLElement {
       } else if (u.status === "skipped") {
         const step = addStep("var(--primary-color)", ICON_CANCEL, tr.status_skipped, null);
         // Community content/report controls moved to Step 1 (see its own
-        // comment, 2026-11-02) -- Unskip is this step's own, status-
+        // comment, 2026-11-02). Unskip is this step's own, status-
         // specific action, the only thing still needed here.
         addAction(step, tr.dialog_unskip, async () => {
           await this._hass.callWS({ type: "update_manager/unskip", entity_id: entityId });
@@ -4630,8 +4646,8 @@ class UpdateManagerPanel extends HTMLElement {
         const step = addStep(null, ICON_CHECK_CIRCLE, tr.group_ready, absoluteWhen(tr, u.ready_at, this._hass), { notEnabled: true });
         // Community content/report controls moved to Step 1 (see its own
         // comment, 2026-11-02). Force ready unlocks this step specifically
-        // (skips straight to "ready"), not "Update available" above it --
-        // direct user feedback, 2026-08-12: the button belongs on the step
+        // (skips straight to "ready"), not "Update available" above it.
+        // Direct user feedback, 2026-08-12: the button belongs on the step
         // it actually unlocks.
         addAction(
           step,
@@ -4661,7 +4677,7 @@ class UpdateManagerPanel extends HTMLElement {
       }
     }
 
-    // Step 3b: Postponed (needs a newer HA Core) -- shown before Step 3
+    // Step 3b: Postponed (needs a newer HA Core), shown before Step 3
     // below, not after, matching the natural order these actually happen
     // in. Its own, independent condition, not nested in Step 3: a
     // postponed entity has neither a real pending_install (deliberately
@@ -4669,16 +4685,32 @@ class UpdateManagerPanel extends HTMLElement {
     // self._postponed) nor a *meaningful* autoInstallProjected preview
     // (see Step 3's own comment on why that projection is shown with no
     // date while postponed). Shows the running Core version alongside the
-    // required one -- the required version alone doesn't say how far off
+    // required one, the required version alone doesn't say how far off
     // you actually are. No Cancel action here: there's no countdown to
     // interrupt, and update_manager/cancel_pending_install works by
     // recording self._cancelled[entity_id] = to_version, which suppresses
-    // auto-install for that exact to_version until a newer one appears --
+    // auto-install for that exact to_version until a newer one appears.
     // HA Core updating doesn't change to_version, so clicking it would
     // permanently break the dialog's own "becomes a normal update again"
     // promise.
-    if (u.postponed_min_ha_version) {
-      // "var(--warning-color)", no notEnabled -- a real, current blocking
+    //
+    // Suppressed for a native_auto_update entity (even though this can
+    // genuinely still happen: that entity's own auto-install never
+    // reaches here at all, see effective_auto_install_state's own hard
+    // gate, but a manual Install click isn't gated on it, and that click
+    // can itself fail with the exact same too-old-HA-Core error, see
+    // websocket_api.py's own async_mark_postponed call). Found by code
+    // review, 2026-11-03: both this step and Step 3c below used to render
+    // unconditionally and independently, showing two contradictory
+    // explanations ("blocked, waiting on HA Core" and "Home Assistant is
+    // managing this on its own schedule") for the same entity at once.
+    // Step 3c wins here: native_auto_update is the standing, structurally
+    // important fact (it's still true regardless of this one past manual
+    // attempt), while the postponement was only ever about that one
+    // attempt, something Update Manager was never going to retry on its
+    // own for this entity anyway.
+    if (u.postponed_min_ha_version && !u.native_auto_update) {
+      // "var(--warning-color)", no notEnabled: a real, current blocking
       // condition (a first attempt already happened and failed), not a
       // merely-projected future action, same treatment as the
       // heldBackByCommunity step below.
@@ -4698,13 +4730,13 @@ class UpdateManagerPanel extends HTMLElement {
       const step = addStep(null, ICON_AUTO_DOWNLOAD, tr.dialog_timeline_native_auto_update, null, { notEnabled: true });
       addDetail(step, tr.dialog_timeline_native_auto_update_detail);
     } else if (u.pending_install || autoInstallProjected) {
-      // Step 3: Auto-install (absorbs Installed) -- omitted entirely when
+      // Step 3: Auto-install (absorbs Installed), omitted entirely when
       // it doesn't apply to this size/entity at all. While postponed,
       // u.pending_install is already cleared (install_manager.py's own
       // async_mark_postponed/_async_run_install both do this), but
       // autoInstallProjected is a pure, staging-rules-only client projection
       // with no awareness of postponed_min_ha_version, so it still computes
-      // a date -- one that's stale until coordinator.py's own
+      // a date, one that's stale until coordinator.py's own
       // async_reset_available_since re-anchors available_since the moment
       // this actually resumes. Shown anyway with that date suppressed rather
       // than the whole step hidden, and deliberately with no detail text
@@ -4717,7 +4749,7 @@ class UpdateManagerPanel extends HTMLElement {
         const step = addStep(null, ICON_AUTO_DOWNLOAD, tr.dialog_timeline_auto_install, null, { notEnabled: true });
         // Direct user feedback, 2026-11-02: this is a genuine "don't
         // auto-install this version at all" choice, same as the plain
-        // projected-preview branch further down already offers -- unlike
+        // projected-preview branch further down already offers, unlike
         // the Postponed step's own (deliberately removed) Cancel, this one
         // isn't about the HA Core requirement, it's about whether this
         // to_version should auto-install once that's no longer a blocker.
@@ -6030,7 +6062,7 @@ class UpdateManagerPanel extends HTMLElement {
       await this._loadAll();
       this._showToast(this._tr.settings_saved_toast);
     } catch (err) {
-      this._showToast((err && err.message) || String(err));
+      this._showToast(describeLoadError(err));
     }
   }
 
@@ -6884,7 +6916,7 @@ class UpdateManagerPanel extends HTMLElement {
         // in place instead of rejecting it as a duplicate (2026-07-23).
         return await this._hass.callWS({ type: "update_manager/vote", entity_id: entityId, version, verdict, ...extra });
       } catch (err) {
-        this._showToast((err && err.message) || String(err));
+        this._showToast(describeLoadError(err));
         throw err;
       }
     };

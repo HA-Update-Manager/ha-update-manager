@@ -10,7 +10,7 @@ events the same way.
 
 Uses homeassistant.helpers.trigger.Trigger, the current, forward-looking
 trigger API (confirmed present on the stable 2026.10.0 tag, not dev/next-
-only) -- device automations, the older mechanism, no longer accept new
+only): device automations, the older mechanism, no longer accept new
 implementations. That page's own docs describe this API as "young and
 still changes often", so this stays deliberately minimal: only
 target.entity_id is honored for filtering (triggers.yaml's own target
@@ -36,7 +36,7 @@ from .const import EVENT_ANNOUNCED, EVENT_INSTALLED, EVENT_INSTALL_FAILED
 # No extra options of our own (beyond the target every trigger already
 # gets for free, see TriggerConfig), but async_validate_config still needs
 # a schema to run the incoming (already target/options-split) config
-# through -- an empty one, same as Battery Notes' own BATTERY_NOTES_TRIGGER_SCHEMA
+# through, an empty one, same as Battery Notes' own BATTERY_NOTES_TRIGGER_SCHEMA
 # for its own no-extra-options triggers.
 _TRIGGER_SCHEMA = vol.Schema({})
 
@@ -55,7 +55,7 @@ class _UpdateManagerEventTrigger(Trigger):
 
     def __init__(self, hass: HomeAssistant, config: TriggerConfig) -> None:
         super().__init__(hass, config)
-        # None (not an empty list) means "no target set at all" -- match
+        # None (not an empty list) means "no target set at all": match
         # every entity, same as leaving a service call's own target empty
         # means "all". An explicit, empty list is never possible here:
         # the entity picker always resolves to at least one id once
@@ -79,14 +79,14 @@ class _UpdateManagerEventTrigger(Trigger):
 
 class ScheduledAutoInstallTrigger(_UpdateManagerEventTrigger):
     """Fires when an update is announced for a scheduled auto-install
-    (EVENT_ANNOUNCED) -- the countdown starting, not the install itself."""
+    (EVENT_ANNOUNCED): the countdown starting, not the install itself."""
 
     _event_type = EVENT_ANNOUNCED
 
 
 class InstalledTrigger(_UpdateManagerEventTrigger):
     """Fires once an update actually finishes installing (EVENT_INSTALLED),
-    auto or manual alike -- same "one unified place an install is
+    auto or manual alike, same "one unified place an install is
     confirmed done" an automation would otherwise have to derive itself
     from a plain update.* state change."""
 

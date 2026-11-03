@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Literal
@@ -52,6 +52,7 @@ from .const import DOMAIN, localized_strings
 from .coordinator import UpdateManagerCoordinator
 from .entity_rename import relabel_key
 from .install_tiers import FIRST_GATED_RANK, TIER_RANK, tier_for_entity
+from .semver import min_ha_version_required
 from .zigbee import device_for_entity, is_zigbee_entity, zigbee_network_id
 
 _LOGGER = logging.getLogger(__name__)
@@ -388,6 +389,15 @@ class RolloutManager:
         # retry loop).
         self._handle_install_failure: Callable[[str, str], None] | None = None
         self._handle_manual_install_failure: Callable[[str, str], None] | None = None
+        # Same wiring pattern as the two above, see set_postponed_handler's
+        # own docstring: a queued install can also fail with "needs a newer
+        # HA Core", same as the two non-queued paths (install_manager.py's
+        # own auto-install path, websocket_api.py's manual one) already
+        # handle. One handler, not two, unlike the failure handlers above:
+        # install_manager.py's own async_mark_postponed already treats a
+        # postponement the same regardless of which path discovered it, no
+        # auto-vs-manual distinction needed here either.
+        self._mark_postponed: Callable[[str, str, str], Awaitable[None]] | None = None
         self._unsub_install_listener: Callable[[], None] | None = None
         self._unsub_periodic_recheck: Callable[[], None] | None = None
         # Fired by _async_save below, the one place every real mutation of
@@ -477,6 +487,16 @@ class RolloutManager:
         which marks the same failure without scheduling a backoff retry of
         its own."""
         self._handle_manual_install_failure = handler
+
+    def set_postponed_handler(self, handler: Callable[[str, str, str], Awaitable[None]]) -> None:
+        """install_manager.py's own async_mark_postponed, same setter
+        pattern and import-cycle reasoning as set_recently_executed_setter/
+        set_failure_handler above. Consulted in the dispatch loop's own
+        except-branch, before falling back to set_failure_handler/
+        set_manual_failure_handler, same classify-first-then-act structure
+        install_manager.py's own _async_run_install and websocket_api.py's
+        _async_run_manual_install already use."""
+        self._mark_postponed = handler
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -1262,7 +1282,7 @@ class RolloutManager:
             await self.hass.services.async_call(
                 "update", "install", entry.service_data, blocking=True, context=entry.ha_context
             )
-        except Exception:
+        except Exception as exception:
             # Found by review: previously unguarded, a real install failure
             # here left the entry stuck at the front of its queue forever
             # (the only thing that ever advances a queue is the install-
@@ -1270,16 +1290,38 @@ class RolloutManager:
             # every sibling device queued behind it blocked too and no
             # failure notification anywhere, unlike a plain, non-queued
             # auto-install's own path.
-            _LOGGER.exception("Update Manager's queued install failed for %s", entry.entity_id)
-            failure_handler = self._handle_install_failure if entry.is_auto else self._handle_manual_install_failure
-            if failure_handler is not None:
-                failure_handler(entry.entity_id, entry.to_version)
+            #
+            # Classified before logging/handling, same as install_manager.py's
+            # own _async_run_install and websocket_api.py's
+            # _async_run_manual_install: found by code review, 2026-11-03,
+            # this queued path was the one place that still didn't check
+            # for a too-old-HA-Core failure at all, so it retried forever
+            # on the generic backoff schedule instead of being postponed
+            # until HA Core itself updates, repeating this entry's real
+            # install cost (e.g. a Marketplace backup/restore cycle) every
+            # single retry.
+            required_version = min_ha_version_required(exception)
+            if required_version is not None and self._mark_postponed is not None:
+                _LOGGER.debug(
+                    "Update Manager postponed queued install for %s: needs Home Assistant %s or newer",
+                    entry.entity_id,
+                    required_version,
+                )
+                await self._mark_postponed(entry.entity_id, entry.to_version, required_version)
+            else:
+                _LOGGER.exception("Update Manager's queued install failed for %s", entry.entity_id)
+                failure_handler = (
+                    self._handle_install_failure if entry.is_auto else self._handle_manual_install_failure
+                )
+                if failure_handler is not None:
+                    failure_handler(entry.entity_id, entry.to_version)
             # Advances past it immediately if it was a Zigbee queue's own
             # front entry -- a no-op for anything else (never entered
-            # self._queues at all). notify=False: _handle_install_failure
-            # just above already raised its own notification for this
-            # exact case. See _async_advance_past_stalled_front's own
-            # docstring for the reasoning behind this.
+            # self._queues at all). notify=False: the branch above already
+            # raised its own notification (a failure) or deliberately
+            # didn't need to (a quiet postponement, same as the two
+            # non-queued paths). See _async_advance_past_stalled_front's
+            # own docstring for the reasoning behind this.
             await self._async_advance_past_stalled_front(entry.entity_id, notify=False)
 
     @callback

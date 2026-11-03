@@ -34,19 +34,19 @@ class TestStripVersionPrefix:
 
 class TestParseSemver:
     def test_basic(self):
-        assert semver.parse_semver("1.2.3") == (1, 2, 3)
+        assert semver.parse_semver("1.2.3") == (1, 2, 3, 0)
 
     def test_v_prefix_stripped(self):
-        assert semver.parse_semver("v1.2.3") == (1, 2, 3)
-        assert semver.parse_semver("V1.2.3") == (1, 2, 3)
+        assert semver.parse_semver("v1.2.3") == (1, 2, 3, 0)
+        assert semver.parse_semver("V1.2.3") == (1, 2, 3, 0)
 
     def test_zero_versions(self):
-        assert semver.parse_semver("0.0.0") == (0, 0, 0)
+        assert semver.parse_semver("0.0.0") == (0, 0, 0, 0)
 
     def test_prerelease_and_build_metadata_ignored_for_core(self):
-        assert semver.parse_semver("1.2.3-beta.1") == (1, 2, 3)
-        assert semver.parse_semver("1.2.3+build.5") == (1, 2, 3)
-        assert semver.parse_semver("1.2.3-beta.1+build.5") == (1, 2, 3)
+        assert semver.parse_semver("1.2.3-beta.1") == (1, 2, 3, 0)
+        assert semver.parse_semver("1.2.3+build.5") == (1, 2, 3, 0)
+        assert semver.parse_semver("1.2.3-beta.1+build.5") == (1, 2, 3, 0)
 
     def test_rejects_leading_zeros(self):
         # Strict semver: a numeric component with a leading zero (other
@@ -71,7 +71,7 @@ class TestParseSemver:
         # but is_calendar_version is what excludes it elsewhere -- parse_semver
         # itself doesn't know about that distinction, and correctly still
         # parses its numeric core.
-        assert semver.parse_semver("2026.7.1") == (2026, 7, 1)
+        assert semver.parse_semver("2026.7.1") == (2026, 7, 1, 0)
 
 
 class TestIsCalendarVersion:

@@ -220,6 +220,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # own doing or a manual click that simply had to wait its turn.
     rollout_manager.set_failure_handler(install_manager.handle_install_failure)
     rollout_manager.set_manual_failure_handler(install_manager.handle_manual_install_failure)
+    # Same reasoning again, see rollout_manager.py's own set_postponed_handler
+    # docstring: a queued install can also hit the "needs a newer HA Core"
+    # case the two non-queued paths already handle via async_mark_postponed.
+    rollout_manager.set_postponed_handler(install_manager.async_mark_postponed)
     # The single shared master-enabled flag (see coordinator.py's own
     # set_master_enabled) -- set once, here, before either manager's
     # async_start() runs; both read it directly off the coordinator from
@@ -231,7 +235,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # place) correctly reads as "postponed", not "skipped", from the
     # start.
     coordinator.set_own_skip_checker(staging_skip_manager.is_own_skip)
-    # Same reasoning/ordering as set_own_skip_checker just above -- see
+    # Same reasoning/ordering as set_own_skip_checker just above, see
     # coordinator.py's own set_postponed_checker/self._is_postponed
     # comments.
     coordinator.set_postponed_checker(lambda entity_id: install_manager.postponed_for(entity_id) is not None)
@@ -249,30 +253,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # coordinator's own staggered bulk scan is the actual slow part on a
     # large instance) behind it too.
     await staging_skip_manager.async_load()
-    # install_log.async_load() *and* community_verdict_manager.async_load()
-    # specifically (not the other three loads below) must both finish
-    # before coordinator.async_start() -- install_log for the reason given
-    # at _on_install's own registration further down, community_verdict_manager
+    # install_log.async_load(), community_verdict_manager.async_load(), and
+    # now install_manager.async_load() too must all finish before
+    # coordinator.async_start(): install_log for the reason given at
+    # _on_install's own registration further down, community_verdict_manager
     # because coordinator.py's own _async_cache_active reads
     # CommunityVerdictManager.peek_cached_verdict/peek_cached_trusted_vote
     # synchronously, straight from its in-memory cache, during the bulk
-    # scan async_start() itself runs -- found by code review, 2026-07-27:
+    # scan async_start() itself runs. Found by code review, 2026-07-27:
     # gathering it concurrently with async_start() again (an earlier
     # efficiency fix) reintroduced exactly the kind of race this whole
     # split was meant to avoid, just for a different manager: whichever
     # entities the scan reaches before this Store read resolves would
     # silently get None/empty community-verdict data for a moment, even
-    # though a persisted cache exists on disk. install_manager/
-    # rollout_manager/github_auth_manager have no such ordering dependency
-    # and stay gathered together with coordinator.async_start() itself.
-    # integration fetched alongside the other two here purely for
-    # efficiency (see this gather's own docstring above for why install_log/
-    # community_verdict_manager specifically can't just join
-    # coordinator.async_start()'s own gather further down) -- fetching the
-    # manifest.json version has no ordering dependency on anything else at
-    # all, so it's free to run concurrently with them.
-    _, _, integration = await asyncio.gather(
-        install_log.async_load(), community_verdict_manager.async_load(), async_get_integration(hass, DOMAIN)
+    # though a persisted cache exists on disk. install_manager joined this
+    # same group for the exact same reason, found by code review,
+    # 2026-11-03: set_postponed_checker above reads install_manager's own
+    # self._postponed synchronously, same as set_own_skip_checker reads
+    # staging_skip_manager's, so its own data needs to already be loaded
+    # by the time coordinator.async_start()'s bulk scan reaches its first
+    # already-postponed entity too, not still mid-gather with it.
+    # rollout_manager/github_auth_manager still have no such ordering
+    # dependency and stay gathered together with coordinator.async_start()
+    # itself further down. integration fetched alongside the others here
+    # purely for efficiency (see this gather's own docstring above for why
+    # install_log/community_verdict_manager/install_manager specifically
+    # can't just join coordinator.async_start()'s own gather further down):
+    # fetching the manifest.json version has no ordering dependency on
+    # anything else at all, so it's free to run concurrently with them.
+    _, _, _, integration = await asyncio.gather(
+        install_log.async_load(),
+        community_verdict_manager.async_load(),
+        install_manager.async_load(),
+        async_get_integration(hass, DOMAIN),
     )
 
     @callback
@@ -489,14 +502,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
 
     entry.async_on_unload(hass.bus.async_listen(EVENT_CALL_SERVICE, _on_update_install_call))
 
-    # The other three loads have no such ordering dependency on
-    # coordinator.async_start() -- gathered together with it, not awaited
+    # The remaining loads have no such ordering dependency on
+    # coordinator.async_start(). Gathered together with it, not awaited
     # in front of it, so they still overlap with the coordinator's own
     # slow, staggered bulk scan the same way they did before install_log/
-    # community_verdict_manager needed to move out on their own above.
+    # community_verdict_manager/install_manager needed to move out on their
+    # own above.
     await asyncio.gather(
         coordinator.async_start(),
-        install_manager.async_load(),
         rollout_manager.async_load(),
         github_auth_manager.async_load(),
         my_votes_manager.async_load(),

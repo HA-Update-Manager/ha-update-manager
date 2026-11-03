@@ -71,13 +71,13 @@ _SHORT_SEMVER_RE = re.compile(
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
-# Exactly major.minor.patch.hotfix -- a fourth, non-standard component some
+# Exactly major.minor.patch.hotfix, a fourth, non-standard component some
 # projects add for an in-place hotfix of an already-tagged patch release,
 # found live 2026-11-02: v0.5.8 -> v0.5.9.1 was classified "large" (neither
 # strict semver, which requires exactly three components, nor short semver,
 # which requires exactly two, matched it) despite being an ordinary patch
 # bump. Distinct from a build-metadata suffix (which strict semver already
-# parses and ignores, see _SEMVER_RE) -- this is a genuine fourth numeric
+# parses and ignores, see _SEMVER_RE): this is a genuine fourth numeric
 # tier, not metadata.
 _EXTENDED_SEMVER_RE = re.compile(
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
@@ -90,6 +90,12 @@ class ParsedVersion(NamedTuple):
     major: int
     minor: int
     patch: int
+    # Only ever non-zero for an extended, four-component semver version
+    # (is_extended_semver_version, e.g. the "1" in "0.5.9.1"). Defaults to
+    # 0 so every other parser here keeps constructing a plain 3-arg
+    # ParsedVersion unchanged, and still compares/orders exactly like a
+    # plain 3-tuple did before this field existed.
+    hotfix: int = 0
 
 
 _V_PREFIX_RE = re.compile(r"^[vV](\d.*)$")
@@ -156,7 +162,7 @@ def is_short_semver_version(version: str) -> bool:
 
 def is_extended_semver_version(version: str) -> bool:
     """True for a four-component major.minor.patch.hotfix version, e.g.
-    "0.5.9.1" -- checked independently of parse_semver, same reasoning as
+    "0.5.9.1", checked independently of parse_semver, same reasoning as
     is_short_semver_version above. The trailing "$" anchor means a version
     with only three components (plain strict semver) never matches this
     too, same non-ambiguity between the two shapes."""
@@ -203,24 +209,24 @@ def _parse_semver_or_short(version: str) -> ParsedVersion | None:
     return _parse_short_semver(version) if is_short_semver_version(version) else None
 
 
-def _parse_major_minor_patch_hotfix(version: str) -> tuple[int, int, int, int] | None:
+def _parse_major_minor_patch_hotfix(version: str) -> ParsedVersion | None:
     """(major, minor, patch, hotfix) for short semver/strict semver (via
-    _parse_semver_or_short above, hotfix implicitly 0) or extended semver
-    (is_extended_semver_version, the real fourth component) -- one shared,
-    uniform 4-tuple so classify_version_size's own comparison below never
-    needs to know how many trailing components either side actually had,
-    the same "a missing component defaults to 0" reasoning
-    _parse_semver_or_short already applies between short and strict
-    semver. None for anything matching none of these three shapes."""
+    _parse_semver_or_short above, hotfix implicitly 0 same as ParsedVersion's
+    own default) or extended semver (is_extended_semver_version, the real
+    fourth component), as one shared ParsedVersion so classify_version_size's
+    own comparison below never needs to know how many trailing components
+    either side actually had, the same "a missing component defaults to 0"
+    reasoning _parse_semver_or_short already applies between short and
+    strict semver. None for anything matching none of these three shapes."""
     normal = _parse_semver_or_short(version)
     if normal is not None:
-        return (normal.major, normal.minor, normal.patch, 0)
+        return normal
     if not is_extended_semver_version(version):
         return None
     candidate = strip_version_prefix(version)
     core = candidate.split("-", 1)[0].split("+", 1)[0]
     major, minor, patch, hotfix = (int(part) for part in core.split("."))
-    return (major, minor, patch, hotfix)
+    return ParsedVersion(major, minor, patch, hotfix)
 
 
 def classify_version_size(previous: str, current: str) -> Size:
@@ -296,9 +302,9 @@ def classify_version_size(previous: str, current: str) -> Size:
         return "large"
     if curr <= prev:
         return "large"
-    if curr[0] != prev[0]:
+    if curr.major != prev.major:
         return "large"
-    if curr[1] != prev[1]:
+    if curr.minor != prev.minor:
         return "medium"
     return "small"
 
@@ -306,7 +312,7 @@ def classify_version_size(previous: str, current: str) -> Size:
 def ha_core_version_satisfies(current: str, required: str) -> bool:
     """True if `current` (Home Assistant Core's own running version,
     always calendar-style) is the same as or newer than `required` (a
-    minimum HA version a repository's manifest demands -- both HACS and
+    minimum HA version a repository's manifest demands, both HACS and
     its Marketplace successor only ever express this as a plain HA release
     version, see install_manager.py's own _postponed). True on anything
     that doesn't parse as a calendar version on either side: this is only
@@ -319,3 +325,55 @@ def ha_core_version_satisfies(current: str, required: str) -> bool:
     if not is_calendar_version(current) or not is_calendar_version(required):
         return True
     return _parse_calendar(current) >= _parse_calendar(required)
+
+
+# Both HACS (a plain-text HacsException message, wrapped into a bare
+# HomeAssistantError by its own update.py) and its Marketplace successor
+# (a MarketplaceError with a real translation_key/translation_placeholders)
+# raise this when a release's own manifest needs a newer HA Core than what's
+# actually running, found live 2026-11-02, verified against both
+# integrations' real source (hacs/integration's repositories/base.py
+# _ensure_download_capabilities, home-assistant/core's marketplace/
+# repositories/base.py _check_minimum_version). Checked structurally first
+# (Marketplace's own translation_key), the regex only exists for HACS, whose
+# own exception carries no translation_key at all, still HACS's own
+# generated string (the version comes from its own parsed hacs.json, not
+# typed by a person), not arbitrary input.
+_MARKETPLACE_MIN_HA_VERSION_KEY = "requires_newer_home_assistant"
+_HACS_MIN_HA_VERSION_RE = re.compile(r"requires Home Assistant ([\d.]+) or newer", re.IGNORECASE)
+
+
+def min_ha_version_required(exception: BaseException) -> str | None:
+    """The minimum HA Core version a failed install's own exception says it
+    needs, or None if this failure wasn't about that at all, also None for
+    an extracted version ha_core_version_satisfies can't actually compare
+    (not a plain calendar version), rather than one it can never stop
+    reporting as newly-satisfied. Found by code review, 2026-11-02: a
+    repository manifest that states this as anything other than a full
+    "YYYY.M.P" (e.g. a 2-part "2026.11") makes ha_core_version_satisfies
+    fail open on every single evaluation, not just once, the same fixed,
+    unparseable string compares the same way forever, so the entity would
+    clear self._postponed, re-attempt the same doomed install, and land
+    right back in self._postponed every single tick, the exact retry storm
+    this feature exists to prevent. Falling through to the ordinary
+    backoff-based failure path instead (min_ha_version_required returning
+    None here) is strictly better for this case: real backoff, a real
+    "Failed updates" entry, no silent forever-loop.
+
+    Shared by install_manager.py's own auto-install path, websocket_api.py's
+    manual-install path, and rollout_manager.py's queued-install path
+    (found missing one of these three by code review, 2026-11-03: a queued
+    Zigbee/tier install that hit this exact failure retried forever on the
+    generic backoff instead). A plain function here, not a method on
+    InstallManager, specifically so rollout_manager.py can call it directly
+    without importing install_manager.py at all (which already imports
+    rollout_manager.py, see that module's own docstring for why an install
+    failure's own postponed-vs-generic classification can't just live
+    there)."""
+    if getattr(exception, "translation_key", None) == _MARKETPLACE_MIN_HA_VERSION_KEY:
+        placeholders = getattr(exception, "translation_placeholders", None) or {}
+        version = placeholders.get("version")
+    else:
+        match = _HACS_MIN_HA_VERSION_RE.search(str(exception))
+        version = match.group(1) if match else None
+    return version if version and is_calendar_version(version) else None

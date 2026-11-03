@@ -89,7 +89,7 @@ def effective_auto_install_state(
     reasoning as auto_install_excluded. An entity can never be both
     excluded and whitelisted at once (see CONF_WHITELISTED_ENTITIES's own
     comment), so there's no ordering question between those two to resolve
-    here -- only ever one or the other, or neither.
+    here, only ever one or the other, or neither.
 
     native_auto_update is the same hard, unconditional gate as
     auto_install_excluded: Home Assistant's own per-entity "Auto update"

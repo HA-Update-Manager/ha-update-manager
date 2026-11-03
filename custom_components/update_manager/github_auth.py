@@ -91,7 +91,7 @@ _MIN_CONSECUTIVE_REFRESH_FAILURES = 2
 # votes needing a token at once) each waited their turn on _refresh_lock,
 # then each immediately retried _async_refresh_token themselves (the
 # post-lock cache re-check in async_get_valid_access_token can't help,
-# since a *failed* refresh never updates access_token_expires_at) -- 13
+# since a *failed* refresh never updates access_token_expires_at), 13
 # identical "incorrect_client_credentials" responses within 15 seconds,
 # pure log noise and unnecessary load on GitHub's own token endpoint for
 # what's really one underlying problem, not 13 separate ones. This cooldown
@@ -138,7 +138,7 @@ class GitHubAuthManager:
         # its result instead of starting a competing one.
         self._refresh_lock = asyncio.Lock()
         # Not persisted, same "meaningful only for the current process"
-        # reasoning as self._link_status above -- see
+        # reasoning as self._link_status above, see
         # _REFRESH_FAILURE_COOLDOWN's own comment for why this exists.
         self._last_refresh_failure_at: datetime | None = None
 

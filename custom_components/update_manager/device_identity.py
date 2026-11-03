@@ -52,7 +52,7 @@ _MARKETPLACE_DOMAIN = "marketplace"
 
 def is_hacs_entity(hass: HomeAssistant, entity_id: str) -> bool:
     """Whether entity_id's owning integration is HACS itself (or, since HA
-    2026.11, its successor integration, Marketplace -- see _MARKETPLACE_DOMAIN
+    2026.11, its successor integration, Marketplace, see _MARKETPLACE_DOMAIN
     above). Found live, 2026-07-22 (real bug hit on an ESPHome device's
     update entity, wrongly identified as HACS): a plausible-looking
     https://github.com/... in release_url is not enough on its own, plenty
@@ -61,7 +61,7 @@ def is_hacs_entity(hass: HomeAssistant, entity_id: str) -> bool:
     HACS at all. Verified against hacs/integration's own source
     (custom_components/hacs/update.py): every genuinely HACS-installed
     repo's update entity is created by HacsRepositoryUpdateEntity, which
-    belongs to HACS's own integration domain -- including repos with no
+    belongs to HACS's own integration domain, including repos with no
     backend Python component of their own at all (e.g. a pure Lovelace
     card), so this is the one check that covers all of them, not just
     some."""

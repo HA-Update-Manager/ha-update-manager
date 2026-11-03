@@ -28,7 +28,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
-from .coordinator import UpdateManagerCoordinator
+from .coordinator import UpdateManagerCoordinator, has_native_auto_update
 from .entity_rename import relabel_key
 from .rollout_manager import RolloutManager
 
@@ -452,7 +452,7 @@ class StagingSkipManager:
                 # earlier pass) -- respected here instead of immediately
                 # reapplying hide_postponed and undoing that choice again.
                 return False
-            if state is not None and state.attributes.get("auto_update"):
+            if state is not None and has_native_auto_update(state):
                 # HA's own update.skip service wrapper (homeassistant/
                 # components/update/__init__.py's async_skip) unconditionally
                 # rejects this for any entity with auto_update=True --

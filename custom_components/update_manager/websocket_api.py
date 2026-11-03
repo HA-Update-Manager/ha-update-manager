@@ -74,9 +74,9 @@ from .device_identity import resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
-from .install_manager import auto_install_rules_from_options, failure_reason_for, min_ha_version_required
+from .install_manager import auto_install_rules_from_options, failure_reason_for
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
-from .semver import strip_version_prefix
+from .semver import min_ha_version_required, strip_version_prefix
 from .vote_issue_body import REASON_CATEGORIES
 
 _WS_REGISTERED = f"{DOMAIN}_ws_registered"
@@ -194,7 +194,7 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
                 # See install_manager.py's own postponed_for docstring:
                 # the HA Core version this entity's auto-install is still
                 # waiting for, or None if it isn't postponed for that
-                # reason -- update-manager-panel.js's own "Postponed"
+                # reason, see update-manager-panel.js's own "Postponed"
                 # badge/section.
                 "postponed_min_ha_version": install_manager.postponed_for(entry["entity_id"]),
             }
@@ -779,16 +779,29 @@ async def _async_run_manual_install(
     try:
         await hass.services.async_call("update", "install", service_data, blocking=True, context=ha_context)
     except Exception as exception:
-        _LOGGER.exception("Update Manager's manual install failed for %s", entity_id)
+        # Classified before logging, not after, so the log level can match
+        # install_manager.py's own auto-install path (_async_run_install):
+        # a too-old HA Core is a known, recoverable condition there,
+        # deliberately logged at debug instead of a full .exception
+        # traceback. Found by /simplify review, 2026-11-03: this path
+        # still always logged a full traceback for that exact same
+        # condition, the one place the two paths' otherwise-shared
+        # classification diverged.
+        required_version = min_ha_version_required(exception) if data and to_version else None
+        if required_version is not None:
+            _LOGGER.debug(
+                "Update Manager postponed %s: needs Home Assistant %s or newer", entity_id, required_version
+            )
+        else:
+            _LOGGER.exception("Update Manager's manual install failed for %s", entity_id)
         if data and to_version:
             # Parked in self._postponed, same as install_manager.py's own
             # auto-install path, rather than just a labeled "Failed updates"
-            # entry -- direct user feedback, 2026-11-02: a too-old HA Core
+            # entry. Direct user feedback, 2026-11-02: a too-old HA Core
             # is true regardless of which path discovered it, so a manual
             # click learning it should update the same shared state auto-
             # install itself will otherwise only rediscover much later, on
             # its own schedule.
-            required_version = min_ha_version_required(exception)
             if required_version is not None:
                 await data.install_manager.async_mark_postponed(entity_id, to_version, required_version)
             else:

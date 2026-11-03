@@ -156,7 +156,7 @@ def _is_excluded_from_auto_install(entity_id: str, excluded_entities: frozenset[
     return entity_id in excluded_entities
 
 
-def _has_native_auto_update(state: State) -> bool:
+def has_native_auto_update(state: State) -> bool:
     """True when Home Assistant's own per-entity "Auto update" toggle is on
     for this entity (state.attributes["auto_update"]), not anything Update
     Manager itself set. Home Assistant then installs this update on its own
@@ -482,12 +482,12 @@ class UpdateManagerCoordinator:
         # Same wiring pattern as self._is_own_skip above, same reason
         # (install_manager.py depends on this coordinator, not the other
         # way around, so its own self._postponed can't be read directly
-        # here) -- lets _derive_status_fields report "waiting" for an
+        # here). Lets _derive_status_fields report "waiting" for an
         # entity install_manager.py has parked in self._postponed, so
         # every consumer of cached["status"] (sensor.py's own per-status
         # counts, staging_skip.py's own hide_postponed eligibility check,
         # not just the panel's own separate, frontend-only reclassification)
-        # agrees with each other -- found live, 2026-11-02: a postponed
+        # agrees with each other. Found live, 2026-11-02: a postponed
         # entity counted under the "Ready" sensor while the panel showed it
         # under "Postponed", and hide_postponed didn't hide it from HA's
         # own update count the way a staging-wait "Postponed" entity
@@ -697,7 +697,7 @@ class UpdateManagerCoordinator:
         left nothing to ever actually log it.
 
         Home Assistant's own Core/Supervisor/OS update entities are exempt
-        from the grace window below entirely -- see that condition's own
+        from the grace window below entirely, see that condition's own
         comment for why (2026-11-02)."""
         new_installed = state.attributes.get("installed_version")
         if not new_installed or new_installed == _PLACEHOLDER_INSTALLED_VERSION:
@@ -743,7 +743,7 @@ class UpdateManagerCoordinator:
                 # once installed, all three immediately stop being a
                 # pending update and drop out of self.cache, so
                 # _async_periodic_recheck's own self-healing loop (which
-                # only ever walks self.cache) can never reach them again --
+                # only ever walks self.cache) can never reach them again:
                 # the only thing left to catch a suppressed transition here
                 # was pure chance, whichever future restart happened to
                 # observe it outside its own new grace window. Safe to
@@ -915,10 +915,15 @@ class UpdateManagerCoordinator:
         # pass is the safety net that still gets to it eventually, same
         # "eventually consistent" role _async_recheck_stuck_installs already
         # plays for rollout_manager.py's own equivalent grace period.
+        # One hass.states.get per entity_id, not two (the staleness check
+        # below and native_auto_update further down used to each fetch it
+        # separately) -- this runs every recompute pass over every cached
+        # entity, a real hot path.
+        states = {entity_id: self.hass.states.get(entity_id) for entity_id in self.cache}
         stale = [
             entity_id
-            for entity_id in self.cache
-            if (state := self.hass.states.get(entity_id)) is not None
+            for entity_id, state in states.items()
+            if state is not None
             and state.state == "unavailable"
             and now - state.last_changed >= _CACHE_UNAVAILABLE_GRACE
         ]
@@ -936,9 +941,9 @@ class UpdateManagerCoordinator:
             cached["auto_install_whitelisted"] = _is_whitelisted_for_auto_install(
                 entity_id, self.whitelisted_entities
             )
-            state = self.hass.states.get(entity_id)
+            state = states[entity_id]
             if state is not None:
-                cached["native_auto_update"] = _has_native_auto_update(state)
+                cached["native_auto_update"] = has_native_auto_update(state)
 
     async def _async_periodic_recheck(self, now: datetime) -> None:
         # Self-healing safety net (added 2026-08-18): re-derives the
@@ -1018,10 +1023,10 @@ class UpdateManagerCoordinator:
         # Apps > the app > Info) changes nothing else in this key, so a
         # live flip of just that one attribute used to compare equal and
         # get skipped entirely, leaving cached["native_auto_update"] (see
-        # _has_native_auto_update) stale until the next unrelated event or
+        # has_native_auto_update) stale until the next unrelated event or
         # the periodic recheck caught up to it.
-        old_auto_update = bool(old_state.attributes.get("auto_update")) if old_state else None
-        new_auto_update = bool(new_state.attributes.get("auto_update")) if new_state else None
+        old_auto_update = has_native_auto_update(old_state) if old_state else None
+        new_auto_update = has_native_auto_update(new_state) if new_state else None
         old_key = (old_state.state, old_installed, old_latest, old_auto_update) if old_state else None
         new_key = (new_state.state, new_installed, new_latest, new_auto_update) if new_state else None
         if old_state is not None and new_state is not None and old_key == new_key:
@@ -1284,13 +1289,13 @@ class UpdateManagerCoordinator:
         return available_since
 
     async def async_reset_available_since(self, entity_id: str, to_version: str) -> None:
-        """Re-anchors to_version's own available_since to right now --
-        called by install_manager.py once a postponed-for-a-newer-HA-Core
+        """Re-anchors to_version's own available_since to right now.
+        Called by install_manager.py once a postponed-for-a-newer-HA-Core
         update resolves (self._postponed's own comment), direct user
         feedback, 2026-11-02: the staging wait period (small/medium/large)
         should start counting once an update is actually actionable, not
         run invisibly in parallel with however long it sat blocked on the
-        HA Core requirement -- otherwise an update postponed for weeks
+        HA Core requirement. Otherwise an update postponed for weeks
         could clear its entire wait period, or even come out already
         "ready", the moment HA Core itself updates, never having had a real
         chance for problems to surface while it was genuinely installable.
@@ -1457,16 +1462,16 @@ class UpdateManagerCoordinator:
 
     def _status_with_postponed_override(self, entity_id: str, status: str) -> str:
         """Reported as "waiting", same as a staging-wait Postponed entity,
-        not the staging-only "ready" the caller would otherwise use -- see
+        not the staging-only "ready" the caller would otherwise use. See
         self._is_postponed's own comment. Shared by _derive_status_fields
         (status_now's own fresh-per-request path) and _async_cache_active
-        (the actual self.cache write on every live state_changed event) --
-        found live, 2026-11-02: patching only the first of those left
+        (the actual self.cache write on every live state_changed event).
+        Found live, 2026-11-02: patching only the first of those left
         sensor.py's own per-status counts and staging_skip.py's
         hide_postponed check (both read self.cache directly, never through
         status_now) still seeing the unpatched "ready", while the panel
         itself (which does go through status_now) already showed
-        "Postponed" correctly -- same underlying fact, two different
+        "Postponed" correctly: same underlying fact, two different
         answers depending on which path asked.
 
         Only overrides "ready": a "blocked" entity (community-held-back)
@@ -1626,7 +1631,7 @@ class UpdateManagerCoordinator:
             # Doesn't change size/status here, those stay informational.
             "auto_install_excluded": _is_excluded_from_auto_install(entity_id, self.excluded_entities),
             "auto_install_whitelisted": _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
-            "native_auto_update": _has_native_auto_update(state),
+            "native_auto_update": has_native_auto_update(state),
             # True only for a "waiting" entity that's *also* currently
             # hidden from HA's own update count via staging_skip.py's own
             # auto-skip (direct user feedback, 2026-07-17: the distinction
@@ -1784,7 +1789,7 @@ class UpdateManagerCoordinator:
             "available_since": available_since,
             "auto_install_excluded": _is_excluded_from_auto_install(entity_id, self.excluded_entities),
             "auto_install_whitelisted": _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
-            "native_auto_update": _has_native_auto_update(state),
+            "native_auto_update": has_native_auto_update(state),
             # Always False here -- reaching _cache_skipped at all already
             # means the caller's own is_own_skip check said this isn't
             # ours (see _async_refresh_one). See _async_cache_active's own
