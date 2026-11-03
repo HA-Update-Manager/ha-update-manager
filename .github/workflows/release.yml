@@ -1,0 +1,36 @@
+name: Release
+
+# hacs.json has zip_release: true / filename: "update_manager.zip". HACS
+# downloads that exact asset from each release instead of cloning the repo,
+# so one has to exist on every release or the download 404s. Found live,
+# 2026-11-03: no workflow ever built it, it was always a manual step no
+# one documented, and this exact release (v0.14.0) shipped without it as a
+# result. This workflow builds and attaches it automatically from here on.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  attach-zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Build update_manager.zip
+        run: |
+          cd custom_components/update_manager
+          zip -r update_manager.zip . -x '.DS_Store'
+
+      - name: Attach it to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" \
+            custom_components/update_manager/update_manager.zip \
+            --repo "${{ github.repository }}" \
+            --clobber
