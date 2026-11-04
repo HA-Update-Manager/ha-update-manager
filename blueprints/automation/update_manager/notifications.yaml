@@ -173,7 +173,7 @@ action:
               after: "{{ trigger.to_state.attributes.entities | default([]) }}"
               after_ids: "{{ after | map(attribute='entity_id') | list }}"
           - repeat:
-              for_each: "{{ [i for i in before_ids if i not in after_ids] }}"
+              for_each: "{{ before_ids | reject('in', after_ids) | list }}"
               sequence:
                 - action: "{{ notify_target }}"
                   data:
