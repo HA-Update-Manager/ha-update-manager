@@ -30,7 +30,7 @@ that looks and feels like it's always been part of Home Assistant.
 * **Auto-install that still asks first.** A cancellable countdown announces what's coming, with an
   automatic backup when the update supports one, and a master switch to pause all of it in one click.
 * **Release notes worth reading.** Real GitHub notes compiled across every skipped version, plus a
-  wrapped app's own upstream notes (Zigbee2MQTT, Mealie, Matterbridge) alongside the short version.
+  wrapped app's own upstream notes (f.e. Zigbee2MQTT) alongside the short version.
 
 ---
 
