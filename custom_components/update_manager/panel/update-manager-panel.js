@@ -1282,11 +1282,13 @@ const _HACS_BRANDS_ICON_RE = /^https:\/\/brands\.home-assistant\.io\/_\/([a-z0-9
 //
 // dark variant checked first whenever hass.themes.darkMode is on, same
 // dark_icon.png naming (and same "falls back to the plain file if the dark
-// one is missing") the official brands repo's own server already uses,
-// confirmed against home-assistant/brands's own README, and against a real
-// integration shipping exactly this pair (Clooos/Bubble-Card-Tools's own
-// custom_components/bubble_card_tools/brand). Each variant gets its own
-// cache entry: a repo can have one, the other, both, or neither.
+// one is missing") a custom integration's own local brand/ folder already
+// uses since Home Assistant 2026.3 (contributors.home-assistant.io's own
+// integrations/brands page, not the older home-assistant/brands repo that
+// predates it), confirmed against a real integration shipping exactly this
+// pair (Clooos/Bubble-Card-Tools's own custom_components/bubble_card_tools/
+// brand). Each variant gets its own cache entry: a repo can have one, the
+// other, both, or neither.
 const _brandIconCache = new Map();
 function _fallbackBrandIconUrl(owner, repo, dark) {
   const file = dark ? "dark_icon.png" : "icon.png";
