@@ -23,7 +23,9 @@ that looks and feels like it's always been part of Home Assistant.
 * **A second opinion before you commit.** See whether others already made your exact jump safely, vote
   yourself, and let someone you trust override your own rules the moment they vouch for a release.
 * **Nothing installs in a risky order.** Core, Supervisor, OS, and device firmware queue up to avoid a
-  restart cutting off something else mid-install; Zigbee devices on the same network never reflash at once.
+  restart cutting off something else mid-install.
+* **Zigbee devices update one at a time.** Flashing several at once floods the mesh with radio traffic
+  and can destabilize it; Update Manager paces every device on the same network so that never happens.
 * **A waiting period sized to the risk.** A small bump and a major Core jump don't deserve the same
   caution, so each size gets its own buffer before it counts as ready. Restrict further to specific
   weekdays or times, e.g. only ever ready on Saturdays.
