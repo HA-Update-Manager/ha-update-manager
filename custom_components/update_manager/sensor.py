@@ -31,7 +31,7 @@ from .announcer import needs_manual_action
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
 from .device import device_info
-from .install_manager import auto_install_rules_from_options
+from .install_manager import InstallManager, auto_install_rules_from_options
 from .runtime_data import UpdateManagerConfigEntry
 from .update_status import STATUSES, categorize_updates, icon_for_status
 
@@ -44,9 +44,14 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = config_entry.runtime_data.coordinator
+    install_manager = config_entry.runtime_data.install_manager
     async_add_entities(
         [UpdateManagerStatusSensor(config_entry, coordinator, status) for status in STATUSES]
-        + [UpdateManagerNeedsManualActionSensor(config_entry, coordinator)]
+        + [
+            UpdateManagerNeedsManualActionSensor(config_entry, coordinator),
+            UpdateManagerPendingInstallsSensor(config_entry, install_manager),
+            UpdateManagerFailedInstallsSensor(config_entry, install_manager),
+        ]
     )
 
 
@@ -178,3 +183,75 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
                 for u in bucket
             ]
         }
+
+
+# Mirrors install_manager.py's own "Scheduled updates" persistent
+# notification (self._pending), same reasoning as
+# UpdateManagerNeedsManualActionSensor above: a notification is easy to
+# miss or dismiss, this is the same picture as a real, automatable entity.
+# Reads install_manager directly, not the coordinator: self._pending is
+# install_manager's own state, not derived from the coordinator's cache at
+# all.
+class UpdateManagerPendingInstallsSensor(SensorEntity):
+    _attr_should_poll = False
+    _attr_native_unit_of_measurement = "updates"
+    _attr_has_entity_name = True
+    _attr_translation_key = "pending_installs"
+
+    def __init__(self, entry: UpdateManagerConfigEntry, install_manager: InstallManager) -> None:
+        self._install_manager = install_manager
+        self._attr_unique_id = f"{DOMAIN}_pending_installs"
+        self._attr_device_info = device_info(entry)
+        self._refresh()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._install_manager.async_add_listener(self._handle_update))
+
+    @callback
+    def _handle_update(self) -> None:
+        self._refresh()
+        if self.hass.is_running:
+            self.async_write_ha_state()
+
+    def _refresh(self) -> None:
+        entities = self._install_manager.pending_entities()
+        self._attr_native_value = len(entities)
+        self._attr_extra_state_attributes = {"entities": entities}
+
+
+# Same reasoning as UpdateManagerPendingInstallsSensor above, for
+# install_manager.py's own "Failed updates" notification (self._failed).
+class UpdateManagerFailedInstallsSensor(SensorEntity):
+    _attr_should_poll = False
+    _attr_native_unit_of_measurement = "updates"
+    _attr_has_entity_name = True
+    _attr_translation_key = "failed_installs"
+
+    def __init__(self, entry: UpdateManagerConfigEntry, install_manager: InstallManager) -> None:
+        self._install_manager = install_manager
+        self._attr_unique_id = f"{DOMAIN}_failed_installs"
+        self._attr_device_info = device_info(entry)
+        self._refresh()
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._install_manager.async_add_listener(self._handle_update))
+
+    @callback
+    def _handle_update(self) -> None:
+        self._refresh()
+        if self.hass.is_running:
+            self.async_write_ha_state()
+
+    @property
+    def icon(self) -> str | None:
+        """Same "calm icon once the count is 0" treatment as blocked/
+        not_installable/needs_manual_action above: a 0 here is exactly
+        as reassuring as those."""
+        return icon_for_status("failed_installs", self._attr_native_value)
+
+    def _refresh(self) -> None:
+        entities = self._install_manager.failed_entities()
+        self._attr_native_value = len(entities)
+        self._attr_extra_state_attributes = {"entities": entities}

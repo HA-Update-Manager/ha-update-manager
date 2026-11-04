@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -230,6 +231,12 @@ class InstallManager:
         self._dirty = False
         self._unsub_timer = None
         self._unsub_coordinator_listener = None
+        # Fired whenever self._pending/self._failed change, i.e. right
+        # alongside _refresh_pending_notification/_refresh_failed_notification
+        # (see pending_entities/failed_entities below for the two sensors
+        # that read this), same async_add_listener/_fire_listeners shape
+        # coordinator.py's own already uses, for consistency.
+        self._listeners: list[Callable[[], None]] = []
         # entity_id -> the AutoInstallContext _async_execute just dispatched
         # update.install for -- lets __init__.py's install-listener (fired
         # once the entity's installed_version actually changes, from
@@ -448,6 +455,42 @@ class InstallManager:
         by the postponed branch in _async_evaluate_one) otherwise stayed
         visible until one of those happened to fire on its own."""
         await self._async_tick(dt_util.utcnow())
+
+    def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Registers a callback fired whenever self._pending/self._failed
+        change (see _fire_listeners below), for sensor.py's own
+        UpdateManagerPendingInstallsSensor/UpdateManagerFailedInstallsSensor.
+        Same shape as coordinator.py's own async_add_listener."""
+        self._listeners.append(listener)
+
+        def _remove() -> None:
+            self._listeners.remove(listener)
+
+        return _remove
+
+    def _fire_listeners(self) -> None:
+        for listener in self._listeners:
+            listener()
+
+    def pending_entities(self) -> list[dict[str, Any]]:
+        """The current self._pending contents, in the same shape
+        sensor.py's own UpdateManagerPendingInstallsSensor exposes as its
+        `entities` attribute, as plain dicts rather than PendingAnnouncement
+        NamedTuples, so that attribute stays JSON-serializable the same way
+        UpdateManagerNeedsManualActionSensor's own `entities` already is.
+        Sorted by execute_at, same order _refresh_pending_notification's
+        own notification already reads in."""
+        return [
+            {"entity_id": p.entity_id, "to_version": p.to_version, "execute_at": p.execute_at.isoformat()}
+            for p in sorted(self._pending.values(), key=lambda p: p.execute_at)
+        ]
+
+    def failed_entities(self) -> list[dict[str, Any]]:
+        """Same reasoning as pending_entities above, for self._failed."""
+        return [
+            {"entity_id": entity_id, "to_version": to_version, "reason": reason}
+            for entity_id, (to_version, reason) in self._failed.items()
+        ]
 
     @callback
     def _on_recompute(self) -> None:
@@ -764,7 +807,10 @@ class InstallManager:
         stuck around in the notifications list even once resolved, instead
         of ever being replaced. Dismissed entirely once nothing is left
         pending. Sorted by execute_at so the soonest one reads first,
-        regardless of the order entities happened to be announced in."""
+        regardless of the order entities happened to be announced in.
+        Also fires _listeners, the same trigger sensor.py's own
+        UpdateManagerPendingInstallsSensor refreshes from."""
+        self._fire_listeners()
         pending = sorted(self._pending.values(), key=lambda p: p.execute_at)
         if not pending:
             persistent_notification.async_dismiss(self.hass, _PENDING_NOTIFICATION_ID)
@@ -1146,7 +1192,10 @@ class InstallManager:
         recognized reason tag (see _mark_failed) gets a specific item
         template (e.g. "item_warning_not_accepted") instead of the generic
         one, same strings dict, just a different key, falling back to
-        "item" for anything unrecognized or unset."""
+        "item" for anything unrecognized or unset. Also fires _listeners,
+        the same trigger sensor.py's own UpdateManagerFailedInstallsSensor
+        refreshes from."""
+        self._fire_listeners()
         if not self._failed:
             persistent_notification.async_dismiss(self.hass, _FAILED_NOTIFICATION_ID)
             return

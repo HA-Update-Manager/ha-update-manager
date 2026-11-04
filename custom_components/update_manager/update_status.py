@@ -62,6 +62,12 @@ _CALM_ICONS = {
     # count-based icon" is exactly what it also needs, nothing status-bucket
     # specific about icon_for_status itself.
     "needs_manual_action": "mdi:check-circle-outline",
+    # sensor.py's own UpdateManagerFailedInstallsSensor, same "a genuinely
+    # dynamic, count-based icon" reasoning as needs_manual_action above. Not
+    # applied to UpdateManagerPendingInstallsSensor: nothing pending is the
+    # normal, neutral state most of the time, not something worth a
+    # special reassuring icon the way zero failures/zero blocked are.
+    "failed_installs": "mdi:check-circle-outline",
 }
 
 

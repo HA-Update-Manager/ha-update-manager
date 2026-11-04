@@ -18,6 +18,12 @@
             },
             "needs_manual_action": {
                 "default": "mdi:hand-back-right-outline"
+            },
+            "pending_installs": {
+                "default": "mdi:timer-sand"
+            },
+            "failed_installs": {
+                "default": "mdi:alert-circle-outline"
             }
         },
         "switch": {

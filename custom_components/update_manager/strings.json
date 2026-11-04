@@ -30,6 +30,12 @@
             },
             "needs_manual_action": {
                 "name": "Needs manual action"
+            },
+            "pending_installs": {
+                "name": "Scheduled installs"
+            },
+            "failed_installs": {
+                "name": "Failed installs"
             }
         },
         "switch": {

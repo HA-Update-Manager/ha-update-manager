@@ -30,6 +30,12 @@
             },
             "needs_manual_action": {
                 "name": "Vereist handmatige actie"
+            },
+            "pending_installs": {
+                "name": "Geplande installaties"
+            },
+            "failed_installs": {
+                "name": "Mislukte installaties"
             }
         },
         "switch": {

@@ -2,10 +2,11 @@ blueprint:
   name: "Update Manager: notifications"
   description: >-
     One notification setup for Update Manager, matching the built-in "Scheduled updates"/"Failed
-    updates" persistent notifications so nothing is missed either way: a scheduled auto-install
+    updates" persistent notifications closely enough to safely replace them: a scheduled auto-install
     heads-up, an installed confirmation, a failed-install alert, and a per-entity "needs a manual
     install" reminder with an Install button right on it. Each one can be turned off independently.
-    Notifications replace themselves instead of stacking, and clear themselves once resolved.
+    Notifications replace themselves instead of stacking, and clear themselves once resolved, reading
+    the same live sensors those two persistent notifications are themselves built from.
   domain: automation
   source_url: https://github.com/HA-Update-Manager/ha-update-manager/blob/main/blueprints/automation/update_manager/notifications.yaml
   input:
@@ -41,15 +42,15 @@ mode: queued
 max: 10
 
 trigger:
-  - trigger: event
-    event_type: update_manager_announced
-    id: announced
+  - trigger: state
+    entity_id: sensor.update_manager_pending_installs
+    id: pending_changed
   - trigger: event
     event_type: update_manager_installed
     id: installed
-  - trigger: event
-    event_type: update_manager_install_failed
-    id: install_failed
+  - trigger: state
+    entity_id: sensor.update_manager_failed_installs
+    id: failed_changed
   - trigger: state
     entity_id: sensor.update_manager_needs_manual_action
     id: needs_manual_action
@@ -66,32 +67,50 @@ variables:
 
 action:
   - choose:
-      # Scheduled auto-install: passive, this is an FYI, not something that needs you right now.
+      # Scheduled auto-install: reads sensor.update_manager_pending_installs, the same live list
+      # install_manager.py's own "Scheduled updates" persistent notification is built from, so this
+      # bundles/clears exactly as reliably as that one does (including a cancelled install dropping
+      # out, which the update_manager_announced event alone has no way to signal). Passive: this is an
+      # FYI, not something that needs you right now.
       - conditions:
           - condition: trigger
-            id: announced
+            id: pending_changed
           - "{{ notify_scheduled }}"
         sequence:
           - variables:
-              device_name: >-
-                {{ state_attr(trigger.event.data.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
-          - action: "{{ notify_target }}"
-            data:
-              title: "Scheduled update"
-              message: >-
-                Update Manager wants to update {{ device_name }} to version {{ trigger.event.data.to_version }}
-                in {{ as_datetime(trigger.event.data.execute_at) | time_until }}
-                (on {{ as_timestamp(trigger.event.data.execute_at) | timestamp_custom('%d-%m-%Y %H:%M') }}).
-              data:
-                url: /update-manager/updates
-                clickAction: /update-manager/updates
-                group: update_manager_announced
-                tag: "update_manager_announced_{{ device_name }}"
-                channel: "Update Manager"
-                notification_icon: "mdi:update"
-                importance: low
-                push:
-                  interruption-level: passive
+              before_ids: >-
+                {{ trigger.from_state.attributes.entities | default([]) | map(attribute='entity_id') | list }}
+              after: "{{ trigger.to_state.attributes.entities | default([]) }}"
+              after_ids: "{{ after | map(attribute='entity_id') | list }}"
+          - repeat:
+              for_each: "{{ before_ids | reject('in', after_ids) | list }}"
+              sequence:
+                - action: "{{ notify_target }}"
+                  data:
+                    message: "clear_notification"
+                    data:
+                      tag: "update_manager_announced_{{ repeat.item }}"
+          - repeat:
+              for_each: "{{ after }}"
+              sequence:
+                - action: "{{ notify_target }}"
+                  data:
+                    title: "Scheduled update"
+                    message: >-
+                      {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
+                      to version {{ repeat.item.to_version }} in
+                      {{ as_datetime(repeat.item.execute_at) | time_until }}
+                      (on {{ as_timestamp(repeat.item.execute_at) | timestamp_custom('%d-%m-%Y %H:%M') }}).
+                    data:
+                      url: /update-manager/updates
+                      clickAction: /update-manager/updates
+                      group: update_manager_announced
+                      tag: "update_manager_announced_{{ repeat.item.entity_id }}"
+                      channel: "Update Manager"
+                      notification_icon: "mdi:update"
+                      importance: low
+                      push:
+                        interruption-level: passive
 
       # Installed: clears the scheduled-announcement notification above (if it was ever shown), then
       # its own passive confirmation, same reasoning, nothing needs you here either.
@@ -110,7 +129,7 @@ action:
                 data:
                   message: "clear_notification"
                   data:
-                    tag: "update_manager_announced_{{ device_name }}"
+                    tag: "update_manager_announced_{{ trigger.event.data.entity_id }}"
           - if: "{{ notify_installed }}"
             then:
               - action: "{{ notify_target }}"
@@ -135,30 +154,49 @@ action:
                     push:
                       interruption-level: passive
 
-      # Install failed: mirrors the built-in "Failed updates" persistent notification's own content
-      # (name + version), minus the one detail that notification can show that this event doesn't
-      # carry: a Marketplace first-run warning not yet accepted gets its own clearer text there, not
-      # available here. Not passive: a failure deserves attention, same as needs-manual-action below.
+      # Install failed: reads sensor.update_manager_failed_installs, same bundling/clearing reasoning
+      # as the pending branch above. Having the real reason tag available now (not just the entity_id/
+      # to_version the update_manager_install_failed event itself carries) means this can finally show
+      # the same "needs you to open Marketplace" detail the built-in notification does, not just the
+      # generic text. Not passive: a failure deserves attention, same as needs-manual-action below.
       - conditions:
           - condition: trigger
-            id: install_failed
+            id: failed_changed
           - "{{ notify_install_failed }}"
         sequence:
           - variables:
-              device_name: >-
-                {{ state_attr(trigger.event.data.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
-          - action: "{{ notify_target }}"
-            data:
-              title: "Update failed"
-              message: >-
-                {{ device_name }} couldn't be updated to version {{ trigger.event.data.to_version }}.
-                Check the Home Assistant logs, or install it manually.
-              data:
-                url: /update-manager/updates
-                clickAction: /update-manager/updates
-                tag: "update_manager_failed_{{ device_name }}"
-                channel: "Update Manager"
-                notification_icon: "mdi:update"
+              before_ids: >-
+                {{ trigger.from_state.attributes.entities | default([]) | map(attribute='entity_id') | list }}
+              after: "{{ trigger.to_state.attributes.entities | default([]) }}"
+              after_ids: "{{ after | map(attribute='entity_id') | list }}"
+          - repeat:
+              for_each: "{{ before_ids | reject('in', after_ids) | list }}"
+              sequence:
+                - action: "{{ notify_target }}"
+                  data:
+                    message: "clear_notification"
+                    data:
+                      tag: "update_manager_failed_{{ repeat.item }}"
+          - repeat:
+              for_each: "{{ after }}"
+              sequence:
+                - action: "{{ notify_target }}"
+                  data:
+                    title: "Update failed"
+                    message: >-
+                      {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
+                      {% if repeat.item.reason == "warning_not_accepted" -%}
+                      needs you to open Marketplace once and accept its first-run warning.
+                      {%- else -%}
+                      couldn't be updated to version {{ repeat.item.to_version }}. Check the Home
+                      Assistant logs, or install it manually.
+                      {%- endif %}
+                    data:
+                      url: /update-manager/updates
+                      clickAction: /update-manager/updates
+                      tag: "update_manager_failed_{{ repeat.item.entity_id }}"
+                      channel: "Update Manager"
+                      notification_icon: "mdi:update"
 
       # Needs a manual install: the one notification type that actually needs you, so this one keeps
       # the normal (not passive) importance, and ships with an Install button right on it.
