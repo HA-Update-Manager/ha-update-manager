@@ -1,0 +1,197 @@
+blueprint:
+  name: "Update Manager: notifications"
+  description: >-
+    One notification setup for Update Manager: a scheduled auto-install heads-up, an installed
+    confirmation, and a per-entity "needs a manual install" reminder with Install/Skip buttons right on
+    it. Each of the three can be turned off independently. Notifications replace themselves instead of
+    stacking, and clear themselves once resolved.
+  domain: automation
+  source_url: https://github.com/HA-Update-Manager/ha-update-manager/blob/main/blueprints/automation/update_manager/notifications.yaml
+  input:
+    notify_target:
+      name: Notification target
+      description: >-
+        The notify action to send these to, exactly as you'd use it in an action step, e.g.
+        notify.mobile_app_your_phone.
+      selector:
+        text: {}
+    notify_scheduled:
+      name: Notify on scheduled auto-install
+      default: true
+      selector:
+        boolean: {}
+    notify_installed:
+      name: Notify when something gets installed
+      default: true
+      selector:
+        boolean: {}
+    notify_manual_action:
+      name: Notify when something needs a manual install
+      default: true
+      selector:
+        boolean: {}
+
+mode: queued
+max: 10
+
+trigger:
+  - trigger: event
+    event_type: update_manager_announced
+    id: announced
+  - trigger: event
+    event_type: update_manager_installed
+    id: installed
+  - trigger: state
+    entity_id: sensor.update_manager_needs_manual_action
+    id: needs_manual_action
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: notification_action
+
+variables:
+  notify_target: !input notify_target
+  notify_scheduled: !input notify_scheduled
+  notify_installed: !input notify_installed
+  notify_manual_action: !input notify_manual_action
+
+action:
+  - choose:
+      # Scheduled auto-install: passive, this is an FYI, not something that needs you right now.
+      - conditions:
+          - condition: trigger
+            id: announced
+          - "{{ notify_scheduled }}"
+        sequence:
+          - variables:
+              device_name: >-
+                {{ state_attr(trigger.event.data.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
+          - action: "{{ notify_target }}"
+            data:
+              title: "Scheduled update"
+              message: >-
+                Update Manager wants to update {{ device_name }} to version {{ trigger.event.data.to_version }}
+                in {{ as_datetime(trigger.event.data.execute_at) | time_until }}
+                (on {{ as_timestamp(trigger.event.data.execute_at) | timestamp_custom('%d-%m-%Y %H:%M') }}).
+              data:
+                url: /update-manager/updates
+                clickAction: /update-manager/updates
+                group: update_manager_announced
+                tag: "update_manager_announced_{{ device_name }}"
+                channel: "Update Manager"
+                notification_icon: "mdi:update"
+                importance: low
+                push:
+                  interruption-level: passive
+
+      # Installed: clears the scheduled-announcement notification above (if it was ever shown), then
+      # its own passive confirmation, same reasoning, nothing needs you here either.
+      - conditions:
+          - condition: trigger
+            id: installed
+        sequence:
+          - variables:
+              device_name: >-
+                {{ state_attr(trigger.event.data.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
+              reason: >-
+                {{ {"trusted_voter": "a trusted vote", "rules": "your own rules", "whitelist": "the always-auto-install list"}.get(trigger.event.data.auto_install_reason) }}
+          - if: "{{ notify_scheduled }}"
+            then:
+              - action: "{{ notify_target }}"
+                data:
+                  message: "clear_notification"
+                  data:
+                    tag: "update_manager_announced_{{ device_name }}"
+          - if: "{{ notify_installed }}"
+            then:
+              - action: "{{ notify_target }}"
+                data:
+                  title: "Update installed"
+                  message: >-
+                    {{ device_name }} updated from {{ trigger.event.data.from_version }} to
+                    {{ trigger.event.data.to_version }}
+                    {% if trigger.event.data.auto_installed -%}
+                    (auto-installed, {{ reason }}).
+                    {%- elif trigger.event.data.install_method == "manual" -%}
+                    (installed manually).
+                    {%- else -%}
+                    (installed outside Home Assistant).
+                    {%- endif %}
+                  data:
+                    url: /update-manager/history
+                    clickAction: /update-manager/history
+                    channel: "Update Manager"
+                    notification_icon: "mdi:update"
+                    importance: low
+                    push:
+                      interruption-level: passive
+
+      # Needs a manual install: the one notification type that actually needs you, so this one keeps
+      # the normal (not passive) importance, and ships with Install/Skip right on it.
+      - conditions:
+          - condition: trigger
+            id: needs_manual_action
+          - "{{ notify_manual_action }}"
+        sequence:
+          - variables:
+              before_ids: >-
+                {{ trigger.from_state.attributes.entities | default([]) | map(attribute='entity_id') | list }}
+              after: "{{ trigger.to_state.attributes.entities | default([]) }}"
+              after_ids: "{{ after | map(attribute='entity_id') | list }}"
+          - repeat:
+              for_each: "{{ [i for i in before_ids if i not in after_ids] }}"
+              sequence:
+                - action: "{{ notify_target }}"
+                  data:
+                    message: "clear_notification"
+                    data:
+                      tag: "update_manager_manual_{{ repeat.item }}"
+          - repeat:
+              for_each: "{{ after }}"
+              sequence:
+                - action: "{{ notify_target }}"
+                  data:
+                    title: "Ready, but won't auto-install"
+                    message: >-
+                      {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}:
+                      {{ repeat.item.installed_version }} → {{ repeat.item.latest_version }}
+                    data:
+                      tag: "update_manager_manual_{{ repeat.item.entity_id }}"
+                      url: /update-manager/updates
+                      clickAction: /update-manager/updates
+                      channel: "Update Manager"
+                      notification_icon: "mdi:update"
+                      actions:
+                        - action: "UM_INSTALL_{{ repeat.item.entity_id }}"
+                          title: "Install now"
+                          authenticationRequired: true
+                        - action: "UM_SKIP_{{ repeat.item.entity_id }}"
+                          title: "Skip this version"
+                          authenticationRequired: true
+
+      # Handles the Install/Skip buttons above. The entity_id lives inside the action id itself
+      # (UM_INSTALL_update.xxx), not a separate data field: the Companion App only echoes other data
+      # fields back on Android, never on iOS.
+      - conditions:
+          - condition: trigger
+            id: notification_action
+          - "{{ notify_manual_action }}"
+          - >-
+            {{ trigger.event.data.action.startswith('UM_INSTALL_') or trigger.event.data.action.startswith('UM_SKIP_') }}
+        sequence:
+          - variables:
+              install_action: "{{ trigger.event.data.action.startswith('UM_INSTALL_') }}"
+              target_entity: "{{ trigger.event.data.action | regex_replace('^UM_(INSTALL|SKIP)_', '') }}"
+          - if: "{{ install_action }}"
+            then:
+              - action: update.install
+                target:
+                  entity_id: "{{ target_entity }}"
+            else:
+              - action: update.skip
+                target:
+                  entity_id: "{{ target_entity }}"
+          - action: "{{ notify_target }}"
+            data:
+              message: "clear_notification"
+              data:
+                tag: "update_manager_manual_{{ target_entity }}"
