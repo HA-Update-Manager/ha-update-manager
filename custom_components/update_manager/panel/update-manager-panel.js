@@ -1263,9 +1263,63 @@ function historySections(tr, entries) {
 // all still falls back to state-badge's normal domain icon instead of a
 // wrong, generic one.
 const _HACS_BRANDS_ICON_RE = /^https:\/\/brands\.home-assistant\.io\/_\/([a-z0-9_]+)\/icon\.png$/;
+
+// Not an official HACS/Marketplace convention: neither's own update entity
+// ever sets entity_picture for anything but an integration-category repo
+// (HacsRepositoryUpdateEntity.entity_picture/marketplace's own
+// RepositoryUpdateEntity.entity_picture, confirmed against both real
+// sources, 2026-11-04: both return None for a plugin/card, no fallback of
+// their own). This project's own, optional convention instead: a plugin
+// repo that ships the same brand/icon.png shape an integration would, just
+// at the repo root since a plugin has no custom_components/ subfolder to
+// nest it in. Checked with a HEAD request first, never set speculatively:
+// state-badge.ts has no onerror fallback of its own (a 404'd entity_picture
+// just renders as an empty badge, confirmed against its real source), so
+// guessing wrong here would make things look worse than the plain domain
+// icon this entity already shows without this at all. Cached for this
+// page's own lifetime once resolved, successful or not, so a repeat call
+// (every re-render) never re-issues the same request.
+//
+// dark variant checked first whenever hass.themes.darkMode is on, same
+// dark_icon.png naming (and same "falls back to the plain file if the dark
+// one is missing") the official brands repo's own server already uses,
+// confirmed against home-assistant/brands's own README, and against a real
+// integration shipping exactly this pair (Clooos/Bubble-Card-Tools's own
+// custom_components/bubble_card_tools/brand). Each variant gets its own
+// cache entry: a repo can have one, the other, both, or neither.
+const _brandIconCache = new Map();
+function _fallbackBrandIconUrl(owner, repo, dark) {
+  const file = dark ? "dark_icon.png" : "icon.png";
+  const key = `${owner}/${repo}/${file}`;
+  const cached = _brandIconCache.get(key);
+  if (cached) return cached;
+  if (!_brandIconCache.has(key)) {
+    _brandIconCache.set(key, false);
+    const url = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/brand/${file}`;
+    fetch(url, { method: "HEAD" })
+      .then((response) => {
+        if (response.ok) _brandIconCache.set(key, url);
+      })
+      .catch(() => {});
+  }
+  // Not yet resolved (or confirmed missing): nothing to show yet, same as
+  // no fallback existing at all. A successful check lands in the cache for
+  // whichever later render happens to come next, no forced refresh of its
+  // own needed, this panel already re-renders often enough on its own.
+  return null;
+}
+
 function entityState(hass, entityId) {
   const state = hass && hass.states && hass.states[entityId];
   const picture = state && state.attributes && state.attributes.entity_picture;
+  if (!picture) {
+    const parsed = _parseGithubReleaseUrl(state && state.attributes && state.attributes.release_url);
+    const dark = Boolean(hass && hass.themes && hass.themes.darkMode);
+    const darkFallback = parsed && dark && _fallbackBrandIconUrl(parsed.owner, parsed.repo, true);
+    const fallback = darkFallback || (parsed && _fallbackBrandIconUrl(parsed.owner, parsed.repo, false));
+    if (!fallback) return state;
+    return { ...state, attributes: { ...state.attributes, entity_picture: fallback } };
+  }
   const match = typeof picture === "string" && _HACS_BRANDS_ICON_RE.exec(picture);
   if (!match) return state;
   return {
