@@ -4,7 +4,7 @@ blueprint:
     One notification setup for Update Manager, matching the built-in "Scheduled updates"/"Failed
     updates" persistent notifications so nothing is missed either way: a scheduled auto-install
     heads-up, an installed confirmation, a failed-install alert, and a per-entity "needs a manual
-    install" reminder with Install/Skip buttons right on it. Each one can be turned off independently.
+    install" reminder with an Install button right on it. Each one can be turned off independently.
     Notifications replace themselves instead of stacking, and clear themselves once resolved.
   domain: automation
   source_url: https://github.com/HA-Update-Manager/ha-update-manager/blob/main/blueprints/automation/update_manager/notifications.yaml
@@ -161,7 +161,7 @@ action:
                 notification_icon: "mdi:update"
 
       # Needs a manual install: the one notification type that actually needs you, so this one keeps
-      # the normal (not passive) importance, and ships with Install/Skip right on it.
+      # the normal (not passive) importance, and ships with an Install button right on it.
       - conditions:
           - condition: trigger
             id: needs_manual_action
@@ -199,32 +199,21 @@ action:
                         - action: "UM_INSTALL_{{ repeat.item.entity_id }}"
                           title: "Install now"
                           authenticationRequired: true
-                        - action: "UM_SKIP_{{ repeat.item.entity_id }}"
-                          title: "Skip this version"
-                          authenticationRequired: true
 
-      # Handles the Install/Skip buttons above. The entity_id lives inside the action id itself
+      # Handles the Install button above. The entity_id lives inside the action id itself
       # (UM_INSTALL_update.xxx), not a separate data field: the Companion App only echoes other data
       # fields back on Android, never on iOS.
       - conditions:
           - condition: trigger
             id: notification_action
           - "{{ notify_manual_action }}"
-          - >-
-            {{ trigger.event.data.action.startswith('UM_INSTALL_') or trigger.event.data.action.startswith('UM_SKIP_') }}
+          - "{{ trigger.event.data.action.startswith('UM_INSTALL_') }}"
         sequence:
           - variables:
-              install_action: "{{ trigger.event.data.action.startswith('UM_INSTALL_') }}"
-              target_entity: "{{ trigger.event.data.action | regex_replace('^UM_(INSTALL|SKIP)_', '') }}"
-          - if: "{{ install_action }}"
-            then:
-              - action: update.install
-                target:
-                  entity_id: "{{ target_entity }}"
-            else:
-              - action: update.skip
-                target:
-                  entity_id: "{{ target_entity }}"
+              target_entity: "{{ trigger.event.data.action | regex_replace('^UM_INSTALL_', '') }}"
+          - action: update.install
+            target:
+              entity_id: "{{ target_entity }}"
           - action: "{{ notify_target }}"
             data:
               message: "clear_notification"
