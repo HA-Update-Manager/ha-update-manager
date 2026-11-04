@@ -1,10 +1,11 @@
 blueprint:
   name: "Update Manager: notifications"
   description: >-
-    One notification setup for Update Manager: a scheduled auto-install heads-up, an installed
-    confirmation, and a per-entity "needs a manual install" reminder with Install/Skip buttons right on
-    it. Each of the three can be turned off independently. Notifications replace themselves instead of
-    stacking, and clear themselves once resolved.
+    One notification setup for Update Manager, matching the built-in "Scheduled updates"/"Failed
+    updates" persistent notifications so nothing is missed either way: a scheduled auto-install
+    heads-up, an installed confirmation, a failed-install alert, and a per-entity "needs a manual
+    install" reminder with Install/Skip buttons right on it. Each one can be turned off independently.
+    Notifications replace themselves instead of stacking, and clear themselves once resolved.
   domain: automation
   source_url: https://github.com/HA-Update-Manager/ha-update-manager/blob/main/blueprints/automation/update_manager/notifications.yaml
   input:
@@ -25,6 +26,11 @@ blueprint:
       default: true
       selector:
         boolean: {}
+    notify_install_failed:
+      name: Notify when an install fails
+      default: true
+      selector:
+        boolean: {}
     notify_manual_action:
       name: Notify when something needs a manual install
       default: true
@@ -41,6 +47,9 @@ trigger:
   - trigger: event
     event_type: update_manager_installed
     id: installed
+  - trigger: event
+    event_type: update_manager_install_failed
+    id: install_failed
   - trigger: state
     entity_id: sensor.update_manager_needs_manual_action
     id: needs_manual_action
@@ -52,6 +61,7 @@ variables:
   notify_target: !input notify_target
   notify_scheduled: !input notify_scheduled
   notify_installed: !input notify_installed
+  notify_install_failed: !input notify_install_failed
   notify_manual_action: !input notify_manual_action
 
 action:
@@ -124,6 +134,31 @@ action:
                     importance: low
                     push:
                       interruption-level: passive
+
+      # Install failed: mirrors the built-in "Failed updates" persistent notification's own content
+      # (name + version), minus the one detail that notification can show that this event doesn't
+      # carry: a Marketplace first-run warning not yet accepted gets its own clearer text there, not
+      # available here. Not passive: a failure deserves attention, same as needs-manual-action below.
+      - conditions:
+          - condition: trigger
+            id: install_failed
+          - "{{ notify_install_failed }}"
+        sequence:
+          - variables:
+              device_name: >-
+                {{ state_attr(trigger.event.data.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
+          - action: "{{ notify_target }}"
+            data:
+              title: "Update failed"
+              message: >-
+                {{ device_name }} couldn't be updated to version {{ trigger.event.data.to_version }}.
+                Check the Home Assistant logs, or install it manually.
+              data:
+                url: /update-manager/updates
+                clickAction: /update-manager/updates
+                tag: "update_manager_failed_{{ device_name }}"
+                channel: "Update Manager"
+                notification_icon: "mdi:update"
 
       # Needs a manual install: the one notification type that actually needs you, so this one keeps
       # the normal (not passive) importance, and ships with Install/Skip right on it.
