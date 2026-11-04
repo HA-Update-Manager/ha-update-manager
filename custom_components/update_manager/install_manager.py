@@ -51,6 +51,9 @@ from .const import (
 )
 from .coordinator import UpdateManagerCoordinator
 from .entity_rename import relabel_key
+from .github_auth import GitHubAuthManager
+from .github_release_notes import parse_release_url
+from .min_ha_version_fetch import async_fetch_min_ha_version
 from .rollout_manager import RolloutManager
 from .semver import ha_core_version_satisfies, min_ha_version_required
 
@@ -211,10 +214,12 @@ class InstallManager:
         coordinator: UpdateManagerCoordinator,
         rules: AutoInstallRules,
         rollout_manager: RolloutManager,
+        github_auth_manager: GitHubAuthManager,
     ) -> None:
         self.hass = hass
         self._coordinator = coordinator
         self._rules = rules
+        self._github_auth_manager = github_auth_manager
         # Gates every auto-install dispatch below, a no-op for anything
         # that isn't part of an active multi-device Zigbee rollout (see
         # rollout_manager.py's own docstring), so this is invisible for the
@@ -291,6 +296,14 @@ class InstallManager:
         # one cheap re-check, hiding a known, still-true fact for as long
         # as that whole wait period takes to elapse again).
         self._postponed: dict[str, tuple[str, str]] = {}
+        # (owner, repo, tag) -> the "homeassistant" key min_ha_version_fetch.py
+        # found there (or None, confirmed absent) -- a release's own
+        # hacs.json can never change once published, so a confirmed answer
+        # is cached here forever, never re-fetched for the same tag twice.
+        # Deliberately not persisted (unlike self._postponed above): losing
+        # this on a restart costs one more real GitHub fetch per still-
+        # relevant tag, not a wrongly-forgotten fact.
+        self._min_ha_version_cache: dict[tuple[str, str, str], str | None] = {}
         # Serializes every _async_tick pass against every other one: same
         # fix, and same underlying race, as staging_skip.py's own StagingSkipManager
         # lock (see its docstring for the full incident this closes). _on_recompute
@@ -592,6 +605,22 @@ class InstallManager:
             if self._dirty:
                 await self._async_save()
 
+    async def _async_min_ha_version(self, owner: str, repo: str, tag: str) -> str | None:
+        """self._min_ha_version_cache's own read-through: a cache hit never
+        touches the network, a miss fetches once (min_ha_version_fetch.py)
+        and only remembers a *confirmed* answer (see that module's own
+        docstring for what that means): a transient failure costs nothing
+        more than trying again on the next tick, never a wrongly-permanent
+        "no requirement found"."""
+        key = (owner, repo, tag)
+        if key in self._min_ha_version_cache:
+            return self._min_ha_version_cache[key]
+        access_token = await self._github_auth_manager.async_get_valid_access_token()
+        confirmed, version = await async_fetch_min_ha_version(self.hass, owner, repo, tag, access_token)
+        if confirmed:
+            self._min_ha_version_cache[key] = version
+        return version
+
     async def _async_evaluate_one(self, entity_id: str, now: datetime) -> None:
         # A previous "Update failed" notification has no business lingering
         # once the entity is genuinely installing again, however that retry
@@ -684,6 +713,35 @@ class InstallManager:
                 del self._postponed[entity_id]
                 self._dirty = True
                 await self._coordinator.async_reset_available_since(entity_id, postponed_to_version)
+
+        # Proactive counterpart to the reactive check above: this release's
+        # own hacs.json, fetched (and cached forever, see
+        # self._min_ha_version_cache's own comment) straight from GitHub,
+        # rather than waiting to discover the exact same requirement only
+        # after a real install attempt fails. Runs whenever this entity
+        # isn't already postponed above (either never was, or was just
+        # cleared for a stale/now-satisfied version), deliberately before
+        # any staging/schedule-wait logic below rather than only once
+        # status reaches "ready", direct user feedback, 2026-11-04: the
+        # staging wait period shouldn't start counting while an update
+        # can't possibly be installed yet regardless, same reasoning
+        # async_reset_available_since's own docstring already gives for why
+        # that wait period gets re-anchored once a *reactive* postponement
+        # resolves. Falls through to the normal flow below whenever this
+        # can't find a requirement at all (no release_url, nothing parses,
+        # no hacs.json, no "homeassistant" key), exactly as if this check
+        # didn't exist.
+        if cached and current_to_version:
+            owner_repo_tag = parse_release_url(cached.get("release_url"))
+            if owner_repo_tag is not None:
+                required_version = await self._async_min_ha_version(*owner_repo_tag)
+                if required_version is not None and not ha_core_version_satisfies(HA_CORE_VERSION, required_version):
+                    self._postponed[entity_id] = (current_to_version, required_version)
+                    self._dirty = True
+                    if entity_id in self._pending:
+                        del self._pending[entity_id]
+                        self._refresh_pending_notification()
+                    return
 
         # A stale cancellation (the entity has since moved to a different
         # target version) has no effect either way -- prune it so it

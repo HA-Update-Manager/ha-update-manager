@@ -422,6 +422,18 @@ function compareUpdates(a, b, settings) {
     }
   }
 
+  // Within "waiting": an update blocked on a too-old HA Core sorts below
+  // every ordinary staging-wait entry in the same group, direct user
+  // feedback, 2026-11-04. There's no countdown ticking toward it (see
+  // timerBadge's own icon-only pill for one of these), so letting it sort
+  // by whatever leftover staging number it happens to carry would mix it
+  // in among entries that genuinely are counting down to something.
+  if (a.status === "waiting" && b.status === "waiting") {
+    const aBlocked = !!a.postponed_min_ha_version;
+    const bBlocked = !!b.postponed_min_ha_version;
+    if (aBlocked !== bBlocked) return aBlocked ? 1 : -1;
+  }
+
   const availableSinceSec = (u) => (u.available_since ? Math.floor(new Date(u.available_since).getTime() / 1000) : 0);
   // Same number the badge itself displays, not always plain remaining_seconds
   // -- found live: two auto-install-projected updates sorted apart, with an
