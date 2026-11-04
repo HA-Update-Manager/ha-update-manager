@@ -25,10 +25,10 @@ rules:
   docs-actions:
     status: done
     comment: >-
-      README's own Services table documents both get_release_notes and
-      cancel_scheduled_install; services.yaml's own fields plus
-      strings.json's services section cover the rest (names/descriptions
-      shown in Developer Tools > Actions).
+      The Wiki's "Automating Update Manager" page documents both
+      get_release_notes and cancel_scheduled_install; services.yaml's own
+      fields plus strings.json's services section cover the rest
+      (names/descriptions shown in Settings > Tools > Actions).
   docs-triggers:
     status: exempt
     comment: No triggers exist.
@@ -125,19 +125,28 @@ rules:
   docs-examples:
     status: todo
     comment: >-
-      README used to have an "Automation examples" section (switch.turn_off/
-      state-trigger snippets for the master pause switch and summary sensor);
-      removed 2026-07-29 for conciseness (direct user feedback). Easy to add
+      Removed 2026-07-29 for conciseness: a switch.turn_off/state-trigger
+      example for the master pause switch and summary sensor. Easy to add
       back if ever wanted -- both entities are plain, automatable HA entities
-      with nothing special about them.
-  docs-known-limitations: done
+      with nothing special about them. The Wiki's "Automating Update Manager"
+      page does already cover the update_manager_announced event example.
+  docs-known-limitations:
+    status: done
+    comment: Moved from the README to the Wiki's own "Known limitations" page, 2026-11-04.
   docs-supported-devices:
     status: exempt
     comment: >-
       No physical devices involved -- covers whatever update. entities already
       exist on the system (HACS, Core/Supervisor/OS, Zigbee firmware, add-ons).
-  docs-supported-functions: done
-  docs-troubleshooting: done
+  docs-supported-functions:
+    status: done
+    comment: >-
+      README's own "Why you'll like it" section, plus the Wiki's "How
+      auto-install decides" and "Settings reference" pages for the full
+      detail.
+  docs-troubleshooting:
+    status: done
+    comment: Moved from the README to the Wiki's own "Troubleshooting" page, 2026-11-04.
   docs-use-cases: done
   dynamic-devices:
     status: exempt
