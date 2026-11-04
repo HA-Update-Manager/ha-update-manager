@@ -187,7 +187,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # hass, nothing else holds a reference into it (yet, a future voting
     # feature will read it for a valid access token, not the other way
     # around), so no setter/callback wiring needed here either.
-    github_auth_manager = GitHubAuthManager(hass)
+    github_auth_manager = GitHubAuthManager(hass, entry.entry_id)
     # Same reasoning again: needs only hass, read by websocket_api.py's own
     # verdict_for_version handler, written by its vote handler.
     my_votes_manager = MyVotesManager(hass)
@@ -204,7 +204,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # reference to it (see rollout_manager.py's own docstring: gates every
     # install dispatch, and staging_skip.py hides a queued entry the same
     # way it already hides a plain "waiting" one).
-    rollout_manager = RolloutManager(hass, coordinator)
+    rollout_manager = RolloutManager(hass, coordinator, entry.entry_id)
     install_manager = InstallManager(hass, coordinator, auto_install_rules_from_options(options), rollout_manager)
     staging_skip_manager = StagingSkipManager(hass, coordinator, rollout_manager)
     # The reverse direction: only wireable once install_manager exists, see

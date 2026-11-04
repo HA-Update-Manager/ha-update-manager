@@ -332,9 +332,10 @@ class _QueuedEntry:
 
 
 class RolloutManager:
-    def __init__(self, hass: HomeAssistant, coordinator: UpdateManagerCoordinator) -> None:
+    def __init__(self, hass: HomeAssistant, coordinator: UpdateManagerCoordinator, config_entry_id: str) -> None:
         self.hass = hass
         self._coordinator = coordinator
+        self._config_entry_id = config_entry_id
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         # group_key -> ordered list of not-yet-confirmed-complete entries.
         # The first entry in each list is the one currently dispatched
@@ -1503,6 +1504,11 @@ class RolloutManager:
         if ir.async_get(self.hass).async_get_issue(DOMAIN, stuck_issue_id(entity_id)) is not None:
             return
         minutes = max(1, int((dt_util.utcnow() - since).total_seconds() // 60))
+        # config_entry_id (HA 2026.11+, see manifest.json's own minimum
+        # version) ties this issue to this integration's own config entry,
+        # so it's deleted automatically if the entry itself ever is,
+        # instead of potentially lingering for a removed integration
+        # forever.
         ir.async_create_issue(
             self.hass,
             DOMAIN,
@@ -1512,6 +1518,7 @@ class RolloutManager:
             translation_key="install_stuck_zigbee" if is_zigbee_entity(self.hass, entity_id) else "install_stuck",
             translation_placeholders={"entity_id": entity_id, "minutes": str(minutes)},
             data={"entity_id": entity_id},
+            config_entry_id=self._config_entry_id,
         )
 
     def _async_clear_stuck_issue(self, entity_id: str) -> None:

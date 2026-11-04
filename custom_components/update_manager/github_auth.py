@@ -56,7 +56,11 @@ STORAGE_KEY = f"{DOMAIN}_github_auth"
 _ISSUE_LINK_EXPIRED = "github_link_expired"
 
 
-def _async_create_link_expired_issue(hass: HomeAssistant) -> None:
+def _async_create_link_expired_issue(hass: HomeAssistant, config_entry_id: str) -> None:
+    # config_entry_id (HA 2026.11+, see manifest.json's own minimum version)
+    # ties this issue to this integration's own config entry, so it's
+    # deleted automatically if the entry itself ever is, instead of
+    # potentially lingering for a removed integration forever.
     ir.async_create_issue(
         hass,
         DOMAIN,
@@ -64,6 +68,7 @@ def _async_create_link_expired_issue(hass: HomeAssistant) -> None:
         is_fixable=False,
         severity=ir.IssueSeverity.WARNING,
         translation_key=_ISSUE_LINK_EXPIRED,
+        config_entry_id=config_entry_id,
     )
 
 
@@ -114,8 +119,9 @@ def _expiry_fields(payload: dict[str, Any], now: datetime) -> dict[str, str]:
 
 
 class GitHubAuthManager:
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, config_entry_id: str) -> None:
         self.hass = hass
+        self._config_entry_id = config_entry_id
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._data: dict[str, Any] = {}
         # Not persisted: only meaningful for the lifetime of one in-progress
@@ -404,7 +410,7 @@ class GitHubAuthManager:
         async_get_valid_access_token above."""
         self._data["broken"] = True
         await self._store.async_save(self._data)
-        _async_create_link_expired_issue(self.hass)
+        _async_create_link_expired_issue(self.hass, self._config_entry_id)
 
     async def async_unlink(self) -> None:
         self._data = {}
