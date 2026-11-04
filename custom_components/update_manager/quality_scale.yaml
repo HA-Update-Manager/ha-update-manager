@@ -30,8 +30,12 @@ rules:
       fields plus strings.json's services section cover the rest
       (names/descriptions shown in Settings > Tools > Actions).
   docs-triggers:
-    status: exempt
-    comment: No triggers exist.
+    status: done
+    comment: >-
+      Stale: trigger.py/triggers.yaml added the three native triggers
+      (scheduled_auto_install/installed/install_failed) after this was last
+      written. The Wiki's "Automating Update Manager" page now documents
+      them under "Native automation triggers (beta)", 2026-11-04.
   docs-conditions:
     status: exempt
     comment: No conditions exist.
@@ -127,7 +131,7 @@ rules:
     comment: >-
       Removed 2026-07-29 for conciseness: a switch.turn_off/state-trigger
       example for the master pause switch and summary sensor. Easy to add
-      back if ever wanted -- both entities are plain, automatable HA entities
+      back if ever wanted, both entities are plain, automatable HA entities
       with nothing special about them. The Wiki's "Automating Update Manager"
       page does already cover the update_manager_announced event example.
   docs-known-limitations:
