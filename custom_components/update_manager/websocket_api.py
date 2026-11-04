@@ -239,13 +239,20 @@ async def _handle_refresh_community_verdicts(
     still happens to have. Awaited here (not fired as a background task)
     so the panel's own immediately-following update_manager/updates call
     sees the freshly-patched cache, not a stale one with a refresh still
-    in flight."""
+    in flight.
+
+    Also re-evaluates pending/postponed auto-install state right away (see
+    install_manager.py's own async_force_reevaluate), found live,
+    2026-11-04: without it, this button looked like it refreshed
+    everything, but a stale "Scheduled updates" entry still waited for the
+    next periodic timer or unrelated coordinator recompute to clear."""
     data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
     await data.coordinator.async_force_refresh_community_verdicts()
     await _async_reconcile_my_votes(hass, data)
+    await data.install_manager.async_force_reevaluate()
     connection.send_result(msg["id"])
 
 

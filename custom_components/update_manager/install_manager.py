@@ -394,6 +394,16 @@ class InstallManager:
         # up to 5 minutes, since decide_action only got a chance to notice
         # the new "skipped" status on the next timer tick.
         self._unsub_coordinator_listener = self._coordinator.async_add_listener(self._on_recompute)
+        # Found live, 2026-11-04: a reload/restart only ever reaches this
+        # method itself, then waits for the first of the above to actually
+        # fire, up to 5 minutes, for anything that depends on re-evaluating
+        # pending/postponed state against conditions that may have changed
+        # since this was last persisted (e.g. a stale self._pending entry
+        # the postponed early-return above is now able to self-heal, but
+        # only once it actually runs). Kicking one tick immediately, same
+        # pattern as _on_recompute, makes that correction visible right
+        # after a reload instead of only eventually.
+        self.hass.async_create_task(self._async_tick(dt_util.utcnow()))
 
     def update_rules(self, rules: AutoInstallRules) -> None:
         """Applies newly-saved auto-install rules in place -- no reload
@@ -426,6 +436,17 @@ class InstallManager:
         if enabled == self._coordinator.master_enabled:
             return
         self._coordinator.set_master_enabled(enabled)
+        await self._async_tick(dt_util.utcnow())
+
+    async def async_force_reevaluate(self) -> None:
+        """websocket_api.py's own refresh_community_verdicts handler (the
+        panel's manual refresh button) calls this too, right after its own
+        verdicts refresh, so the button is also a "re-check pending/
+        postponed state against current conditions right now" action, not
+        just the periodic timer or the next unrelated coordinator recompute.
+        Found live, 2026-11-04: a stale self._pending entry (now self-healed
+        by the postponed branch in _async_evaluate_one) otherwise stayed
+        visible until one of those happened to fire on its own."""
         await self._async_tick(dt_util.utcnow())
 
     @callback
@@ -589,6 +610,22 @@ class InstallManager:
                 del self._postponed[entity_id]
                 self._dirty = True
             elif not ha_core_version_satisfies(HA_CORE_VERSION, required_version):
+                # Self-healing: self._pending has no business holding an
+                # entry here once genuinely postponed (async_mark_postponed
+                # already clears it the moment it sets self._postponed, same
+                # as _async_run_install's own except-branch relies on
+                # _async_execute having already cleared it before
+                # dispatching). Found live, 2026-11-04: an entity can still
+                # have a stale self._pending entry left over from before
+                # that was true, and nothing else ever clears it once this
+                # early return starts firing every tick, since that only
+                # happens inside _async_execute, which this never reaches
+                # again while still postponed. Both are persisted, so it
+                # survived several restarts too.
+                if entity_id in self._pending:
+                    del self._pending[entity_id]
+                    self._dirty = True
+                    self._refresh_pending_notification()
                 return
             else:
                 # Core itself now satisfies what this was waiting for.

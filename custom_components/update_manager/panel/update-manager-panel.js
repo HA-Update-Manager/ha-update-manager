@@ -2807,6 +2807,21 @@ class UpdateManagerPanel extends HTMLElement {
         bottomSheet.style.removeProperty("--dialog-transform");
         bottomSheet.style.removeProperty("--dialog-transition");
       }
+      // A third restore, on top of _openDetailDialog's own synchronous one
+      // and its 200ms-later one: direct user feedback, 2026-11-04, after
+      // the scroll-sharing bug this project already fixed once (see
+      // _saveDialogScrollPosition's own docstring) came back without any
+      // change on this file's own side. ha-bottom-sheet's real source has
+      // since been rebuilt on a newer internal library (wa-drawer), a
+      // plausible source of some new, not-yet-identified internal reset
+      // this project has no visibility into. requestAnimationFrame runs
+      // this after that library's own "opened"-triggered layout settles,
+      // not on a guessed fixed delay like the 200ms fallback has to.
+      requestAnimationFrame(() => {
+        const key = this._dialogScrollKey(this._dialogEntityId, this._dialogHistoryEntry);
+        const el = this._dialogScrollContainer();
+        if (el) el.scrollTop = this._dialogScrollPositions.get(key) || 0;
+      });
     });
     dialog.addEventListener("closed", () => {
       // Before dialog.open flips false below -- _saveDialogScrollPosition's
