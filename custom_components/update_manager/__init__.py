@@ -229,6 +229,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # docstring: a queued install can also hit the "needs a newer HA Core"
     # case the two non-queued paths already handle via async_mark_postponed.
     rollout_manager.set_postponed_handler(install_manager.async_mark_postponed)
+    # Same reasoning again, see rollout_manager.py's own set_install_dispatcher
+    # docstring: a queued install's actual update.install call needs the same
+    # shared lock install_manager.py's own non-queued path already dispatches
+    # through, so two installs from different Zigbee networks/tiers never hit
+    # HACS's own shared-backup-directory race.
+    rollout_manager.set_install_dispatcher(install_manager.async_dispatch_install)
     # The single shared master-enabled flag (see coordinator.py's own
     # set_master_enabled) -- set once, here, before either manager's
     # async_start() runs; both read it directly off the coordinator from

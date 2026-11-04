@@ -399,6 +399,18 @@ class RolloutManager:
         # postponement the same regardless of which path discovered it, no
         # auto-vs-manual distinction needed here either.
         self._mark_postponed: Callable[[str, str, str], Awaitable[None]] | None = None
+        # install_manager.py's own async_dispatch_install, which serializes
+        # the actual update.install call against every other one this
+        # module or install_manager.py's own _async_run_install dispatches
+        # at the same time (see that method's own docstring for the shared
+        # /tmp/hacs_backup-directory race it exists to prevent). Same
+        # wiring pattern as the handlers above; falls back to a bare,
+        # unserialized hass.services.async_call below whenever this is
+        # still None (not expected in practice, __init__.py always wires it
+        # before this module's own dispatch loop can run, but a queued
+        # install shouldn't simply never happen if that assumption is ever
+        # wrong).
+        self._dispatch_install: Callable[[dict[str, Any], Context | None], Awaitable[None]] | None = None
         self._unsub_install_listener: Callable[[], None] | None = None
         self._unsub_periodic_recheck: Callable[[], None] | None = None
         # Fired by _async_save below, the one place every real mutation of
@@ -498,6 +510,17 @@ class RolloutManager:
         install_manager.py's own _async_run_install and websocket_api.py's
         _async_run_manual_install already use."""
         self._mark_postponed = handler
+
+    def set_install_dispatcher(self, dispatcher: Callable[[dict[str, Any], Context | None], Awaitable[None]]) -> None:
+        """install_manager.py's own async_dispatch_install, same setter
+        pattern and import-cycle reasoning as the handlers above. Found
+        live, 2026-11-04: this module's own dispatch loop called hass.
+        services.async_call directly, same as websocket_api.py's manual-
+        install path did before it got this exact same fix, so a batch of
+        several queued installs from different Zigbee networks (or
+        different tiers) dispatched at the same moment could still hit the
+        same HACS shared-backup-directory race the lock exists for."""
+        self._dispatch_install = dispatcher
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
@@ -1280,9 +1303,12 @@ class RolloutManager:
             )
             self._mark_recently_executed(entry.entity_id, context)
         try:
-            await self.hass.services.async_call(
-                "update", "install", entry.service_data, blocking=True, context=entry.ha_context
-            )
+            if self._dispatch_install is not None:
+                await self._dispatch_install(entry.service_data, entry.ha_context)
+            else:
+                await self.hass.services.async_call(
+                    "update", "install", entry.service_data, blocking=True, context=entry.ha_context
+                )
         except Exception as exception:
             # Found by review: previously unguarded, a real install failure
             # here left the entry stuck at the front of its queue forever

@@ -782,9 +782,24 @@ async def _async_run_manual_install(
     message, so a failure here gets the exact same "Failed updates"
     notification an auto-install failure does (via handle_manual_install_
     failure, deliberately without a backoff retry of its own, see that
-    method's own docstring)."""
+    method's own docstring).
+
+    Routed through data.install_manager.async_dispatch_install (its own
+    lock) rather than calling hass.services.async_call directly whenever
+    data exists, found live, 2026-11-04: a panel "Update all" click on a
+    real batch (14 updates) dispatched every one of them through this exact
+    function at once, none of them serialized against each other at all,
+    and HACS's own backup step shares a single /tmp/hacs_backup directory
+    across every install (see that lock's own comment), so several
+    installing at the same moment raced each other there. Falls back to the
+    bare service call whenever data is missing (the one case this already
+    tolerated before, see the required_version line below), same as it
+    always did."""
     try:
-        await hass.services.async_call("update", "install", service_data, blocking=True, context=ha_context)
+        if data:
+            await data.install_manager.async_dispatch_install(service_data, context=ha_context)
+        else:
+            await hass.services.async_call("update", "install", service_data, blocking=True, context=ha_context)
     except Exception as exception:
         # Classified before logging, not after, so the log level can match
         # install_manager.py's own auto-install path (_async_run_install):

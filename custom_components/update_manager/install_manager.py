@@ -23,7 +23,7 @@ from typing import Any
 from homeassistant.components import persistent_notification
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.const import __version__ as HA_CORE_VERSION
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
@@ -1009,10 +1009,24 @@ class InstallManager:
         del self._recently_executed[entity_id]
         return context
 
+    async def async_dispatch_install(self, service_data: dict[str, Any], context: Context | None = None) -> None:
+        """The actual update.install call, serialized against every other
+        one this exact class dispatches at the same time, via self._install_
+        lock (see its own comment for the HACS shared-/tmp/hacs_backup-dir
+        race this exists to prevent). Public, not folded back into _async_
+        run_install's own try block below, so websocket_api.py's manual-
+        install path can route through this same lock too, found live,
+        2026-11-04: a panel "Update all" click (3 manual installs dispatched
+        at once, none of them going through this class at all until now)
+        reproduced the exact same race this lock was already built for,
+        something self._install_lock's own original comment had explicitly,
+        but wrongly, assumed couldn't happen."""
+        async with self._install_lock:
+            await self.hass.services.async_call("update", "install", service_data, blocking=True, context=context)
+
     async def _async_run_install(self, entity_id: str, to_version: str, service_data: dict[str, Any]) -> None:
         try:
-            async with self._install_lock:
-                await self.hass.services.async_call("update", "install", service_data, blocking=True)
+            await self.async_dispatch_install(service_data)
         except Exception as exception:
             required_version = min_ha_version_required(exception)
             if required_version is not None:
