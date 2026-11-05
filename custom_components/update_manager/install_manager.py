@@ -1053,8 +1053,19 @@ class InstallManager:
                 # actually satisfied the requirement.
                 self._release_recently_executed(entity_id, to_version)
                 return
-            _LOGGER.exception("Update Manager's auto-install failed for %s", entity_id)
-            self.handle_install_failure(entity_id, to_version, reason=failure_reason_for(exception))
+            reason = failure_reason_for(exception)
+            if reason is not None:
+                # Same "known, recoverable, not actually wrong" reasoning as
+                # the min_ha_version_required branch above, for the other
+                # labeled failure this project recognizes (Marketplace's own
+                # one-time "accept the warning" gate, see
+                # _MARKETPLACE_WARNING_NOT_ACCEPTED_KEY's own comment):
+                # nothing here needs a developer's traceback, a plain fact
+                # does the whole job.
+                _LOGGER.debug("Update Manager's auto-install for %s failed: %s", entity_id, reason)
+            else:
+                _LOGGER.exception("Update Manager's auto-install failed for %s", entity_id)
+            self.handle_install_failure(entity_id, to_version, reason=reason)
 
     def handle_install_failure(self, entity_id: str, to_version: str, *, reason: str | None = None) -> None:
         """Shared by _async_run_install's own except-branch above and

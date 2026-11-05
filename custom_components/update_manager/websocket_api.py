@@ -810,10 +810,23 @@ async def _async_run_manual_install(
         # condition, the one place the two paths' otherwise-shared
         # classification diverged.
         required_version = min_ha_version_required(exception) if data and to_version else None
+        reason = failure_reason_for(exception) if required_version is None else None
         if required_version is not None:
             _LOGGER.debug(
                 "Update Manager postponed %s: needs Home Assistant %s or newer", entity_id, required_version
             )
+        elif reason is not None:
+            # Same "known, recoverable, not actually wrong" reasoning as the
+            # required_version branch above, for the other labeled failure
+            # this project recognizes (Marketplace's own one-time "accept
+            # the warning" gate, see install_manager.py's own
+            # _MARKETPLACE_WARNING_NOT_ACCEPTED_KEY comment): nothing here
+            # needs a developer's traceback, a plain fact does the whole
+            # job. Found live, 2026-11-04: this path still always logged a
+            # full traceback for that exact same condition, same gap the
+            # 2026-11-03 /simplify review above already closed for the
+            # required_version case.
+            _LOGGER.debug("Update Manager's manual install for %s failed: %s", entity_id, reason)
         else:
             _LOGGER.exception("Update Manager's manual install failed for %s", entity_id)
         if data and to_version:
@@ -827,9 +840,7 @@ async def _async_run_manual_install(
             if required_version is not None:
                 await data.install_manager.async_mark_postponed(entity_id, to_version, required_version)
             else:
-                data.install_manager.handle_manual_install_failure(
-                    entity_id, to_version, reason=failure_reason_for(exception)
-                )
+                data.install_manager.handle_manual_install_failure(entity_id, to_version, reason=reason)
 
 
 @websocket_api.require_admin

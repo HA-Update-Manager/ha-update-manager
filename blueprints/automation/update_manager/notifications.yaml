@@ -39,7 +39,12 @@ blueprint:
         boolean: {}
 
 mode: queued
-max: 10
+# 30, not the default 10, found live, 2026-11-04: a real "Update all" batch
+# (14 entities, several sensor changes each) queued more runs than 10 could
+# hold, and a run dropped past that limit is gone for good, nothing later
+# ever catches up for it (see the "installed" trigger's own comment below
+# for why that matters more there than for the sensor-based triggers).
+max: 30
 
 trigger:
   - trigger: state
@@ -47,6 +52,12 @@ trigger:
     id: pending_changed
   - trigger: event
     event_type: update_manager_installed
+    # An event, not a sensor state like every other trigger here: a dropped
+    # run (mode: queued's own max above) means this specific install's own
+    # notification is simply gone, nothing to diff against later. The
+    # sensor-based triggers below self-heal from a dropped run instead,
+    # since a later run just compares against whatever the sensor's real
+    # current state already is.
     id: installed
   - trigger: state
     entity_id: sensor.update_manager_failed_installs

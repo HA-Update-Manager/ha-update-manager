@@ -44,17 +44,8 @@ This integration is available via Home Assistant's built-in [Marketplace](https:
 
 1. Go to the Marketplace in your Home Assistant.
 2. Search for "Update Manager" and download it.
-3. Restart Home Assistant.
-
----
-
-## Configuration
-
-[![Add integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start?domain=update_manager)
-
-1. Navigate to **Settings > Devices & services**, add **Update Manager**, and confirm the
-   single-instance setup.
-2. Open the **Update Manager** entry in the sidebar to review updates and adjust the rules (Settings
+3. Confirm the setup dialog that opens automatically, no restart needed.
+4. Open the **Update Manager** entry in the sidebar to review updates and adjust the rules (Settings
    tab).
 
 There's nothing to fill in during setup itself; every actual setting lives on Update Manager's own
