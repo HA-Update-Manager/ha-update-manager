@@ -307,6 +307,10 @@ export const TRANSLATIONS = {
     dialog_community_heading: "Community",
     list_and: "and",
     dialog_more_info: "More info",
+    dialog_menu_marketplace: "Marketplace",
+    dialog_menu_visit: "Visit",
+    dialog_menu_repository: "Repository",
+    dialog_menu_issue_tracker: "Issues",
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
     // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
     // that this card also covers hide_postponed (merged in from its own
@@ -655,6 +659,10 @@ export const TRANSLATIONS = {
     dialog_community_heading: "Community",
     list_and: "en",
     dialog_more_info: "Meer info",
+    dialog_menu_marketplace: "Marketplace",
+    dialog_menu_visit: "Bezoeken",
+    dialog_menu_repository: "Repository",
+    dialog_menu_issue_tracker: "Issues",
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
     community_section_title: "Help anderen",
     community_section_desc:

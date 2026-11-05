@@ -1671,6 +1671,59 @@ function _parseGithubReleaseUrl(url) {
   return match ? { owner: match[1], repo: match[2] } : null;
 }
 
+// The detail dialog's own "Marketplace/Visit/Repository/Issues" menu
+// (_openDetailDialog), found entirely from data this panel already has, no
+// backend round trip needed.
+//
+// configuration: any device's own configuration_url, same generic field
+// HA's own real device page already turns into a "Visit" action
+// (ha-config-device-page.ts, confirmed against its real source, 2026-11-05:
+// icon mdiCog, label ui.panel.config.devices.open_configuration_url),
+// reused here the same generic way, sanitized/converted to an in-app path
+// the same way sanitizeLinkUrl/homeAssistantUrlToPath does in the real
+// frontend (src/common/url/sanitize-http-url.ts) for a homeassistant://
+// deep link, left as a plain external URL otherwise (e.g. an ESPHome
+// device's own local web server, found live, 2026-11-05: a plain
+// http://host:port configuration_url, nothing to do with any deep link at
+// all). Labeled "Marketplace" specifically only for HACS's/Marketplace's
+// own exact shape ("homeassistant://hacs/repository/{id}"/"homeassistant://
+// marketplace/repository/{id}", confirmed against both's real source):
+// found live, 2026-11-05, a broader "any homeassistant:// link is
+// Marketplace" guess offered a "Marketplace" item that actually opened an
+// App's own info page or an ESPHome device's own Device Builder app
+// instead, for any entity whose device happens to set this field for its
+// own, unrelated reason. Every other configuration_url (an App's own
+// "homeassistant://config/app/{slug}", confirmed against hassio's real
+// coordinator.py, or anything else) gets the same plain "Visit" HA's own
+// device page would show it as, rather than this panel needing its own
+// special case for every integration that sets this field.
+//
+// repository/issues: straight from _parseGithubReleaseUrl, same owner/repo
+// this panel already relies on elsewhere, null whenever releaseUrl doesn't
+// parse as a GitHub one at all.
+const _MARKETPLACE_CONFIG_URL_RE = /^homeassistant:\/\/(?:hacs|marketplace)\/repository\/.+/;
+
+function _repoMenuLinks(hass, entityId, releaseUrl) {
+  const deviceId = hass.entities && hass.entities[entityId] && hass.entities[entityId].device_id;
+  const configUrl = deviceId && hass.devices && hass.devices[deviceId] && hass.devices[deviceId].configuration_url;
+  let configuration = null;
+  if (configUrl) {
+    const isMarketplace = _MARKETPLACE_CONFIG_URL_RE.test(configUrl);
+    const isInApp = configUrl.startsWith("homeassistant://");
+    configuration = {
+      href: isInApp ? `/${configUrl.slice("homeassistant://".length)}` : configUrl,
+      inApp: isInApp,
+      marketplace: isMarketplace,
+    };
+  }
+  const parsed = _parseGithubReleaseUrl(releaseUrl);
+  return {
+    configuration,
+    repository: parsed ? `https://github.com/${parsed.owner}/${parsed.repo}` : null,
+    issues: parsed ? `https://github.com/${parsed.owner}/${parsed.repo}/issues` : null,
+  };
+}
+
 // Applies both decorations in one place -- shared by every release-notes
 // rendering path via insertReleaseNotesSection below, so notes are
 // decorated exactly once regardless of which of the three sources (HA's
@@ -3512,6 +3565,23 @@ class UpdateManagerPanel extends HTMLElement {
     }
   }
 
+  // The detail dialog's own "Marketplace" menu item (_repoMenuLinks/
+  // _openDetailDialog): a real in-app SPA navigation to another panel, not
+  // a page reload. Reimplements the core of home-assistant/frontend's own
+  // navigate() (src/common/navigate.ts: history.pushState then fire a
+  // location-changed event the app's own router listens for) rather than
+  // importing it, same "no access to that internal module from a custom
+  // panel" reasoning as _repoMenuLinks's own homeAssistantUrlToPath
+  // reimplementation. Deliberately the minimal version, not the full
+  // navigate() (which also closes open dialogs first and can prompt for
+  // unsaved changes): this dialog is about to close itself right after
+  // (see this call's own site), and nothing this panel shows has unsaved
+  // state a navigation away from it could lose.
+  _navigate(path) {
+    history.pushState(null, "", path);
+    this.dispatchEvent(new CustomEvent("location-changed", { bubbles: true, composed: true }));
+  }
+
   // Opens HA's own more-info dialog for the entity -- the same one you'd
   // get by clicking it anywhere else in HA. Only reachable now via the
   // per-entity detail dialog's own "more info" button (see
@@ -4429,29 +4499,38 @@ class UpdateManagerPanel extends HTMLElement {
       detail.appendChild(span);
       content.appendChild(detail);
     };
-    // Same construction (ha-progress-button, appearance = "plain") every
-    // action button in this dialog already used before this method
-    // existed, placed in the step's own shared action row (getActionsRow
-    // above) -- main action first, since every call site calls this before
-    // addReportControls (see that function's own comment). No
-    // --wa-color-on-normal override (found by review, 2026-08-19, direct
-    // user feedback -- "zwarte tekst?! Dat doet ha nooit"): that override
-    // was only ever a real fix for a button sitting inside ha-alert's own
-    // tinted slot="action" (see 8082810's own commit message -- HA's
-    // legacy --mdc-theme-primary convention that slot expects, which this
-    // project's actual ha-progress-button never reads, so it fell back to
-    // plain link-blue regardless of the alert color underneath it), copied
-    // here unquestioned when the old alert stack became this timeline
-    // (2026-08-14) -- these buttons haven't sat inside a colored alert
-    // since, so the override just forced HA's normal blue plain-button
-    // text to a flat, disabled-looking neutral color for no reason anymore.
-    // appearance overridable per call -- direct user feedback, 2026-08-14:
-    // "Ready" (Force ready) should read as the more inviting, filled
-    // action; every other action built through this helper (Cancel
-    // auto-install, Unskip) stays plain, the default.
-    const addAction = (content, label, onClick, { appearance = "plain" } = {}) => {
+    // Same construction (ha-progress-button) every action button in this
+    // dialog already used before this method existed, placed in the step's
+    // own shared action row (getActionsRow above) -- main action first,
+    // since every call site calls this before addReportControls (see that
+    // function's own comment). No --wa-color-on-normal override (found by
+    // review, 2026-08-19, direct user feedback -- "zwarte tekst?! Dat doet
+    // ha nooit"): that override was only ever a real fix for a button
+    // sitting inside ha-alert's own tinted slot="action" (see 8082810's own
+    // commit message -- HA's legacy --mdc-theme-primary convention that
+    // slot expects, which this project's actual ha-progress-button never
+    // reads, so it fell back to plain link-blue regardless of the alert
+    // color underneath it), copied here unquestioned when the old alert
+    // stack became this timeline (2026-08-14) -- these buttons haven't sat
+    // inside a colored alert since, so the override just forced HA's
+    // normal blue plain-button text to a flat, disabled-looking neutral
+    // color for no reason anymore.
+    // Default changed from "plain" to "filled", direct user feedback,
+    // 2026-11-05: a plain button's own lack of fill/border left visible
+    // empty space to its left, reading as misaligned rather than as a real
+    // button, aware this cuts against HA's own real design guidance
+    // (contributors.home-assistant.io/design/components/button: plain is
+    // for "cancel and dismiss actions" specifically, Cancel auto-install
+    // among them), flagged and still chosen deliberately anyway. appearance
+    // stays overridable per call either way: Force ready already passes
+    // its own "filled" explicitly (now the same as this default, left
+    // explicit rather than quietly relying on it matching by coincidence).
+    const addAction = (content, label, onClick, { appearance = "filled" } = {}) => {
       const btn = document.createElement("ha-progress-button");
       btn.appearance = appearance;
+      // "s", not the default "m", direct user feedback, 2026-11-05, same
+      // pass as the appearance change just above.
+      btn.size = "s";
       btn.label = label;
       btn.disabled = updateIsInstalling(this._dialogLastState);
       btn.addEventListener("click", () => _runProgressAction(btn, onClick));
@@ -5006,7 +5085,23 @@ class UpdateManagerPanel extends HTMLElement {
     this._dialogLastState = entityState(this._hass, entityId) || null;
     this._dialogActionButtons = [];
     dialog.innerHTML = "";
-    dialog.headerTitle = friendlyEntityName(this._hass, entityId);
+    // A slotted span (slot="headerTitle"), not the plain dialog.headerTitle
+    // string property, found live, 2026-11-05, compared directly against
+    // HA's own real more-info dialog (ha-more-info-dialog.ts's own
+    // slot="headerTitle" span): ha-adaptive-dialog's own bare-string path
+    // renders a <span slot="title"> with no overflow/text-overflow of its
+    // own (only ha-dialog-header's .header-content, the flex *column*
+    // wrapper around it, sets those, which has no real effect on its own
+    // block children), so a long title just got hard-clipped, no visible
+    // "...". ha-more-info-dialog's own .title p rule (min-width: 0; width:
+    // 100%; overflow: hidden; text-overflow: ellipsis) is the one that
+    // actually produces the ellipsis seen in HA's own real dialog, mirrored
+    // here via .dialog-title instead.
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "dialog-title";
+    titleSpan.slot = "headerTitle";
+    titleSpan.textContent = friendlyEntityName(this._hass, entityId);
+    dialog.appendChild(titleSpan);
 
     const body = document.createElement("div");
     body.className = "dialog-content";
@@ -5568,6 +5663,86 @@ class UpdateManagerPanel extends HTMLElement {
     // with nothing under it just added noise, especially for a purely
     // historical entity that's otherwise short on content anyway.
     const entries = this._installLog.filter((entry) => entry.entity_id === entityId);
+
+    // The header's own "Marketplace/Repository/Issues" menu, direct user
+    // feedback, 2026-11-05: HA's own native more-info dialog already has a
+    // Repository/Issue tracker menu for a HACS/Marketplace entity (its own
+    // ⋮ button), this is the same convenience on our own dialog, plus a
+    // link back to this exact repo's own Marketplace page (which the
+    // native dialog doesn't offer at all). Lives here, not inside the
+    // showPendingUpdate block above, specifically so a History-only dialog
+    // (no current pending update, u is undefined) still gets one, found
+    // live, 2026-11-05: the first version only ever built this when u was
+    // truthy, so opening the dialog from the History tab for an
+    // already-up-to-date entity (or a live one, but via a historyEntry
+    // override) silently had no menu at all, even though the repository is
+    // exactly as real either way. entries[0] (newest first, same order the
+    // History cards below render in) stands in for u.release_url, since the
+    // owner/repo a release_url resolves to never actually depends on which
+    // specific jump produced it. Appended to `dialog` (slot=
+    // "headerActionItems", see ha-adaptive-dialog's own real source) right
+    // here rather than up where the title span is appended, simply because
+    // neither u nor entries is known yet up there: append order among
+    // differently-slotted light-DOM children doesn't affect where they're
+    // rendered. Omitted entirely (not an empty/disabled menu) when none of
+    // the three links resolve, e.g. Core/Supervisor/OS, which have no
+    // repository at all, or a brand-new entity with no History yet and no
+    // current pending update either.
+    {
+      const releaseUrlForMenu = u ? u.release_url : entries[0] && entries[0].release_url;
+      const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForMenu);
+      if (repoLinks.configuration || repoLinks.repository || repoLinks.issues) {
+        const menuBtn = document.createElement("button");
+        menuBtn.className = "icon-btn";
+        menuBtn.title = this._hass.localize("ui.common.menu");
+        menuBtn.setAttribute("slot", "trigger");
+        menuBtn.innerHTML = `<ha-icon icon="mdi:dots-vertical"></ha-icon>`;
+        const repoMenu = document.createElement("ha-dropdown");
+        repoMenu.className = "dialog-menu";
+        repoMenu.setAttribute("slot", "headerActionItems");
+        repoMenu.appendChild(menuBtn);
+        // Same two icons HA's own real Marketplace repository-overflow menu
+        // uses for "repository"/"issue_tracker" (ha-marketplace-repository-
+        // overflow-menu.ts: mdiGithub/mdiBug, confirmed against its real
+        // source, 2026-11-05). The configuration item's own icon/label
+        // depends on what it actually resolves to, see _repoMenuLinks's own
+        // top comment: mdi:store/"Marketplace" for that one specific known
+        // shape, mdi:cog/"Visit" (HA's own real ui.panel.config.devices.
+        // open_configuration_url wording, ha-config-device-page.ts) for
+        // anything else.
+        const addMenuLink = (value, icon, label) => {
+          const item = document.createElement("ha-dropdown-item");
+          item.value = value;
+          item.innerHTML = `<ha-icon slot="icon" icon="${icon}"></ha-icon>`;
+          item.append(label);
+          repoMenu.appendChild(item);
+        };
+        if (repoLinks.configuration) {
+          const { marketplace } = repoLinks.configuration;
+          addMenuLink("configuration", marketplace ? "mdi:store" : "mdi:cog", marketplace ? tr.dialog_menu_marketplace : tr.dialog_menu_visit);
+        }
+        if (repoLinks.repository) addMenuLink("repository", "mdi:github", tr.dialog_menu_repository);
+        if (repoLinks.issues) addMenuLink("issues", "mdi:bug", tr.dialog_menu_issue_tracker);
+        // wa-select, not a click listener on each item: same real event
+        // (confirmed against ha-dropdown.ts) the toolbar's own overflow
+        // menu already relies on, see _ensureShell's own matching comment.
+        // configuration._navigate's or window.open's, between the two,
+        // keyed on configuration.inApp (a homeassistant:// deep link vs. a
+        // plain external URL, e.g. an ESPHome device's own local web
+        // server, see _repoMenuLinks's own top comment). repository/issues
+        // are always a real external github.com URL.
+        repoMenu.addEventListener("wa-select", (e) => {
+          const value = e.detail.item.value;
+          if (value === "configuration" && repoLinks.configuration) {
+            if (repoLinks.configuration.inApp) this._navigate(repoLinks.configuration.href);
+            else window.open(repoLinks.configuration.href, "_blank", "noopener");
+          } else if (repoLinks[value]) {
+            window.open(repoLinks[value], "_blank", "noopener");
+          }
+        });
+        dialog.appendChild(repoMenu);
+      }
+    }
     if (entries.length) {
       // Missing entirely before this fix -- direct user feedback,
       // 2026-07-30: whatever renders above (Community section, or the
@@ -7032,20 +7207,24 @@ class UpdateManagerPanel extends HTMLElement {
     // entry): matches healthyBtn's own visual weight right next to it,
     // changed 2026-07-29, direct user feedback -- "an action we genuinely
     // want people to take, a soft-background button reads as more
-    // inviting/actionable than a bare text link". Plain instead for
+    // inviting/actionable than a bare text link". Outlined instead for
     // Journey A's own "Report a known issue" (_buildTimeline's own
-    // addReportControls, before installing anything) -- direct user
-    // feedback, 2026-08-14: swapped with Ready now (_buildTimeline's own
-    // addAction call), which is now the filled one instead.
+    // addReportControls, before installing anything), direct user
+    // feedback, 2026-11-05: visible shape without matching healthyBtn's
+    // own full weight, now that addAction's own buttons right next to it
+    // (see that method's own comment) are filled too.
     //
     // No --wa-color-on-normal override, in Journey A (actionsRow) or
     // Journey B alike -- see addAction's own comment for why that override
     // doesn't belong anywhere in this dialog anymore (it was only ever
     // correct for a button inside ha-alert's own tinted action slot, gone
-    // since 2026-08-14). HA's normal plain-button color is what every
-    // *other* plain button in this dialog already reads as too.
+    // since 2026-08-14).
     const toggleBtn = document.createElement("ha-button");
-    toggleBtn.appearance = allowHealthy ? "filled" : "plain";
+    toggleBtn.appearance = allowHealthy ? "filled" : "outlined";
+    // "s" for Journey A only, matching addAction's own buttons right next
+    // to it there (direct user feedback, 2026-11-05); Journey B (History)
+    // keeps the default size, untouched by this same pass.
+    if (!allowHealthy) toggleBtn.size = "s";
     // GitHub issue #7: this button stays visible even after an already-cast
     // problematic vote (see the comment block above), but it used to keep
     // showing the exact same "not yet voted" label, giving no sign the vote
@@ -7546,6 +7725,29 @@ class UpdateManagerPanel extends HTMLElement {
       .icon-btn:disabled { cursor: default; opacity: 0.6; }
       .icon-btn ha-icon.spinning { animation: um-spin 1s linear infinite; }
       @keyframes um-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      /* The detail dialog's own "Marketplace/Repository/Issues" menu
+         (_openDetailDialog): ha-dialog-header's own .header-content
+         (the title's real wrapper) has no margin of its own on the side
+         facing .header-action-items, so this icon sat flush against a
+         truncated title with no breathing room at all, direct user
+         feedback, 2026-11-05, compared against HA's own native update
+         dialog (More info > the ⋮ row), which always keeps a visible gap
+         there. var(--ha-space-2), the same spacing token ha-dialog-header's
+         own header-bar padding already uses. */
+      .dialog-menu { margin-inline-start: var(--ha-space-2, 8px); }
+      /* _openDetailDialog's own slot="headerTitle" span, the same rule
+         (confirmed against its real source) HA's own more-info dialog uses
+         on its own slotted title (ha-more-info-dialog.ts's own ".title p"),
+         minus the "p" (a bare span here, not a paragraph): display: block
+         so width/overflow apply at all (a plain inline span ignores both),
+         min-width: 0 so it can actually shrink below its own text's natural
+         width inside ha-dialog-header's flex row, white-space: nowrap
+         spelled out explicitly rather than only relying on inheriting it
+         from that row. */
+      .dialog-title {
+        display: block; min-width: 0; width: 100%;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
 
       .content { display: block; }
       .loading {
