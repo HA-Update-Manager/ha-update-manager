@@ -6067,6 +6067,21 @@ class UpdateManagerPanel extends HTMLElement {
             window.open(repoLinks[value], "_blank", "noopener");
           }
         });
+        // The real bug behind the "opening this menu scrolls the dialog to
+        // the top" report, found by actually reading _ensureShell's own
+        // `dialog.addEventListener("closed", ...)` (not just comparing
+        // markup against ha-more-info-dialog.ts again): that listener is on
+        // `dialog` itself with no target check, so this dropdown's own
+        // "closed" event (fired every time the menu itself closes, a
+        // perfectly normal thing a dropdown does) bubbles straight through
+        // this light-DOM child into it, running the real dialog's own close
+        // cleanup (dialog.open = false, this._dialogEntityId = null) as a
+        // side effect of nothing more than closing the menu. Exactly why
+        // ha-more-info-dialog.ts's own two header dropdowns both set
+        // @closed=${stopPropagation} (confirmed against its real source,
+        // missed on the first pass at this fix, which only matched the
+        // trigger/placement markup, not this).
+        repoMenu.addEventListener("closed", (e) => e.stopPropagation());
         dialog.appendChild(repoMenu);
       }
     }
