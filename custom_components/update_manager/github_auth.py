@@ -57,10 +57,16 @@ _ISSUE_LINK_EXPIRED = "github_link_expired"
 
 
 def _async_create_link_expired_issue(hass: HomeAssistant, config_entry_id: str) -> None:
-    # config_entry_id (HA 2026.11+, see manifest.json's own minimum version)
-    # ties this issue to this integration's own config entry, so it's
-    # deleted automatically if the entry itself ever is, instead of
-    # potentially lingering for a removed integration forever.
+    # config_entry_id (HA 2026.11+) ties this issue to this integration's own
+    # config entry, so it's deleted automatically if the entry itself ever
+    # is, instead of potentially lingering for a removed integration
+    # forever. No manifest.json gate actually enforces this HA Core
+    # requirement, confirmed 2026-11-05: "homeassistant" isn't a real,
+    # hassfest-recognized manifest key for a custom integration at all
+    # (hacs.json's own key, read by HACS/Marketplace before install, is the
+    # only real version gate this project has, see semver.py's own
+    # min_ha_version_required). Reaching this call on an older Core would
+    # throw a plain TypeError, accepted as-is rather than guarded here.
     ir.async_create_issue(
         hass,
         DOMAIN,

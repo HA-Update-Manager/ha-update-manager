@@ -1530,11 +1530,12 @@ class RolloutManager:
         if ir.async_get(self.hass).async_get_issue(DOMAIN, stuck_issue_id(entity_id)) is not None:
             return
         minutes = max(1, int((dt_util.utcnow() - since).total_seconds() // 60))
-        # config_entry_id (HA 2026.11+, see manifest.json's own minimum
-        # version) ties this issue to this integration's own config entry,
-        # so it's deleted automatically if the entry itself ever is,
-        # instead of potentially lingering for a removed integration
-        # forever.
+        # config_entry_id (HA 2026.11+) ties this issue to this integration's
+        # own config entry, so it's deleted automatically if the entry
+        # itself ever is, instead of potentially lingering for a removed
+        # integration forever. See github_auth.py's own matching comment
+        # (_async_create_link_expired_issue) for why no manifest.json gate
+        # actually enforces this.
         ir.async_create_issue(
             self.hass,
             DOMAIN,

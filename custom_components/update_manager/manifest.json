@@ -6,7 +6,6 @@
     "config_flow": true,
     "dependencies": ["http", "websocket_api", "panel_custom", "persistent_notification"],
     "documentation": "https://github.com/HA-Update-Manager/ha-update-manager",
-    "homeassistant": "2026.11.0",
     "integration_type": "service",
     "iot_class": "calculated",
     "issue_tracker": "https://github.com/HA-Update-Manager/ha-update-manager/issues",
