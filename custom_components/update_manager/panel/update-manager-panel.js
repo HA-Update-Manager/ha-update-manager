@@ -6069,19 +6069,36 @@ class UpdateManagerPanel extends HTMLElement {
         });
         // The real bug behind the "opening this menu scrolls the dialog to
         // the top" report, found by actually reading _ensureShell's own
-        // `dialog.addEventListener("closed", ...)` (not just comparing
-        // markup against ha-more-info-dialog.ts again): that listener is on
+        // `dialog.addEventListener("closed", ...)`: that listener is on
         // `dialog` itself with no target check, so this dropdown's own
-        // "closed" event (fired every time the menu itself closes, a
-        // perfectly normal thing a dropdown does) bubbles straight through
-        // this light-DOM child into it, running the real dialog's own close
-        // cleanup (dialog.open = false, this._dialogEntityId = null) as a
-        // side effect of nothing more than closing the menu. Exactly why
-        // ha-more-info-dialog.ts's own two header dropdowns both set
-        // @closed=${stopPropagation} (confirmed against its real source,
-        // missed on the first pass at this fix, which only matched the
-        // trigger/placement markup, not this).
+        // "closed" event bubbles straight through this light-DOM child into
+        // it. Doesn't actually explain the reported scroll-jump on its own
+        // (that fires on *close*, after the jump already happened), kept
+        // anyway since it's still a real gap matching ha-more-info-dialog.
+        // ts's own @closed=${stopPropagation} on both its header dropdowns.
+        //
+        // The real cause, found live, 2026-11-05 (only ever happened in the
+        // narrow-viewport ha-bottom-sheet variant, never the desktop
+        // ha-dialog one, menu itself opened and stayed open fine, nothing
+        // in the console): ha-bottom-sheet.ts's own wa-drawer listens for
+        // "wa-show" with no event.target/eventPhase check at all (confirmed
+        // against its real source -- its own sibling _handleHide right next
+        // to it does guard with `ev.eventPhase !== Event.AT_TARGET`, _handleShow
+        // doesn't). On the bottom-sheet variant this dropdown's slotted
+        // content is a real composed-tree descendant of that same wa-drawer,
+        // so this dropdown's own "wa-show" (fired by the underlying Web
+        // Awesome dropdown it's built on, confirmed bubbling+composed)
+        // reaches that unguarded handler too, which re-runs its own open
+        // bookkeeping and focuses its own autofocus element -- that focus()
+        // call is what actually scrolls the sheet's content back to the
+        // top. Never reached on desktop since ha-dialog's own wrapper isn't
+        // a wa-drawer and doesn't listen for "wa-show" the same way. A real
+        // HA core gap, not something fixable in ha-bottom-sheet.ts from
+        // here, so this just stops our own dropdown's "wa-show"/
+        // "wa-after-show" from ever reaching it in the first place.
         repoMenu.addEventListener("closed", (e) => e.stopPropagation());
+        repoMenu.addEventListener("wa-show", (e) => e.stopPropagation());
+        repoMenu.addEventListener("wa-after-show", (e) => e.stopPropagation());
         dialog.appendChild(repoMenu);
       }
     }
