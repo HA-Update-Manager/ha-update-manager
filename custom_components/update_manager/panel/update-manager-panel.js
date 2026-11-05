@@ -5587,31 +5587,40 @@ class UpdateManagerPanel extends HTMLElement {
       // not just when showPendingUpdate, direct user feedback, 2026-11-05:
       // the History dialog (a purely historical entry, u falsy or
       // historyEntry set) had no badge at all before this, the simple
-      // "Up to date"/"Update available" pair below reads this same
-      // entity's own real current state.state (HA core's own real
-      // UpdateEntity.state, confirmed against its real source: STATE_ON
-      // only while has_update is true, STATE_OFF otherwise, the same signal
-      // a Settings-style "up to date" row already relies on elsewhere in
-      // this panel), independently of whatever single historyEntry this
-      // dialog happens to be showing.
+      // "Up to date"/"Update available" pair below reads `u` (Update
+      // Manager's own tracking), not the entity's own raw state.state --
+      // found live, 2026-11-05: a postponed/held-back entity that this
+      // project's own "hide postponed" feature has set skipped_version ==
+      // latest_version on (so HA Core's own default updates-available count
+      // doesn't nag about something that can't install yet anyway) reports
+      // state=off by HA Core's own real, documented skip semantics
+      // (confirmed against its real source, same one latestVersionIsSkipped
+      // above already accounts for), even though there's a very real,
+      // currently-tracked pending version -- `u` is never fooled by that,
+      // it's this project's own independent, authoritative "is anything
+      // actually pending right now" signal everywhere else in this panel.
+      // state.state === "on" kept only as a fallback for the one case `u`
+      // can't cover: an entity genuinely not tracked in this._updates at
+      // all (not supposed to happen for anything this panel manages, kept
+      // defensive rather than assumed).
       const stateValue = document.createElement("ha-badge");
       stateValue.className = "dialog-header-status";
+      const hasPendingUpdate = !!u || state.state === "on";
       // "Update available" specifically (a History entry for an entity that
-      // currently also has a new, unrelated pending update, state.state
-      // already confirmed "on" right above): clickable, .type = "button"
-      // (ha-badge's own real prop for this, confirmed against its real
-      // source, gives it the ripple/cursor/role a plain badge doesn't have
-      // on its own), opening this same entity's live pending-update dialog
-      // (_openDetailDialog with no historyEntry) instead of just stating a
-      // fact with nowhere to go, direct user feedback, 2026-11-05: "ik zou
-      // graag op de update available badge willen drukken om de juiste
-      // dialog te openen... met daarin de nieuwste update". "Up-to-date"
-      // and showPendingUpdate's own richer text stay plain, nothing useful
-      // to navigate to from either.
-      const canOpenPending = !showPendingUpdate && state.state === "on";
+      // currently also has a new, unrelated pending update): clickable,
+      // .type = "button" (ha-badge's own real prop for this, confirmed
+      // against its real source, gives it the ripple/cursor/role a plain
+      // badge doesn't have on its own), opening this same entity's live
+      // pending-update dialog (_openDetailDialog with no historyEntry)
+      // instead of just stating a fact with nowhere to go, direct user
+      // feedback, 2026-11-05: "ik zou graag op de update available badge
+      // willen drukken om de juiste dialog te openen... met daarin de
+      // nieuwste update". "Up-to-date" and showPendingUpdate's own richer
+      // text stay plain, nothing useful to navigate to from either.
+      const canOpenPending = !showPendingUpdate && hasPendingUpdate;
       stateValue.textContent = showPendingUpdate
         ? headerStateText
-        : state.state === "on"
+        : hasPendingUpdate
           ? tr.status_update_available
           : tr.status_up_to_date;
       if (canOpenPending) {
@@ -8733,9 +8742,12 @@ class UpdateManagerPanel extends HTMLElement {
          its own real default), not --ha-picture-border-radius (12px): too
          rounded on this rule's own 40px default row size, direct user
          feedback the same session, the bigger 64px header icon below
-         keeps that larger 12px instead, scoped on top of this one. */
-      state-badge.has-no-radius { border-radius: var(--ha-border-radius-md, 8px); }
-      .dialog-header state-badge.has-no-radius { border-radius: var(--ha-border-radius-lg, 12px); }
+         keeps its own, separately tuned radius instead, scoped on top of
+         this one. Both turned down a notch further, direct user feedback,
+         2026-11-05: rows from --ha-border-radius-md (8px) to -sm (4px),
+         the header from -lg (12px) to -md (8px). */
+      state-badge.has-no-radius { border-radius: var(--ha-border-radius-sm, 4px); }
+      .dialog-header state-badge.has-no-radius { border-radius: var(--ha-border-radius-md, 8px); }
       .dialog-header-info { display: flex; flex-direction: column; align-items: center; gap: var(--ha-space-2, 8px); min-width: 0; max-width: 100%; }
       /* Wraps across multiple lines instead of state-info's own forced
          single-line ellipsis (see this header's own top comment), the
