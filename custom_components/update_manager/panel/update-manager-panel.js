@@ -6010,14 +6010,23 @@ class UpdateManagerPanel extends HTMLElement {
       const releaseUrlForMenu = u ? u.release_url : entries[0] && entries[0].release_url;
       const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForMenu);
       if (repoLinks.configuration || repoLinks.repository || repoLinks.issues) {
-        const menuBtn = document.createElement("button");
-        menuBtn.className = "icon-btn";
-        menuBtn.title = this._hass.localize("ui.common.menu");
+        // A real ha-icon-button trigger with an explicit placement, not the
+        // toolbar's own plain-button pattern (_syncOverflowMenu's own
+        // menuBtn above) -- direct user feedback, 2026-11-05: opening this
+        // specific menu scrolled the dialog's own body to the top. Matched
+        // to HA's own real dialog-header dropdown (ha-more-info-dialog.ts's
+        // own admin/camera overflow menus, confirmed against its real
+        // source): both use <ha-icon-button slot="trigger"> plus
+        // placement="bottom-end" on the ha-dropdown itself, never a plain
+        // <button>, and never left on the library's own default placement.
+        const menuBtn = document.createElement("ha-icon-button");
+        menuBtn.label = this._hass.localize("ui.common.menu");
         menuBtn.setAttribute("slot", "trigger");
         menuBtn.innerHTML = `<ha-icon icon="mdi:dots-vertical"></ha-icon>`;
         const repoMenu = document.createElement("ha-dropdown");
         repoMenu.className = "dialog-menu";
         repoMenu.setAttribute("slot", "headerActionItems");
+        repoMenu.setAttribute("placement", "bottom-end");
         repoMenu.appendChild(menuBtn);
         // Same two icons HA's own real Marketplace repository-overflow menu
         // uses for "repository"/"issue_tracker" (ha-marketplace-repository-
