@@ -1284,9 +1284,20 @@ const _HACS_BRANDS_ICON_RE = /^https:\/\/brands\.home-assistant\.io\/_\/([a-z0-9
 // their own). This project's own, optional convention instead: a plugin
 // repo that ships the same brand/icon.png shape an integration would, just
 // at the repo root since a plugin has no custom_components/ subfolder to
-// nest it in. Checked with a HEAD request first, never set speculatively:
-// state-badge.ts has no onerror fallback of its own (a 404'd entity_picture
-// just renders as an empty badge, confirmed against its real source), so
+// nest it in. An actual integration-category repo never needs this at all
+// (confirmed against home-assistant/brands's own real README, 2026-11-05:
+// since HA 2026.3 its own backend serves an installed integration's local
+// custom_components/{domain}/brand/ folder directly through this exact
+// same /api/brands/integration/{domain}/... path already, and a not-yet-
+// installed Marketplace one through its own matching /marketplace/ path,
+// both already handled below without this function at all), so this is
+// deliberately root-only, no custom_components/ nesting attempted (a
+// same-day version of this function that added it was reverted: solving a
+// problem HA's own backend already solves for free, for the one category
+// of repo, an actual integration, where it could ever have applied).
+// Checked with a HEAD request first, never set speculatively: state-
+// badge.ts has no onerror fallback of its own (a 404'd entity_picture just
+// renders as an empty badge, confirmed against its real source), so
 // guessing wrong here would make things look worse than the plain domain
 // icon this entity already shows without this at all. Cached for this
 // page's own lifetime once resolved, successful or not, so a repeat call
@@ -1323,8 +1334,230 @@ function _fallbackBrandIconUrl(owner, repo, dark) {
   return null;
 }
 
+// The update-detail dialog's own header card (_openDetailDialog), a wider
+// brand logo instead of the square icon every other badge in this panel
+// shows, when one is actually available, direct user feedback, 2026-11-05.
+// Only ever called for the "no entity_picture at all" case (a plugin/card
+// repo, see _fallbackBrandIconUrl's own comment): the caller handles the
+// other case (an actual integration, entity_picture already shaped
+// /api/brands/.../icon.png) by swapping straight to logo.png in that same
+// URL instead, no existence check of its own at all, relying on HA Core's
+// own real server-side fallback to icon.png when logo.png is missing
+// (confirmed against its real source) and on state-badge's own already-
+// proven-working connection-based signing to load it (confirmed live,
+// 2026-11-05: the signed /api/brands/.../token=... URL is literally what
+// HA's own integration page already shows for this exact entity), this
+// function's own raw.githubusercontent.com fetch has no equivalent signed-
+// token mechanism of its own to borrow, and no server-side fallback either,
+// so it needs a real existence check first, same as _fallbackBrandIconUrl's
+// own icon check right above it. onResolved: re-renders the dialog once
+// that check resolves (found live, 2026-11-05: this header is only ever
+// built once, right when _openDetailDialog itself runs, so nothing else
+// ever re-paints to use a result that only lands after that one render).
+const _brandLogoCache = new Map();
+function _fallbackBrandLogoUrl(owner, repo, dark, onResolved) {
+  const file = dark ? "dark_logo.png" : "logo.png";
+  const key = `${owner}/${repo}/${file}`;
+  const cached = _brandLogoCache.get(key);
+  if (cached) return cached;
+  if (!_brandLogoCache.has(key)) {
+    _brandLogoCache.set(key, false);
+    const url = `https://raw.githubusercontent.com/${owner}/${repo}/HEAD/brand/${file}`;
+    fetch(url, { method: "HEAD" })
+      .then((response) => {
+        if (response.ok) {
+          _brandLogoCache.set(key, url);
+          if (onResolved) onResolved(url);
+        }
+      })
+      .catch(() => {});
+  }
+  return null;
+}
+
+// The dialog header's own /api/brands/... case (entity_picture already set,
+// an actual integration), unlike _fallbackBrandLogoUrl above: a plain
+// existence check can't tell a real wordmark logo apart from HA Core's own
+// real server-side fallback, which silently serves icon.png's own content
+// back for a .../logo.png request whenever a domain has no logo of its own
+// (IMAGE_FALLBACKS, confirmed against its real source), the same 200 OK
+// either way, found live, 2026-11-05: direct user feedback that two domains
+// confirmed to have no logo of their own (Amazon, the core "plant"
+// integration) still got stretched into this card's own wide logo
+// treatment, because the request it comes back on always succeeds.
+// Loading the real image and comparing its own pixel dimensions is the one
+// signal this route actually exposes: a real logo.png is documented
+// (home-assistant/brands's own real README, "Logo image requirements": "A
+// landscape image is preferred") to not be square the way icon.png always
+// is ("Icon image requirements": "Aspect ratio needs to be 1:1"). > 1.3,
+// not a plain !=: a brand that deliberately reuses its own square icon as
+// its logo too (that same README's own "Using the same image for logo &
+// icon" section) should still get the icon's own normal square treatment,
+// not this card's own wide one, for exactly the same reason a close-to-
+// square logo wouldn't need it either.
+//
+// A signed token on this check's own <img> load specifically, found live,
+// 2026-11-05, after a first version without one showed the plain icon
+// everywhere again, even for a domain already confirmed to have a real
+// logo: this route's own real backend, confirmed against its actual
+// source, authenticates every request against either a normal Bearer
+// auth header (an <img> tag can never send one of its own) or this one
+// query-string token, cookies play no part in it at all, so an unsigned
+// request here 401s/403s outright regardless of whether the file exists.
+// Fetched through the same real "brands/access_token" WS command HA's own
+// frontend itself uses for this (confirmed against its real source,
+// brands-url.ts's own fetchBrandsAccessToken), cached module-wide since
+// it rotates only every 30 minutes. The *resolved* logoUrl this function
+// hands back stays unsigned, on purpose: state-badge's own real
+// connection-based signing (already proven working for the icon right next
+// to it) adds its own, independently-refreshed token when it actually
+// renders the image, same as it always has.
+let _brandsTokenPromise = null;
+function _fetchBrandsToken(hass) {
+  if (!_brandsTokenPromise) {
+    _brandsTokenPromise = hass
+      .callWS({ type: "brands/access_token" })
+      .then((result) => result.token)
+      .catch(() => null);
+  }
+  return _brandsTokenPromise;
+}
+const _brandApiLogoCache = new Map();
+function _resolveBrandApiLogo(hass, iconUrl, onResolved) {
+  const url = iconUrl.replace("icon.png", "logo.png");
+  const cached = _brandApiLogoCache.get(url);
+  if (cached) return cached;
+  if (!_brandApiLogoCache.has(url)) {
+    _brandApiLogoCache.set(url, false);
+    _fetchBrandsToken(hass).then((token) => {
+      const img = new Image();
+      img.onload = () => {
+        if (img.naturalWidth / img.naturalHeight > 1.3) {
+          _brandApiLogoCache.set(url, url);
+          if (onResolved) onResolved(url);
+        }
+      };
+      img.onerror = () => {};
+      img.src = token ? `${url}?token=${token}` : url;
+    });
+  }
+  return null;
+}
+
+// A Supervisor add-on's own update entity ("Apps" in this panel's own
+// language), a third, different entity_picture shape again (confirmed
+// against its real source, homeassistant/components/hassio/update.py's
+// own AddonUpdateEntity.entity_picture: /api/hassio/addons/{slug}/icon,
+// never the /api/brands/... shape _resolveBrandApiLogo above handles,
+// direct user feedback, 2026-11-05, with two real add-ons confirmed to
+// ship their own logo.png this same way an integration's own brand/
+// folder does). No token needed here, unlike that one: Supervisor's own
+// real http proxy (confirmed against its real source, homeassistant/
+// components/hassio/http.py's own NO_AUTH_PATHS regex, which explicitly
+// names "(store/)?addons/[^/]+/(logo|icon)", its own comment reading
+// "Load Supervisor panel and add-on logo unauthenticated") serves both
+// unauthenticated. Same dimension check as that one regardless: never
+// independently confirmed whether Supervisor's own backend also falls
+// back to icon by itself when logo is missing, and assuming otherwise
+// after already being burned exactly once this same session on that
+// same assumption would be reckless.
+const _addonLogoCache = new Map();
+function _resolveAddonLogo(iconUrl, onResolved) {
+  const url = iconUrl.replace(/\/icon$/, "/logo");
+  const cached = _addonLogoCache.get(url);
+  if (cached) return cached;
+  if (!_addonLogoCache.has(url)) {
+    _addonLogoCache.set(url, false);
+    const img = new Image();
+    img.onload = () => {
+      if (img.naturalWidth / img.naturalHeight > 1.3) {
+        _addonLogoCache.set(url, url);
+        if (onResolved) onResolved(url);
+      }
+    };
+    img.onerror = () => {};
+    img.src = url;
+  }
+  return null;
+}
+
+// Whether entityId's own install attempt just failed, per our own
+// sensor.update_manager_failed_installs (install_manager.py's own
+// self._failed, the same list the notify Blueprint's own failed_changed
+// trigger reads). Used by entityState below to correct a real upstream bug:
+// HACS's and Marketplace's own update entities track in_progress/the
+// progress percentage through a separate dispatcher signal fired *during*
+// the download, not inside the install call itself, so neither has a
+// try/finally guaranteeing it gets reset once that call raises (HA core's
+// own generic fallback for this, UpdateEntity.async_install_with_progress's
+// own finally block, confirmed against its real source, only ever runs for
+// an entity that does *not* declare UpdateEntityFeature.PROGRESS, and both
+// HACS's and Marketplace's own entities do declare it, so they opt
+// themselves out of that exact safety net). Direct user feedback,
+// 2026-11-05: a failed install still correctly produced our own "Failed
+// updates" notification, but the panel kept showing that same entity as
+// "Installing", spinner and all, forever, since updateIsInstalling just
+// reads that same stuck attribute straight through.
+function _justFailed(hass, entityId) {
+  const sensor = hass && hass.states && hass.states["sensor.update_manager_failed_installs"];
+  const entities = sensor && sensor.attributes && sensor.attributes.entities;
+  return Array.isArray(entities) && entities.some((e) => e.entity_id === entityId);
+}
+
+// The device's own real name (name_by_user, falling back to its own set
+// name), exactly computeDeviceName's own real logic (home-assistant/
+// frontend's own src/common/entity/compute_device_name.ts: "(device.
+// name_by_user || device.name)?.trim()", confirmed against its real
+// source, 2026-11-05), not the old friendly_name-minus-"Update"-suffix
+// guess, direct user feedback the same day: Home Assistant's own current
+// naming model (contributors blog, "Naming things in Home Assistant",
+// 2026-11-03) composes a displayed name from the device's own name plus
+// the entity's own name at render time; friendly_name is the older, frozen-
+// at-state-time string that model is explicitly moving away from (kept
+// only "for backward compatibility", per that same post). Every one of
+// this project's own update entities is its own device's one real entity
+// (has_entity_name, no entity name of its own beyond "Update"), so the
+// device's own name alone is already exactly the right displayed name, no
+// suffix-stripping regex needed to approximate it anymore. undefined
+// whenever this entity has no device at all (hass.entities/hass.devices
+// are always real HA frontend objects, never guessed): callers fall back
+// to the older friendly_name-based guess for that case.
+function _deviceName(hass, entityId) {
+  const deviceId = hass && hass.entities && hass.entities[entityId] && hass.entities[entityId].device_id;
+  const device = deviceId && hass.devices && hass.devices[deviceId];
+  const name = device && (device.name_by_user || device.name);
+  return typeof name === "string" ? name.trim() || undefined : undefined;
+}
+
 function entityState(hass, entityId) {
-  const state = hass && hass.states && hass.states[entityId];
+  const rawState = hass && hass.states && hass.states[entityId];
+  // Every caller of entityState reads in_progress through this same patched
+  // copy (see _justFailed's own comment) rather than needing its own check,
+  // this project's own established pattern for correcting a live
+  // entity's state before anything else reads it, same as the
+  // entity_picture patching right below already does.
+  const inProgressFixed =
+    rawState && rawState.attributes && rawState.attributes.in_progress && _justFailed(hass, entityId)
+      ? { ...rawState, attributes: { ...rawState.attributes, in_progress: false, update_percentage: null } }
+      : rawState;
+  // friendly_name patched to the device's own real name here too (see
+  // _deviceName's own comment), not just in friendlyEntityName's own return
+  // value, found live, 2026-11-05: the detail dialog's own state-info
+  // (_openDetailDialog, stateObj set straight from this function's own
+  // return value) has no name override of its own (confirmed against its
+  // real source, state-info.ts), it always derives its own displayed name
+  // from stateObj.attributes.friendly_name directly, so whenever that raw
+  // name happened to still carry its own trailing "Update" suffix, the
+  // dialog's own title bar (friendlyEntityName) and its state-info row
+  // disagreed right underneath each other. Falls back to the old trailing-
+  // "Update" strip only when this entity genuinely has no device at all.
+  const rawName = inProgressFixed && inProgressFixed.attributes && inProgressFixed.attributes.friendly_name;
+  const fixedName =
+    _deviceName(hass, entityId) || (typeof rawName === "string" ? rawName.replace(/\s+update$/i, "") : rawName);
+  const state =
+    fixedName && fixedName !== rawName
+      ? { ...inProgressFixed, attributes: { ...inProgressFixed.attributes, friendly_name: fixedName } }
+      : inProgressFixed;
   const picture = state && state.attributes && state.attributes.entity_picture;
   if (!picture) {
     const parsed = _parseGithubReleaseUrl(state && state.attributes && state.attributes.release_url);
@@ -1485,11 +1718,14 @@ function installingIndicatorNode(state, tr) {
 // The word "update" is baked into most update entities' own friendly_name
 // (e.g. "Matter Server Update") by convention -- redundant on a page that's
 // entirely about updates, so drop it as a trailing suffix rather than
-// showing it on every single row.
+// showing it on every single row. The stripping itself now lives in
+// entityState (see its own comment), this just reads the already-stripped
+// name back out, so anything else reading a state through entityState
+// (state-info's own stateObj, not guessed through this function at all)
+// agrees with this one.
 function friendlyEntityName(hass, entityId) {
   const state = entityState(hass, entityId);
-  const name = (state && state.attributes && state.attributes.friendly_name) || entityId;
-  return name.replace(/\s+update$/i, "");
+  return (state && state.attributes && state.attributes.friendly_name) || entityId;
 }
 
 // Shared by the "Installing" section's own stuck row and the detail
@@ -3779,7 +4015,10 @@ class UpdateManagerPanel extends HTMLElement {
       .sort((a, b) => priority(a) - priority(b))
       .forEach((entityId) => {
         const u = this._updates.find((x) => x.entity_id === entityId);
-        const supportingText = [deviceAreaName(this._hass, entityId), u ? u.latest_version : null]
+        // "installed → latest", matching the main Updates list's own rows
+        // right above this card (_buildUpdatesList) and the History tab's
+        // own (_buildHistoryList), direct user feedback, 2026-11-05.
+        const supportingText = [deviceAreaName(this._hass, entityId), u ? `${u.installed_version} → ${u.latest_version}` : null]
           .filter(Boolean)
           .join(" ⋅ ");
         let timerBadgeInfo;
@@ -4138,11 +4377,17 @@ class UpdateManagerPanel extends HTMLElement {
           // version") and a "(skipped)" annotation whenever this specific
           // entity is currently skipped, matching that component's own
           // unconditional "(skipped)" suffix regardless of which group a
-          // row ends up in. Direct user feedback: this row used to be a
-          // whole sentence (size, both versions, full status text), the
-          // status/countdown now live in the group heading and the
-          // trailing timer badge instead (see timerBadge) -- just the
-          // area/version/skipped facts stay here, matching real HA.
+          // row ends up in. Direct user feedback (2026-07-xx): this row
+          // used to be a whole sentence (size, both versions, full status
+          // text), simplified down to just the latest version to match real
+          // HA, the status/countdown live in the group heading and the
+          // trailing timer badge instead (see timerBadge). Brought back to
+          // "installed → latest" (not the full old sentence) direct user
+          // feedback, 2026-11-05: matches the History tab's own row format
+          // (_buildHistoryList's own "from_version → to_version"), and real
+          // HA doesn't have an equivalent "still waiting to update" list to
+          // begin with, so there's no native convention this was actually
+          // matching for this tab specifically.
           // The "(skipped)" annotation is suppressed while actually
           // installing -- direct user feedback: clicking Install on a
           // postponed/skipped update should stop looking postponed/skipped
@@ -4151,7 +4396,11 @@ class UpdateManagerPanel extends HTMLElement {
           list.appendChild(
             this._buildListRow(
               u.entity_id,
-              [deviceAreaName(this._hass, u.entity_id), u.latest_version + (u.status === "skipped" && !installingNow ? ` (${tr.status_skipped_suffix})` : "")]
+              [
+                deviceAreaName(this._hass, u.entity_id),
+                `${u.installed_version} → ${u.latest_version}` +
+                  (u.status === "skipped" && !installingNow ? ` (${tr.status_skipped_suffix})` : ""),
+              ]
                 .filter(Boolean)
                 .join(" ⋅ "),
               () => this._openDetailDialog(u.entity_id),
@@ -5249,59 +5498,128 @@ class UpdateManagerPanel extends HTMLElement {
         : (u.status === "waiting" ? tr.status_waiting_short : tr[`status_${u.status}`]) || u.status
       : null;
 
-    // state-info + a right-aligned ".state" value, in a
-    // ".horizontal.justified.layout" row -- not hand-laid-out, this is the
-    // real pair of components/classes state-card-update.ts itself uses for
-    // every update entity's more-info header (confirmed against its actual
-    // source, not guessed). Shown whenever the entity still exists at all,
-    // even for a purely historical entry (opened from the History tab)
-    // with no currently pending update -- state-info reflects the
-    // entity's real current state, not just whatever Update Manager still
-    // happens to be tracking; the summary/.state pieces below it only
-    // apply when there's an actual pending update, though.
+    // A plain state-badge + our own name/status text, not state-info
+    // (which this used until now), direct user feedback, 2026-11-05:
+    // state-info forces its own name onto one single ellipsized line (its
+    // own real .name CSS, confirmed against its real source, state-info.ts:
+    // white-space: nowrap; overflow: hidden; text-overflow: ellipsis, no
+    // ::part or CSS custom property exposed to override it from outside),
+    // so a long device name here always got cut off, no way to let it wrap
+    // instead short of dropping the component entirely. Shown whenever the
+    // entity still exists at all, even for a purely historical entry
+    // (opened from the History tab) with no currently pending update,
+    // this reflects the entity's real current state, not just whatever
+    // Update Manager still happens to be tracking; the status line below
+    // only applies when there's an actual pending update, though.
     if (state) {
       const header = document.createElement("div");
       header.className = "dialog-header";
-      const stateInfo = document.createElement("state-info");
-      stateInfo.hass = this._hass;
-      stateInfo.stateObj = state;
-      // Real HA more-info dialogs render this with inDialog=true (confirmed
-      // against source: ha-more-info-info.ts renders <state-card-content
-      // in-dialog>, which for the "update" domain -- not in
-      // DOMAINS_NO_INFO -- reaches state-card-update.ts and passes
-      // .inDialog through to here), which would give state-info's own
-      // built-in "Last changed"/"Last updated" tooltip. Deliberately NOT
-      // done here (direct user feedback): those are generic state-change
-      // timestamps, not the fact that actually matters for an update --
-      // how long the update itself has existed (available_since,
-      // coordinator.py's own recorder lookup) -- so inDialog stays false
-      // and that fact is slotted in below instead, in the same visual spot
-      // (.extra-info gets the exact same secondary-text/ellipsis styling
-      // state-info's own .time-ago block would).
-      header.appendChild(stateInfo);
-
-      if (u) {
-        const availableSince = document.createElement("span");
-        availableSince.textContent = relativeTime(tr, u.available_since);
-        stateInfo.appendChild(availableSince);
-
-        // Bug fixed 2026-07-17: tr.status_waiting is a function (n, unit) =>
-        // ..., not a plain string like tr.status_ready/status_blocked --
-        // assigning it straight to .textContent stringified the function's
-        // own source code instead of calling it. status_waiting_short is
-        // the deliberately unparameterized, brief form for this small
-        // header value (the full countdown detail already lives in the
-        // timeline below, see _buildTimeline). Always shown, direct user
-        // feedback 2026-07-29 (reverting an earlier attempt this same
-        // session to omit it when it'd repeat the alert below): this is
-        // the one place answering "which group is this filed under"
-        // (Ready/Postponed/Skipped/Blocked) at a glance, regardless of
-        // whatever else the alert below goes on to say.
-        const stateValue = document.createElement("div");
-        stateValue.className = "state";
-        stateValue.textContent = headerStateText;
-        header.appendChild(stateValue);
+      const stateBadge = document.createElement("state-badge");
+      // The wider brand logo instead of the square icon, when one's
+      // actually confirmed to exist, this card only, not list rows
+      // elsewhere in this panel. .has-logo (own CSS below): state-badge's
+      // own real background-size: cover (confirmed against its real
+      // source) would crop a wordmark-shaped logo to fit its own fixed
+      // square box the same way it fits a square icon, so this gets its
+      // own, wider, non-cropping treatment instead.
+      const picture = state.attributes && state.attributes.entity_picture;
+      let logoUrl = null;
+      if (typeof picture === "string" && picture.includes("/api/brands/")) {
+        // _resolveBrandApiLogo's own comment: this route's own request
+        // always succeeds whether or not a domain really has a logo of its
+        // own, so a real dimension check, not just an existence one, is
+        // what actually decides whether this card uses it.
+        logoUrl = _resolveBrandApiLogo(this._hass, picture, () => {
+          if (!isDialogStale()) this._openDetailDialog(entityId, historyEntry, communityOverride);
+        });
+      } else if (typeof picture === "string" && /\/api\/hassio\/addons\/[^/]+\/icon$/.test(picture)) {
+        // A Supervisor add-on ("Apps"), see _resolveAddonLogo's own comment.
+        logoUrl = _resolveAddonLogo(picture, () => {
+          if (!isDialogStale()) this._openDetailDialog(entityId, historyEntry, communityOverride);
+        });
+      } else {
+        // Our own github-raw fallback (entity_picture missing entirely, a
+        // plugin/card repo, see _fallbackBrandIconUrl's own comment) has
+        // no server-side fallback-to-icon of its own, so this does need
+        // its own existence check first.
+        const parsedRepo = _parseGithubReleaseUrl(state.attributes && state.attributes.release_url);
+        const dark = Boolean(this._hass && this._hass.themes && this._hass.themes.darkMode);
+        const onLogoResolved = () => {
+          // Re-renders this same dialog once the check resolves, see
+          // _fallbackBrandLogoUrl's own comment for why that's needed.
+          // isDialogStale(), not a raw rebuild: the user may have long
+          // since closed this dialog, or opened a different entity's, by
+          // the time a real network round-trip finishes.
+          if (!isDialogStale()) this._openDetailDialog(entityId, historyEntry, communityOverride);
+        };
+        logoUrl = parsedRepo
+          ? (dark && _fallbackBrandLogoUrl(parsedRepo.owner, parsedRepo.repo, true, onLogoResolved)) ||
+            _fallbackBrandLogoUrl(parsedRepo.owner, parsedRepo.repo, false, onLogoResolved)
+          : null;
       }
+      stateBadge.classList.toggle("has-logo", !!logoUrl);
+      stateBadge.stateObj = logoUrl
+        ? { ...state, attributes: { ...state.attributes, entity_picture: logoUrl } }
+        : state;
+      header.appendChild(stateBadge);
+
+      const info = document.createElement("div");
+      info.className = "dialog-header-info";
+      const nameEl = document.createElement("div");
+      nameEl.className = "dialog-header-name";
+      // state.attributes.friendly_name, already the device's own real name
+      // by the time it gets here (see entityState's own comment), not a
+      // second, redundant friendlyEntityName(this._hass, entityId) call.
+      nameEl.textContent = (state.attributes && state.attributes.friendly_name) || entityId;
+      info.appendChild(nameEl);
+
+      // The status (e.g. "Ready to update"), not available_since (how long
+      // ago the update appeared), direct user feedback, 2026-11-05: moved
+      // into this same subtitle spot, replacing the separate right-aligned
+      // .state column entirely rather than showing both. A real ha-badge
+      // now (direct user feedback the same day, a further revision), not a
+      // plain secondary-text line, HA's own small rounded-pill component for
+      // exactly this (confirmed against its real source, ha-badge.ts), fully
+      // themeable from outside via its own real exposed custom properties
+      // (--ha-badge-size et al, no shadow-DOM-encapsulation fight the way
+      // state-info's own name truncation was). Shown whenever the entity
+      // still exists at all (same `state` guard as the name/icon above it),
+      // not just when showPendingUpdate, direct user feedback, 2026-11-05:
+      // the History dialog (a purely historical entry, u falsy or
+      // historyEntry set) had no badge at all before this, the simple
+      // "Up to date"/"Update available" pair below reads this same
+      // entity's own real current state.state (HA core's own real
+      // UpdateEntity.state, confirmed against its real source: STATE_ON
+      // only while has_update is true, STATE_OFF otherwise, the same signal
+      // a Settings-style "up to date" row already relies on elsewhere in
+      // this panel), independently of whatever single historyEntry this
+      // dialog happens to be showing.
+      const stateValue = document.createElement("ha-badge");
+      stateValue.className = "dialog-header-status";
+      // "Update available" specifically (a History entry for an entity that
+      // currently also has a new, unrelated pending update, state.state
+      // already confirmed "on" right above): clickable, .type = "button"
+      // (ha-badge's own real prop for this, confirmed against its real
+      // source, gives it the ripple/cursor/role a plain badge doesn't have
+      // on its own), opening this same entity's live pending-update dialog
+      // (_openDetailDialog with no historyEntry) instead of just stating a
+      // fact with nowhere to go, direct user feedback, 2026-11-05: "ik zou
+      // graag op de update available badge willen drukken om de juiste
+      // dialog te openen... met daarin de nieuwste update". "Up-to-date"
+      // and showPendingUpdate's own richer text stay plain, nothing useful
+      // to navigate to from either.
+      const canOpenPending = !showPendingUpdate && state.state === "on";
+      stateValue.textContent = showPendingUpdate
+        ? headerStateText
+        : state.state === "on"
+          ? tr.status_update_available
+          : tr.status_up_to_date;
+      if (canOpenPending) {
+        stateValue.type = "button";
+        stateValue.addEventListener("click", () => this._openDetailDialog(entityId));
+      }
+      info.appendChild(stateValue);
+      header.appendChild(info);
       body.appendChild(header);
     }
 
@@ -5744,11 +6062,16 @@ class UpdateManagerPanel extends HTMLElement {
       }
     }
     if (entries.length) {
-      // Missing entirely before this fix -- direct user feedback,
-      // 2026-07-30: whatever renders above (Community section, or the
-      // changelog block right before this one) ran straight into the
-      // "History" heading with no visual boundary at all.
-      body.appendChild(document.createElement("hr"));
+      // Missing entirely before this fix, direct user feedback, 2026-07-30:
+      // whatever renders above (Community section, or the changelog block
+      // right before this one) ran straight into the "History" heading with
+      // no visual boundary at all. Only when something actually did render
+      // above (showPendingUpdate), direct user feedback, 2026-11-05: a
+      // History-only dialog (no pending update at all) has nothing between
+      // .dialog-header and here, that header is its own bordered box now
+      // (see its own comment), so this divider drew a second, redundant
+      // boundary right underneath it for exactly that case.
+      if (showPendingUpdate) body.appendChild(document.createElement("hr"));
       const historyHeading = document.createElement("h3");
       historyHeading.textContent = tr.dialog_history_heading;
       body.appendChild(historyHeading);
@@ -8293,18 +8616,104 @@ class UpdateManagerPanel extends HTMLElement {
         font-family: var(--ha-font-family-code, monospace); font-size: var(--ha-font-size-2xl, 28px);
         letter-spacing: 0.15em; margin: var(--ha-space-2, 8px) 0;
       }
-      /* state-info (icon+name) and .state, exactly the pair state-card-
-         update.ts itself renders side by side for every update entity's
-         more-info header -- verified against its real source, including
-         the .state class's own declarations (color/margin/alignment). */
+      /* The dialog's own "title card" (icon, name, status), styled as its
+         own bordered box, direct user feedback, 2026-11-05, same
+         treatment (border/radius/padding) as the Settings tab's own
+         .general-enabled-row. Icon stacked above the name/status, not
+         beside it (a further revision the same day): no single real HA
+         page actually does this exact arrangement (checked: Settings >
+         Devices & services's own integration cards keep the icon beside
+         the text, not above it), this is this project's own design,
+         kept to HA's own real spacing/typography tokens throughout rather
+         than inventing new values. Replaces the former right-aligned
+         .state column (the status moved into .dialog-header-status
+         instead, see _openDetailDialog's own comment) and the plain
+         .dialog-content hr divider .timeline used to draw right underneath
+         it (see .timeline's own comment): this box is the boundary now, a
+         second one directly below it just doubled up. */
       .dialog-header {
-        display: flex; align-items: center; justify-content: space-between;
+        display: flex; flex-direction: column; align-items: center; text-align: center;
+        gap: var(--ha-space-2, 8px);
+        border-radius: 8px;
+        padding: var(--ha-space-4, 16px);
       }
-      state-info { flex: 0 1 fit-content; min-width: 120px; }
-      .state {
-        color: var(--primary-text-color); margin-inline-start: var(--ha-space-4, 16px);
-        text-align: right; min-width: 50px; flex: 0 1 fit-content; word-break: break-word;
+      /* 64px, not state-badge's own real default (40px, confirmed against
+         its actual source), direct user feedback, 2026-11-05: the icon
+         is this card's own one focal point now that it sits alone above
+         the text, rather than sharing a row with it. Scoped to this one
+         header only, not a global override. */
+      .dialog-header state-badge { width: 64px; height: 64px; }
+      /* .has-logo (see this card's own JS comment for why): a fixed wide
+         box instead of the 64px square above, for an unusually wide
+         wordmark, and background-size: contain instead of state-badge's
+         own real "cover" default, so the whole logo actually fits rather
+         than getting cropped to fill a square. width: auto was tried
+         first and found live, 2026-11-05, to not actually work: state-
+         badge renders no child content at all for a picture (confirmed
+         against its real source, just a background-image set directly on
+         the host), so an empty box has nothing of its own to auto-size
+         width against and collapses toward zero instead. background-
+         repeat: no-repeat, also found live the same day: state-badge's own
+         real :host CSS never sets this either way, so the plain CSS
+         default (repeat) tiled a second, partial copy of the logo into
+         whatever empty space contain left in this wider box. */
+      /* background-position: center, also found live, 2026-11-05: the
+         plain CSS default (0% 0%, top-left) left whatever empty space
+         contain didn't fill sitting at the bottom/right instead of split
+         evenly, so a logo not exactly matching this box's own ratio sat
+         pinned to the top, its own real bottom edge landing
+         well short of the box's own rounded bottom corners below it
+         (border-radius: 0 here for the same reason: a contain-fitted
+         image this box doesn't exactly fill rarely touches its own
+         rounded corners at all, so that radius was never doing anything
+         but confusing exactly this). .has-no-radius in this selector too,
+         not just .has-logo: every entity in this whole panel is domain
+         "update" (state-badge's own getClass(), confirmed against its real
+         source), so .has-no-radius is always present right alongside
+         .has-logo, and that class's own border-radius rule below this one
+         (same specificity otherwise, later in the stylesheet) would
+         silently win the radius back without this, found live the same
+         day: a stray rounded corner still showing after border-radius: 0
+         was already set here. */
+      .dialog-header state-badge.has-no-radius.has-logo {
+        width: 160px; height: 84px; background-size: contain; background-repeat: no-repeat;
+        background-position: center; background-color: transparent; border-radius: 0;
       }
+      /* Rounded corners on every badge in this whole panel (list rows on
+         both tabs, this header), not just this header's own bigger one,
+         direct user feedback, 2026-11-05: "daar wordt alles net wat
+         vriendelijker van". Targets .has-no-radius specifically, not
+         .has-image (tried first, found live the same session: state-badge's
+         own real getClass() (confirmed against its actual source)
+         hardcodes has-no-radius: true for every entity in the "update"
+         domain specifically, regardless of whether it has a real picture or
+         not, has-image is genuinely unreachable for every entity this whole
+         panel ever shows). --ha-border-radius-md (8px, confirmed against
+         its own real default), not --ha-picture-border-radius (12px): too
+         rounded on this rule's own 40px default row size, direct user
+         feedback the same session, the bigger 64px header icon below
+         keeps that larger 12px instead, scoped on top of this one. */
+      state-badge.has-no-radius { border-radius: var(--ha-border-radius-md, 8px); }
+      .dialog-header state-badge.has-no-radius { border-radius: var(--ha-border-radius-lg, 12px); }
+      .dialog-header-info { display: flex; flex-direction: column; align-items: center; gap: var(--ha-space-2, 8px); min-width: 0; max-width: 100%; }
+      /* Wraps across multiple lines instead of state-info's own forced
+         single-line ellipsis (see this header's own top comment), the
+         entire reason this card stopped using that component. Sized up
+         from state-info's own real .name rule (plain --primary-text-color,
+         no explicit size/weight of its own, confirmed against its real
+         source) to read as this card's own title, not just another line of
+         body text. */
+      .dialog-header-name {
+        color: var(--primary-text-color);
+        font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-bold, 700);
+        line-height: var(--ha-line-height-condensed); overflow-wrap: break-word;
+      }
+      /* ha-badge's own real default styling already fits (rounded pill,
+         secondary-text color), only --ha-badge-size turned down a notch
+         (its own real default, 36px, read as too tall next to this card's
+         own compact name/status stack), its own exposed custom property,
+         not a shadow-DOM override fight. */
+      .dialog-header-status { --ha-badge-size: 28px; }
       /* The update-detail dialog's own timeline (_buildTimeline), replacing
          the old readyAlert/statusAlert/heldBackAlert stack -- .step/.step-
          start/.step-icon/.step-line/.step-content and the rules below are
@@ -8365,22 +8774,19 @@ class UpdateManagerPanel extends HTMLElement {
       .step.last .step-line { display: none; }
       .step-content { margin-top: 2px; }
       .step:not(.last) .step-content { padding-bottom: 16px; }
-      /* A plain top divider, not an outlined box (tried first, direct user
-         feedback, 2026-08-13: "in plaats van een outline om de timeline
-         misschien gewoon een border erboven") -- same --divider-color as
-         every other section's own leading <hr> in this dialog
-         (.dialog-content hr above), so the timeline reads as one more
-         section in that same sequence, not a visually distinct card. No
-         bottom border/divider of its own: whatever follows already
-         supplies one when it needs to (Release notes' own leading <hr>,
-         see insertReleaseNotesSection), and when nothing follows at all
-         (no stuck alert, no release notes, no history) there's genuinely
-         nothing to separate from, so none is shown -- exactly the user's
-         own point, "als er geen content onder staat hoeft het niet". This
-         wrapper (and everything from .step-title-row down) is this
-         method's own content, not part of ha-timeline's own real styles
-         above. */
-      .timeline { display: flex; flex-direction: column; border-top: 1px solid var(--divider-color); padding-top: var(--ha-space-3, 12px); }
+      /* No top border of its own anymore (direct user feedback, 2026-11-05):
+         .dialog-header right above is now its own bordered box (see that
+         rule's own comment), which already supplies the boundary this
+         border-top used to draw a second time right underneath it.
+         padding-top kept, for the breathing room alone. No bottom border/
+         divider of its own either: whatever follows already supplies one
+         when it needs to (Release notes' own leading <hr>, see
+         insertReleaseNotesSection), and when nothing follows at all (no
+         stuck alert, no release notes, no history) there's genuinely
+         nothing to separate from, so none is shown. This wrapper (and
+         everything from .step-title-row down) is this method's own
+         content, not part of ha-timeline's own real styles above. */
+      .timeline { display: flex; flex-direction: column; padding-top: var(--ha-space-3, 12px); }
       .step-title-row { display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; min-height: 22px; }
       .step-title { font-size: var(--ha-font-size-m, 14px); font-weight: var(--ha-font-weight-medium, 500); }
       .step-time { font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
