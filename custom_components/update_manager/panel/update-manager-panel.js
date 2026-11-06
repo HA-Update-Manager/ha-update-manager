@@ -118,6 +118,15 @@ const ICON_COG =
 // glyph didn't actually say "automatic" at a glance.
 const ICON_AUTO_DOWNLOAD =
   "M22 17V19H11V17H22M19 4.5V9.5H22L16.5 15L11 9.5H14V4.5H19M10.7 15H8.8L8.1 13H4.9L4.2 15H2.3L5.5 6H7.5L10.7 15M7.65 11.65L6.5 8L5.35 11.65H7.65Z";
+// The plain mdi:download glyph ICON_AUTO_DOWNLOAD above deliberately moved
+// away from (see its own comment: that one now means specifically "Update
+// Manager's own auto-install"). A genuinely different fact lives here
+// instead -- a Marketplace repository's own real download count (see
+// _resolveMarketplaceInfo), nothing to do with auto-install at all --
+// verified against Templarian/MaterialDesign's own real download.svg,
+// 2026-11-06, same mdiDownload path ha-marketplace-repository-dashboard.ts
+// itself renders for this exact stat.
+const ICON_DOWNLOAD = "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z";
 const ICON_CLOCK_OUTLINE =
   "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
 // "Postponed" (an update blocked on a newer HA Core version, not a plain
@@ -926,13 +935,39 @@ function buildReleaseUrlLinkRow(tr, releaseUrl) {
 // linkUrl is given -- both describe the same repo, only the tag differs,
 // so there's nothing to correct there.
 //
-function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl) {
+// downloads, when given (Marketplace's own real download count for this
+// repository, see _resolveMarketplaceInfo), turns the plain "Release
+// notes" heading into "Release notes vX.X.X (⬇ N)" -- toVersion's own
+// value spelled out (every caller already has it, trimming notes down to
+// it right below is the whole reason it's a parameter here at all) plus a
+// real mdi:download icon (ICON_DOWNLOAD, never the emoji the user first
+// sketched this as, 2026-11-06) and the count. null/undefined downloads
+// (still resolving, or not a Marketplace repository at all) keeps the
+// plain heading, version number included either way once toVersion is
+// known -- that part costs nothing extra to show regardless of whether
+// the download count ever resolves.
+function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl, downloads) {
   container.insertBefore(document.createElement("hr"), before);
   const heading = document.createElement("h3");
   heading.className = "release-notes-heading";
   const headingText = document.createElement("span");
-  headingText.textContent = tr.dialog_release_notes_heading;
+  headingText.textContent = toVersion ? tr.dialog_release_notes_heading_version(toVersion) : tr.dialog_release_notes_heading;
   heading.appendChild(headingText);
+  if (downloads != null) {
+    // One single span, not loose text/icon siblings directly on `heading`
+    // itself -- .release-notes-heading's own flex layout (gap, centered
+    // items) is built for a small set of real flex items, not a mix of
+    // elements and bare text nodes, which wouldn't pick up that gap or
+    // align to the same baseline as the icon between them.
+    const downloadCount = document.createElement("span");
+    downloadCount.className = "release-notes-downloads";
+    downloadCount.append("(");
+    const dlIcon = document.createElement("ha-svg-icon");
+    dlIcon.path = ICON_DOWNLOAD;
+    downloadCount.appendChild(dlIcon);
+    downloadCount.append(`${downloads})`);
+    heading.appendChild(downloadCount);
+  }
   container.insertBefore(heading, before);
   if (notes) {
     const markdown = document.createElement("ha-markdown");
@@ -1970,6 +2005,59 @@ function _repoMenuLinks(hass, entityId, releaseUrl) {
     repository: parsed ? `https://github.com/${parsed.owner}/${parsed.repo}` : null,
     issues: parsed ? `https://github.com/${parsed.owner}/${parsed.repo}/issues` : null,
   };
+}
+
+// Marketplace's own real community stats (downloads/open issues) for a
+// repository, direct user feedback, 2026-11-06, after seeing this shown on
+// its own real /marketplace/repository/<id> page. Confirmed against its
+// real frontend source (src/data/marketplace/repository.ts): two plain
+// hass.callWS commands, no core-only restriction, so reachable from this
+// custom panel the same as any built-in one. "marketplace/repositories/
+// list" alone already carries `downloads` for every repo in one call;
+// `issues` only comes from the second, per-repo "marketplace/repository/
+// info" call (needs that first call's own `id`, there's no owner/repo-
+// keyed lookup of this on its own). Two separate caches, not one: the list
+// itself only ever needs fetching once per session (every repo's own
+// `downloads` lives in it already), while the per-repo info call is worth
+// skipping entirely for a repository nobody's ever actually opened the
+// menu/release-notes section for.
+let _marketplaceRepoListPromise = null;
+function _fetchMarketplaceRepoList(hass) {
+  if (!_marketplaceRepoListPromise) {
+    _marketplaceRepoListPromise = hass.callWS({ type: "marketplace/repositories/list" }).catch(() => []);
+  }
+  return _marketplaceRepoListPromise;
+}
+
+// { downloads, issues }, or null once confirmed there's genuinely nothing
+// to find (no Marketplace integration on this instance at all, or this
+// exact owner/repo isn't a known Marketplace repository -- a legacy-HACS-
+// custom-repo install, for instance). Same cache-plus-callback shape as
+// _fallbackBrandLogoUrl/_resolveBrandApiLogo above: returns whatever's
+// already known synchronously (undefined while still resolving), and
+// calls onResolved once a real network round trip actually finishes, for
+// a caller to re-render with.
+const _marketplaceInfoCache = new Map();
+function _resolveMarketplaceInfo(hass, owner, repo, onResolved) {
+  const key = `${owner}/${repo}`.toLowerCase();
+  if (_marketplaceInfoCache.has(key)) return _marketplaceInfoCache.get(key);
+  _marketplaceInfoCache.set(key, undefined);
+  _fetchMarketplaceRepoList(hass).then((list) => {
+    const match = (list || []).find((r) => r.full_name && r.full_name.toLowerCase() === key);
+    if (!match) {
+      _marketplaceInfoCache.set(key, null);
+      return;
+    }
+    hass
+      .callWS({ type: "marketplace/repository/info", repository_id: match.id })
+      .then((info) => {
+        const result = { downloads: info.downloads, issues: info.issues };
+        _marketplaceInfoCache.set(key, result);
+        if (onResolved) onResolved(result);
+      })
+      .catch(() => _marketplaceInfoCache.set(key, null));
+  });
+  return undefined;
 }
 
 // Applies both decorations in one place -- shared by every release-notes
@@ -5382,6 +5470,36 @@ class UpdateManagerPanel extends HTMLElement {
     // the entity's unrelated current pending update dragged in above it.
     const showPendingUpdate = u && !historyEntry;
 
+    // Marketplace's own real downloads/issues count for this entity's own
+    // repository (_resolveMarketplaceInfo's own comment), resolved once up
+    // here rather than separately at each of the menu/Release-notes-
+    // heading call sites below: it's a per-repository fact, the same
+    // regardless of which specific version a given History entry/the live
+    // pending update happens to be about. `u.release_url` when there's a
+    // live pending update, `historyEntry.release_url` for one specific
+    // History entry, else the most recent logged install's own (same
+    // fallback _openDetailDialog's own menu-building block already uses a
+    // second time below, kept in sync with it deliberately, not shared
+    // through a single lookup -- this._installLog itself hasn't changed
+    // between the two, only a few lines apart). Only ever worth asking for
+    // a confirmed Marketplace repository (repoLinks.configuration.
+    // marketplace further down is the same gate, computed again there
+    // since repoLinks itself depends on releaseUrlForMenu, not available
+    // this early) -- re-derived from the device's own configuration_url
+    // here too so a legacy-HACS-custom-repo/Core/OS/Supervisor-add-on
+    // entity never triggers a network request for a stat it can't have.
+    const earlyReleaseUrl = u ? u.release_url : historyEntry ? historyEntry.release_url : (this._installLog.find((e) => e.entity_id === entityId) || {}).release_url;
+    let marketplaceInfo = null;
+    const earlyConfiguration = _repoMenuLinks(this._hass, entityId, earlyReleaseUrl).configuration;
+    if (earlyConfiguration && earlyConfiguration.marketplace) {
+      const parsedForInfo = _parseGithubReleaseUrl(earlyReleaseUrl);
+      if (parsedForInfo) {
+        marketplaceInfo = _resolveMarketplaceInfo(this._hass, parsedForInfo.owner, parsedForInfo.repo, () => {
+          if (!isDialogStale()) this._openDetailDialog(entityId, historyEntry, communityOverride);
+        });
+      }
+    }
+
     // Hoisted here, 2026-08-10, so a queued entity's own dialog explains
     // what it's waiting for and offers a way to leave the queue, going
     // back to ready, instead of just a plain, uninformative status alert
@@ -5881,7 +5999,7 @@ class UpdateManagerPanel extends HTMLElement {
       // controls now (see addReportControls), which no longer depend on
       // this section existing at all.
       const appendReleaseNotesSection = (notes, linkUrl) => {
-        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl);
+        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, marketplaceInfo && marketplaceInfo.downloads);
         if (notes) this._appendUpstreamReleaseNotes(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version);
       };
       // entityId === CORE_UPDATE_ENTITY_ID only: also resolve the blog
@@ -6077,7 +6195,15 @@ class UpdateManagerPanel extends HTMLElement {
           addMenuLink("configuration", marketplace ? "mdi:store" : "mdi:cog", marketplace ? tr.dialog_menu_marketplace : tr.dialog_menu_visit);
         }
         if (repoLinks.repository) addMenuLink("repository", "mdi:github", tr.dialog_menu_repository);
-        if (repoLinks.issues) addMenuLink("issues", "mdi:bug", tr.dialog_menu_issue_tracker);
+        if (repoLinks.issues) {
+          // The open-issue count, when Marketplace's own real repository
+          // info has already resolved it (marketplaceInfo, see this
+          // method's own top comment) -- null/undefined (still resolving,
+          // or not a Marketplace repository at all) keeps the plain,
+          // countless label instead.
+          const issueCount = marketplaceInfo && marketplaceInfo.issues;
+          addMenuLink("issues", "mdi:bug", issueCount != null ? tr.dialog_menu_issue_tracker_count(issueCount) : tr.dialog_menu_issue_tracker);
+        }
         // wa-select, not a click listener on each item: same real event
         // (confirmed against ha-dropdown.ts) the toolbar's own overflow
         // menu already relies on, see _ensureShell's own matching comment.
@@ -6341,7 +6467,7 @@ class UpdateManagerPanel extends HTMLElement {
           // already-available data (install_log.py's own frozen snapshot),
           // no fetch involved, same as every other synchronously-built part
           // of this card.
-          insertReleaseNotesSection(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version);
+          insertReleaseNotesSection(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version, null, marketplaceInfo && marketplaceInfo.downloads);
           this._appendUpstreamReleaseNotes(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version);
         }
         // Same last-resort GitHub fallback as the pending-update section
@@ -6417,7 +6543,7 @@ class UpdateManagerPanel extends HTMLElement {
             // find the wrong node (its own just-inserted <hr>, not the
             // original insertion point).
             const insertionPoint = changelogAnchor.nextSibling;
-            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl);
+            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl, marketplaceInfo && marketplaceInfo.downloads);
             if (notes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version);
           });
         };
@@ -8611,6 +8737,20 @@ class UpdateManagerPanel extends HTMLElement {
         font-weight: var(--ha-font-weight-medium, 500); color: var(--primary-text-color);
       }
       .release-notes-heading { display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; }
+      /* Marketplace's own download count (insertReleaseNotesSection's own
+         comment, 2026-11-06): a plain, un-badged inline span -- a fact
+         sitting right next to this h3's own title, not a separate pill
+         competing with it for attention. Secondary-text color, same as
+         every other small supporting detail in this dialog (e.g. .dialog-
+         header-status's own neutral default), smaller than the heading's
+         own 14px (.release-notes-heading above) since it's a parenthetical,
+         not a second heading. */
+      .release-notes-downloads {
+        display: inline-flex; align-items: center; gap: 2px;
+        font-size: var(--ha-font-size-s, 13px); font-weight: var(--ha-font-weight-normal, 400);
+        color: var(--secondary-text-color);
+      }
+      .release-notes-downloads ha-svg-icon { --mdc-icon-size: 14px; }
       .dialog-content hr { border-color: var(--divider-color); border-bottom: none; margin: 0; }
       /* :not([hidden]), not a bare .dialog-community-section selector --
          found live, 2026-07-22: a bare class selector has the exact same

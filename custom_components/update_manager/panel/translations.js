@@ -309,6 +309,10 @@ export const TRANSLATIONS = {
     dialog_history_backup_yes: "Taken before installing",
     dialog_history_backup_no: "Not supported by this entity",
     dialog_release_notes_heading: "Release notes",
+    // toVersion spelled out, once known -- see insertReleaseNotesSection's
+    // own comment (the download-count suffix is built separately, right
+    // next to this text, not part of this string).
+    dialog_release_notes_heading_version: (v) => `Release notes v${v}`,
     dialog_upstream_release_notes: (repo) => `${repo}'s own release notes:`,
     dialog_community_heading: "Community",
     list_and: "and",
@@ -317,6 +321,10 @@ export const TRANSLATIONS = {
     dialog_menu_visit: "Visit",
     dialog_menu_repository: "Repository",
     dialog_menu_issue_tracker: "Issues",
+    // Marketplace's own real open-issue count, resolved async
+    // (_resolveMarketplaceInfo) -- only ever shown once that's actually
+    // known, see dialog_menu_issue_tracker above for the plain fallback.
+    dialog_menu_issue_tracker_count: (n) => `Issues (${n})`,
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
     // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
     // that this card also covers hide_postponed (merged in from its own
@@ -663,6 +671,7 @@ export const TRANSLATIONS = {
     dialog_history_backup_yes: "Gemaakt voor het installeren",
     dialog_history_backup_no: "Niet ondersteund door deze entiteit",
     dialog_release_notes_heading: "Release notes",
+    dialog_release_notes_heading_version: (v) => `Release notes v${v}`,
     dialog_upstream_release_notes: (repo) => `Eigen release notes van ${repo}:`,
     dialog_community_heading: "Community",
     list_and: "en",
@@ -671,6 +680,7 @@ export const TRANSLATIONS = {
     dialog_menu_visit: "Bezoeken",
     dialog_menu_repository: "Repository",
     dialog_menu_issue_tracker: "Issues",
+    dialog_menu_issue_tracker_count: (n) => `Issues (${n})`,
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
     community_section_title: "Help anderen",
     community_section_desc:
