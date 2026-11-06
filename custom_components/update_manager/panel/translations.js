@@ -194,6 +194,10 @@ export const TRANSLATIONS = {
     field_trusted_voters: "Trusted voters",
     field_trusted_voters_helper:
       "A GitHub username you trust more than your own rules. Their healthy vote overrides your rules above and auto-installs that jump immediately, even over someone else's problematic report.",
+    // _buildListSummary's own countText override -- usernames, not
+    // entities, see its own comment for why entity_list_configured_count
+    // doesn't fit here.
+    trusted_voters_configured_count: (count) => (count === 1 ? "1 trusted voter" : `${count} trusted voters`),
     announce_hours_label: "Announcement notice",
     announce_hours_unit: "hours",
     announce_hours_helper: "How long you still have to cancel a scheduled automatic install.",
@@ -599,6 +603,7 @@ export const TRANSLATIONS = {
     field_trusted_voters: "Vertrouwde stemmers",
     field_trusted_voters_helper:
       "Een GitHub-gebruikersnaam die je meer vertrouwt dan je eigen regels. Hun probleemloze stem overrult je eigen regels hierboven en installeert die sprong meteen automatisch, ook als iemand anders 'm als problematisch meldde.",
+    trusted_voters_configured_count: (count) => (count === 1 ? "1 vertrouwde stemmer" : `${count} vertrouwde stemmers`),
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper: "Verbergt 'm uit Home Assistants eigen update-telling tot 'ie klaar is.",
     field_ready_days_add: "Dag toevoegen",

@@ -365,12 +365,12 @@ function knownSettingsFields() {
 // ha-form's own multiple:true selector emits null once the last chip is
 // removed (found live, 2026-07-27), and save_settings' own schema requires
 // a real list for both. Coerced here too, not just at each field's own
-// value-changed handler (see _openEntityListModal/trustedForm below): this is the
+// value-changed handler (see _openListModal below): this is the
 // one place every settings field already passes through before being sent,
 // so a future third list-typed field is covered automatically instead of
 // needing to remember this same fix on its own. Blank entries (e.g. a
 // trusted-voter row cleared back to "" rather than removed via its own
-// trash icon, see trustedForm's own comment) are dropped here too, at save
+// trash icon, see _openListModal's own comment) are dropped here too, at save
 // time only -- not from _formData/the live widget's own state, which would
 // delete ha-input-multi's freshly-added blank row before the user can type
 // into it (found live, 2026-08-11).
@@ -6860,18 +6860,24 @@ class UpdateManagerPanel extends HTMLElement {
     }
   }
 
-  // One half of the never/always auto-update pair (see
-  // _buildAutoInstallCard's own opening rows): just a heading + a button
-  // showing how many entities are currently configured, opening the real
-  // picker in its own modal (_openEntityListModal) -- no description span
-  // here on the page itself, direct user feedback: that same text already
-  // sits in the modal (passed through as `descriptionText` below), showing
-  // it twice was redundant. `key`/`otherKey` are always the two opposite
-  // sides of the same pair (excluded_entities vs. whitelisted_entities), so
-  // an entity already on the other list can be excluded from this one's
-  // own picker (see that method's own exclude_entities use) instead of
-  // letting the two ever contradict each other in the first place.
-  _buildEntityListSummary(tr, { key, otherKey, headingText, descriptionText }) {
+  // A heading + a button showing how many entries are currently
+  // configured, opening the real picker in its own modal (_openListModal)
+  // -- no description span here on the page itself, direct user feedback:
+  // that same text already sits in the modal (passed through as
+  // `descriptionText` below), showing it twice was redundant. Originally
+  // built only for the never/always auto-update pair (`key`/`otherKey`
+  // always the two opposite sides of the same pair, excluded_entities vs.
+  // whitelisted_entities, so an entity already on the other list can be
+  // excluded from this one's own entity-selector picker), generalized
+  // 2026-11-06 (direct user feedback: "de trusted voters ook in zo'n
+  // dialog ipv direct op de settings tab, zelfde patroon") to also cover
+  // trusted_voters' own plain text-chip list -- `schema`, when given,
+  // overrides _openListModal's own entity-selector default entirely,
+  // `otherKey` stays meaningless (and unused) for a schema-driven caller.
+  // `countText` too, defaulting to tr.entity_list_configured_count's own
+  // "N entities" -- genuinely wrong wording for trusted_voters' own list
+  // of usernames, not entities at all, so that caller passes its own.
+  _buildListSummary(tr, { key, otherKey, headingText, descriptionText, schema, countText = tr.entity_list_configured_count }) {
     const row = document.createElement("ha-settings-row");
     const heading = document.createElement("span");
     heading.slot = "heading";
@@ -6887,27 +6893,27 @@ class UpdateManagerPanel extends HTMLElement {
     // just keeping its own text on one line like every other row's control
     // already does.
     btn.className = "entity-list-count-btn";
-    btn.textContent = tr.entity_list_configured_count((this._formData[key] || []).length);
+    btn.textContent = countText((this._formData[key] || []).length);
     btn.addEventListener("click", () =>
-      this._openEntityListModal(tr, { key, otherKey, title: headingText, description: descriptionText, button: btn })
+      this._openListModal(tr, { key, otherKey, title: headingText, description: descriptionText, button: btn, schema, countText })
     );
     row.appendChild(btn);
     return row;
   }
 
-  // The modal _buildEntityListSummary's own button opens -- a separate,
+  // The modal _buildListSummary's own button opens -- a separate,
   // dedicated ha-dialog (not this panel's own this._dialogEl, which is
   // already heavily tied to one specific update entity's own detail view,
   // see _openDetailDialog) since this one is a plain, generic "pick some
-  // entities" form with nothing else going on. Appended directly to this
+  // things" form with nothing else going on. Appended directly to this
   // element's own shadow root, not into the regular content tree
   // _renderContent rebuilds, so a settings autosave triggered from inside
   // it (see the form's own value-changed below) can't ever yank it out
   // from under an open picker. `button` is only used to refresh its own
   // "N configured" label once this modal closes, not while it's still
-  // open -- re-rendering mid-pick would rebuild the entity selector
-  // underneath the user's own in-progress interaction.
-  _openEntityListModal(tr, { key, otherKey, title, description, button }) {
+  // open -- re-rendering mid-pick would rebuild the selector underneath
+  // the user's own in-progress interaction.
+  _openListModal(tr, { key, otherKey, title, description, button, schema, countText = tr.entity_list_configured_count }) {
     const modal = document.createElement("ha-dialog");
     modal.headerTitle = title;
 
@@ -6918,7 +6924,12 @@ class UpdateManagerPanel extends HTMLElement {
 
     const form = document.createElement("ha-form");
     form.hass = this._hass;
-    form.schema = [
+    // The never/always auto-update pair's own entity-selector shape stays
+    // the default (no caller passes `schema` for those two), kept exactly
+    // as it always was -- a `schema`-passing caller (trusted_voters) wants
+    // its own, different selector entirely, see _buildListSummary's own
+    // comment.
+    form.schema = schema || [
       {
         name: key,
         selector: {
@@ -6940,7 +6951,12 @@ class UpdateManagerPanel extends HTMLElement {
       // `|| []`, same reasoning as every other multiple:true entity/text
       // selector in this file (see e.g. entitiesForm's own historical
       // comment, now this method) -- ha-form emits null once the last
-      // chip is removed.
+      // chip is removed. Blank entries (trusted_voters' own text-chip
+      // "add" button fires this immediately, before any typing) aren't
+      // filtered here either, same reasoning this exact field's own old
+      // inline version already settled on: dropped at save time instead
+      // (pickKnownSettings' own LIST_SETTINGS_FIELDS handling), not here,
+      // or the add flow itself looks broken.
       const chosen = e.detail.value[key] || [];
       this._formData = { ...this._formData, [key]: chosen };
       form.data = this._formData;
@@ -6967,7 +6983,7 @@ class UpdateManagerPanel extends HTMLElement {
       // Refreshes the count only, not a full _renderContent -- same
       // mid-edit-focus-loss reasoning _saveSettingsNow's own caller
       // comment already gives for Settings in general.
-      button.textContent = tr.entity_list_configured_count((this._formData[key] || []).length);
+      button.textContent = countText((this._formData[key] || []).length);
     });
 
     this.shadowRoot.appendChild(modal);
@@ -8091,7 +8107,7 @@ class UpdateManagerPanel extends HTMLElement {
     // separate hard-coded exclusion -- removing one of these chips is a
     // real, persisted choice, same as removing anything else from it.
     body.appendChild(
-      this._buildEntityListSummary(tr, {
+      this._buildListSummary(tr, {
         key: "excluded_entities",
         otherKey: "whitelisted_entities",
         headingText: tr.field_excluded_entities,
@@ -8099,7 +8115,7 @@ class UpdateManagerPanel extends HTMLElement {
       })
     );
     body.appendChild(
-      this._buildEntityListSummary(tr, {
+      this._buildListSummary(tr, {
         key: "whitelisted_entities",
         otherKey: "excluded_entities",
         headingText: tr.field_whitelisted_entities,
@@ -8161,50 +8177,31 @@ class UpdateManagerPanel extends HTMLElement {
     // moved to the top of this card, see this method's own opening comment.
     body.appendChild(document.createElement("hr")).className = "divider";
 
-    // Same manually-drawn label + hint pattern the never/always auto-update
-    // rows' own modals use above -- direct user feedback, wanting a specific person's healthy
-    // verdict to always trigger auto-install regardless of your own rules,
-    // then asking whether more than one person could be trusted at once
-    // (yes, a list,
-    // see community_verdict.py's own aggregation: any trusted problematic
-    // vote wins outright, else any trusted healthy vote does).
-    const trustedLabel = document.createElement("p");
-    trustedLabel.className = "field-label";
-    trustedLabel.textContent = tr.field_trusted_voters;
-    body.appendChild(trustedLabel);
-
-    const trustedHint = document.createElement("p");
-    trustedHint.className = "hint";
-    trustedHint.textContent = tr.field_trusted_voters_helper;
-    body.appendChild(trustedHint);
-
-    // selector: { text: { multiple: true } } -- HA's own native way to
-    // collect a free-text list as chips (verified against home-assistant/
-    // frontend's real StringSelector type, stable tag 20260624.6, not
-    // guessed), the same widget shape excluded_entities above uses for
-    // entities. No validation against community-votes itself: purely a
-    // local, unverified username string (see const.py's own CONF_TRUSTED_VOTERS note).
-    const trustedForm = document.createElement("ha-form");
-    trustedForm.hass = this._hass;
-    trustedForm.schema = [{ name: "trusted_voters", selector: { text: { multiple: true } } }];
-    trustedForm.data = this._formData;
-    trustedForm.computeLabel = () => "";
-    trustedForm.computeHelper = () => "";
-    trustedForm.addEventListener("value-changed", (e) => {
-      // `|| []`, not filtered here -- ha-input-multi's own "add" button adds
-      // a blank row and fires this same value-changed immediately (before
-      // the user has typed anything); filtering blanks out at this point
-      // (tried, reverted the same day) deleted that row on arrival, making
-      // the add button look broken. Blank entries are dropped at save time
-      // instead (see pickKnownSettings' own LIST_SETTINGS_FIELDS handling),
-      // which still means clearing a row's text has the same end effect as
-      // its own trash icon once autosave actually runs, without breaking
-      // the add flow itself.
-      this._formData = { ...this._formData, trusted_voters: e.detail.value.trusted_voters || [] };
-      trustedForm.data = this._formData;
-      this._scheduleAutosave();
-    });
-    body.appendChild(trustedForm);
+    // Now a summary row + its own picker modal, same pattern as the never/
+    // always auto-update pair above (_buildListSummary/_openListModal),
+    // 2026-11-06, direct user feedback: "de trusted voters ook in zo'n
+    // dialog ipv direct op de settings tab, zelfde patroon". schema given
+    // explicitly here -- selector: { text: { multiple: true } }, HA's own
+    // native way to collect a free-text list as chips (verified against
+    // home-assistant/frontend's real StringSelector type, stable tag
+    // 20260624.6, not guessed), overriding _openListModal's own entity-
+    // selector default entirely: this is wanting a specific person's
+    // healthy verdict to always trigger auto-install regardless of your
+    // own rules, then asking whether more than one person could be trusted
+    // at once (yes, a list, see community_verdict.py's own aggregation:
+    // any trusted problematic vote wins outright, else any trusted healthy
+    // vote does). No validation against community-votes itself: purely a
+    // local, unverified username string (see const.py's own
+    // CONF_TRUSTED_VOTERS note).
+    body.appendChild(
+      this._buildListSummary(tr, {
+        key: "trusted_voters",
+        headingText: tr.field_trusted_voters,
+        descriptionText: tr.field_trusted_voters_helper,
+        schema: [{ name: "trusted_voters", selector: { text: { multiple: true } } }],
+        countText: tr.trusted_voters_configured_count,
+      })
+    );
 
     card.appendChild(body);
     return card;
@@ -8491,7 +8488,7 @@ class UpdateManagerPanel extends HTMLElement {
         border: 1px solid var(--ha-color-border-neutral-quiet); border-radius: 8px;
         padding-inline: var(--ha-space-4, 16px); padding-block: var(--ha-space-2, 8px);
       }
-      /* See _buildEntityListSummary's own comment: keeps "N entities" on
+      /* See _buildListSummary's own comment: keeps "N entities" on
          one line instead of wrapping once the row's own control slot
          (ha-settings-row's min-width: 0) runs short on space. Targets
          ha-button's own exposed ::part(label) directly (confirmed against
