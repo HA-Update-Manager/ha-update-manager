@@ -8896,6 +8896,21 @@ class UpdateManagerPanel extends HTMLElement {
          the text, rather than sharing a row with it. Scoped to this one
          header only, not a global override. */
       .dialog-header state-badge { width: 64px; height: 64px; }
+      /* The fallback mdi icon (no entity_picture at all, vrijwel altijd a
+         custom card -- direct user feedback, 2026-11-06) never grew to
+         match: a real picture is painted as the host's own background
+         (background-size: cover, confirmed against state-badge.ts's real
+         source), so it fills whatever box width/height above makes, but
+         the fallback icon is a separate child (<ha-state-icon>, confirmed
+         against its real source -- no width/height of its own, state-
+         badge.ts never sets any either), so it just sat at its own fixed,
+         unrelated default size inside this much bigger box. --mdc-icon-size
+         is ha-icon's/ha-svg-icon's own real sizing token, a plain CSS
+         custom property, so it cascades straight through state-badge's
+         own shadow DOM from here with no selector needed past the host.
+         36px, not a literal 64:40 scale-up of the 24px default (38.4px):
+         close to that same ratio, rounded to a plainer number. */
+      .dialog-header state-badge { --mdc-icon-size: 36px; }
       /* .has-logo (see this card's own JS comment for why): a fixed wide
          box instead of the 64px square above, for an unusually wide
          wordmark, and background-size: contain instead of state-badge's
