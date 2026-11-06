@@ -828,7 +828,19 @@ function verdictBadge(tr, verdict) {
   if (!verdict || (verdict.healthy_count === 0 && verdict.problematic_count === 0)) return null;
   const title = aggregatePlainVerdictText(tr, verdict.healthy_count, verdict.problematic_count);
   const isProblematic = verdict.problematic_count > 0;
-  return { icon: verdictIcon(isProblematic), text: String(isProblematic ? verdict.problematic_count : verdict.healthy_count), title };
+  return {
+    icon: verdictIcon(isProblematic),
+    text: String(isProblematic ? verdict.problematic_count : verdict.healthy_count),
+    title,
+    // _buildTimerPill's own two colored variants, matching the filled
+    // button's real success/warning tokens (contributors.home-assistant.
+    // io/design/components/button/#color, confirmed against the real docs,
+    // 2026-11-06): the one place in this panel a timer-pill-shaped badge
+    // carries a judgment (healthy vs. problematic), not just a neutral
+    // fact, so it's the one place that earns a color instead of this
+    // pill's usual neutral default.
+    variant: isProblematic ? "problematic" : "healthy",
+  };
 }
 
 // The shared .dialog-rows/.row/.key/.value fact-list building block --
@@ -3839,24 +3851,31 @@ class UpdateManagerPanel extends HTMLElement {
   // updated" label next to every auto-installed row added up to a lot of
   // repeated text down a long list). The title attribute stands in for
   // that dropped label so the meaning isn't lost, just not spelled out inline.
+  //
+  // A real ha-badge now, not a hand-rolled div+ha-svg-icon+span (2026-11-06,
+  // direct user feedback: "dat zou wel een logische plek zijn om dit
+  // bestaande component te gebruiken"): .iconOnly is ha-badge's own real
+  // property for exactly the "no text" case above (confirmed against its
+  // real source, ha-badge.ts -- hides the text block, drops the horizontal
+  // padding, zeroes the icon's own negative margins), so that branch needed
+  // no CSS of its own to recreate, unlike the old plain-div version. `title`
+  // moved from the icon to the badge host itself -- a native tooltip over
+  // the whole pill, not just its icon half, reads the same either way.
+  // `timerBadgeInfo.variant` ("healthy"/"problematic", see verdictBadge
+  // below): an optional CSS class for the two colored variants, see
+  // .timer-pill-healthy/-problematic below -- every other caller passes no
+  // variant at all and gets this pill's plain, neutral default coloring.
   _buildTimerPill(timerBadgeInfo) {
-    const pill = document.createElement("div");
-    pill.className = "timer-pill";
+    const badge = document.createElement("ha-badge");
+    badge.className = timerBadgeInfo.variant ? `timer-pill timer-pill-${timerBadgeInfo.variant}` : "timer-pill";
     const pillIcon = document.createElement("ha-svg-icon");
     pillIcon.path = timerBadgeInfo.icon;
-    // An explicit title always applies, text or not (added for
-    // verdictBadge: unlike the icon-only pills this was originally written
-    // for, a verdict pill shows a count AND wants a hover explanation of
-    // what that count means).
-    if (timerBadgeInfo.title) pillIcon.title = timerBadgeInfo.title;
-    else if (!timerBadgeInfo.text) pillIcon.title = "";
-    pill.appendChild(pillIcon);
-    if (timerBadgeInfo.text) {
-      const pillText = document.createElement("span");
-      pillText.textContent = timerBadgeInfo.text;
-      pill.appendChild(pillText);
-    }
-    return pill;
+    pillIcon.slot = "icon";
+    badge.appendChild(pillIcon);
+    badge.title = timerBadgeInfo.title || "";
+    if (timerBadgeInfo.text) badge.textContent = timerBadgeInfo.text;
+    else badge.iconOnly = true;
+    return badge;
   }
 
   // One row, reused for both the Updates and History lists (see
@@ -8155,14 +8174,37 @@ class UpdateManagerPanel extends HTMLElement {
          around it. */
       div[slot="start"] { position: relative; height: 40px; }
       .row-end { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
+      /* _buildTimerPill, a real ha-badge now (2026-11-06, see its own
+         comment). Sized down from ha-badge's own real defaults (36px/18px
+         icon, confirmed against its real source) to land close to the old
+         hand-rolled pill's own look (4/8px padding, 11px text, 14px icon) --
+         --ha-badge-size itself only sets height/min-width, so white-space:
+         nowrap is kept here too, same reason the old version needed it: a
+         short countdown string should never wrap mid-pill. */
       .timer-pill {
-        display: inline-flex; align-items: center; gap: var(--ha-space-1, 4px);
-        padding: var(--ha-space-1, 4px) var(--ha-space-2, 8px);
-        border-radius: var(--ha-border-radius-pill, 999px);
-        background: var(--secondary-background-color); color: var(--secondary-text-color);
-        font-size: var(--ha-font-size-xs, 11px); white-space: nowrap;
+        --ha-badge-size: 20px; --ha-badge-font-size: var(--ha-font-size-xs, 11px);
+        --ha-badge-icon-size: 14px; white-space: nowrap;
       }
-      .timer-pill ha-svg-icon { --mdc-icon-size: 14px; }
+      /* The two colored variants verdictBadge's own `variant` field picks
+         (see _buildTimerPill's own comment): --ha-card-background is
+         ha-badge's own real exposed surface token (confirmed against its
+         real source) for the pill's fill, matched to a real filled button's
+         own success/warning tokens (contributors.home-assistant.io/design/
+         components/button/#color, confirmed against the real docs) rather
+         than this pill's usual neutral --secondary-background-color/-text-
+         color default above. --badge-color tints the icon specifically
+         (ha-badge's own real accent token), the plain `color` below covers
+         the count text next to it. */
+      .timer-pill-healthy {
+        --ha-card-background: var(--ha-color-fill-success-normal-resting);
+        --badge-color: var(--ha-color-on-success-normal);
+        color: var(--ha-color-on-success-normal);
+      }
+      .timer-pill-problematic {
+        --ha-card-background: var(--ha-color-fill-warning-normal-resting);
+        --badge-color: var(--ha-color-on-warning-normal);
+        color: var(--ha-color-on-warning-normal);
+      }
       /* _buildListRow's own statusIcon/statusText trailing state (see that
          method's own comment) -- a full replacement for the pill+chevron,
          not a variant of .timer-pill: that pill is sized for a short
