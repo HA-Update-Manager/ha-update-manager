@@ -379,16 +379,16 @@ const LIST_SETTINGS_FIELDS = new Set(["excluded_entities", "whitelisted_entities
 // trusted_voters only accepts a bare GitHub username at the websocket API
 // level -- this tolerates a few of the forms someone pasting a profile
 // link would actually type ("https://github.com/klaptafel",
-// "github.com/klaptafel", "/klaptafel", "@klaptafel"), stripping down to
-// just the username, same as plain "klaptafel" already was. Direct user
-// feedback, 2026-11-07. Only ever applied at save time (pickKnownSettings
-// below), not to the live widget's own value -- same "don't touch
-// _formData/the live chip itself" reasoning LIST_SETTINGS_FIELDS' own
-// blank-entry filtering above already follows.
+// "https://www.github.com/klaptafel", "github.com/klaptafel", "/klaptafel",
+// "@klaptafel"), stripping down to just the username, same as plain
+// "klaptafel" already was. Direct user feedback, 2026-11-07. Only ever
+// applied at save time (pickKnownSettings below), not to the live widget's
+// own value -- same "don't touch _formData/the live chip itself" reasoning
+// LIST_SETTINGS_FIELDS' own blank-entry filtering above already follows.
 function _normalizeTrustedVoterUsername(raw) {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return trimmed;
-  const stripped = trimmed.replace(/^https?:\/\//i, "").replace(/^github\.com\//i, "").replace(/^\//, "").replace(/^@/, "");
+  const stripped = trimmed.replace(/^https?:\/\//i, "").replace(/^(?:www\.)?github\.com\//i, "").replace(/^\//, "").replace(/^@/, "");
   return stripped.split("/")[0] || trimmed;
 }
 
@@ -397,11 +397,12 @@ function pickKnownSettings(data) {
   const result = {};
   for (const key of known) {
     if (!(key in data)) continue;
-    if (key === "trusted_voters") {
-      result[key] = (data[key] || []).map(_normalizeTrustedVoterUsername).filter((v) => v && v.trim());
-    } else {
-      result[key] = LIST_SETTINGS_FIELDS.has(key) ? (data[key] || []).filter((v) => v && String(v).trim()) : data[key];
+    if (!LIST_SETTINGS_FIELDS.has(key)) {
+      result[key] = data[key];
+      continue;
     }
+    const values = data[key] || [];
+    result[key] = (key === "trusted_voters" ? values.map(_normalizeTrustedVoterUsername) : values.map((v) => String(v || "").trim())).filter(Boolean);
   }
   return result;
 }
@@ -5447,6 +5448,29 @@ class UpdateManagerPanel extends HTMLElement {
     return wrap;
   }
 
+  // The .dialog-header/.dialog-header-info/.dialog-header-name skeleton
+  // shared by _openDetailDialog's own two header branches (a real entity,
+  // or one that no longer exists at all) -- found by review, 2026-11-07:
+  // both hand-built the exact same four elements in the same order, a
+  // near copy-paste that could silently drift apart. Each branch builds
+  // its own stateBadgeEl/statusBadgeEl fully configured (logo/classList,
+  // or textContent/type/click-listener) before calling this, since that
+  // part genuinely differs between the two.
+  _buildDialogHeaderShell(body, stateBadgeEl, nameText, statusBadgeEl) {
+    const header = document.createElement("div");
+    header.className = "dialog-header";
+    header.appendChild(stateBadgeEl);
+    const info = document.createElement("div");
+    info.className = "dialog-header-info";
+    const nameEl = document.createElement("div");
+    nameEl.className = "dialog-header-name";
+    nameEl.textContent = nameText;
+    info.appendChild(nameEl);
+    info.appendChild(statusBadgeEl);
+    header.appendChild(info);
+    body.appendChild(header);
+  }
+
   _openDetailDialog(entityId, historyEntry = null, communityOverride = null) {
     // While an update is actually installing, HA's own more-info dialog
     // already has the real thing (a live progress bar, a real percentage)
@@ -5541,25 +5565,32 @@ class UpdateManagerPanel extends HTMLElement {
     // the entity's unrelated current pending update dragged in above it.
     const showPendingUpdate = u && !historyEntry;
 
-    // Marketplace's own real downloads/issues count for this entity's own
-    // repository (_resolveMarketplaceInfo's own comment), resolved once up
-    // here rather than separately at each of the menu/Release-notes-
-    // heading call sites below: it's a per-repository fact, the same
-    // regardless of which specific version a given History entry/the live
-    // pending update happens to be about. `u.release_url` when there's a
-    // live pending update, `historyEntry.release_url` for one specific
-    // History entry, else the most recent logged install's own (same
-    // fallback _openDetailDialog's own menu-building block already uses a
-    // second time below, kept in sync with it deliberately, not shared
-    // through a single lookup -- this._installLog itself hasn't changed
-    // between the two, only a few lines apart). Only ever worth asking for
-    // a confirmed Marketplace repository (repoLinks.configuration.
-    // marketplace further down is the same gate, computed again there
-    // since repoLinks itself depends on releaseUrlForMenu, not available
-    // this early) -- re-derived from the device's own configuration_url
-    // here too so a legacy-HACS-custom-repo/Core/OS/Supervisor-add-on
-    // entity never triggers a network request for a stat it can't have.
-    const earlyReleaseUrl = u ? u.release_url : historyEntry ? historyEntry.release_url : (this._installLog.find((e) => e.entity_id === entityId) || {}).release_url;
+    // Hoisted up here from right above the History section further down
+    // (found by review, 2026-11-07: this used to be computed twice, once
+    // down there for the History list and once more, by hand, just for
+    // this entity's own release_url -- genuinely risked drifting apart,
+    // since the second copy didn't even have the same fallback chain, see
+    // repoLinks' own comment right below). Skipped entirely when there's
+    // no history at all, not shown with an empty-state message -- direct
+    // user feedback: a heading for a section with nothing under it just
+    // added noise, especially for a purely historical entity that's
+    // otherwise short on content anyway.
+    const entries = this._installLog.filter((entry) => entry.entity_id === entityId);
+
+    // This entity's own repo links/Marketplace-repository gate, resolved
+    // once up here rather than separately at each of the early
+    // Marketplace-info/menu-building call sites below -- both are a
+    // per-repository fact, the same regardless of which specific version a
+    // given History entry/the live pending update happens to be about.
+    // `u.release_url` when there's a live pending update, else
+    // entries[0]'s own (newest first, same order the History cards below
+    // render in) -- the owner/repo a release_url resolves to never
+    // actually depends on which specific jump produced it, so this doesn't
+    // need its own historyEntry-specific branch, same reasoning the
+    // History section's own menu-building already relied on before this
+    // was hoisted up to share with it.
+    const releaseUrlForRepo = u ? u.release_url : entries[0] && entries[0].release_url;
+    const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForRepo);
     let marketplaceInfo = null;
     // Both assigned later, once the menu/release-notes section below is
     // actually built -- read by the resolve callback right below, which
@@ -5568,9 +5599,12 @@ class UpdateManagerPanel extends HTMLElement {
     // real elements whenever that callback actually fires.
     let issuesMenuItemEl = null;
     let liveReleaseNotesHeading = null;
-    const earlyConfiguration = _repoMenuLinks(this._hass, entityId, earlyReleaseUrl).configuration;
-    if (earlyConfiguration && earlyConfiguration.marketplace) {
-      const parsedForInfo = _parseGithubReleaseUrl(earlyReleaseUrl);
+    // Only ever worth asking for a confirmed Marketplace repository --
+    // re-derived from the device's own configuration_url (via repoLinks
+    // above) so a legacy-HACS-custom-repo/Core/OS/Supervisor-add-on entity
+    // never triggers a network request for a stat it can't have.
+    if (repoLinks.configuration && repoLinks.configuration.marketplace) {
+      const parsedForInfo = _parseGithubReleaseUrl(releaseUrlForRepo);
       if (parsedForInfo) {
         marketplaceInfo = _resolveMarketplaceInfo(this._hass, parsedForInfo.owner, parsedForInfo.repo, (result) => {
           // A full _openDetailDialog re-render used to sit here. Found
@@ -5742,8 +5776,6 @@ class UpdateManagerPanel extends HTMLElement {
     // Update Manager still happens to be tracking; the status line below
     // only applies when there's an actual pending update, though.
     if (state) {
-      const header = document.createElement("div");
-      header.className = "dialog-header";
       const stateBadge = document.createElement("state-badge");
       // The wider brand logo instead of the square icon, when one's
       // actually confirmed to exist, this card only, not list rows
@@ -5791,17 +5823,6 @@ class UpdateManagerPanel extends HTMLElement {
       stateBadge.stateObj = logoUrl
         ? { ...state, attributes: { ...state.attributes, entity_picture: logoUrl } }
         : state;
-      header.appendChild(stateBadge);
-
-      const info = document.createElement("div");
-      info.className = "dialog-header-info";
-      const nameEl = document.createElement("div");
-      nameEl.className = "dialog-header-name";
-      // state.attributes.friendly_name, already the device's own real name
-      // by the time it gets here (see entityState's own comment), not a
-      // second, redundant friendlyEntityName(this._hass, entityId) call.
-      nameEl.textContent = (state.attributes && state.attributes.friendly_name) || entityId;
-      info.appendChild(nameEl);
 
       // The status (e.g. "Ready to update"), not available_since (how long
       // ago the update appeared), direct user feedback, 2026-11-05: moved
@@ -5857,9 +5878,10 @@ class UpdateManagerPanel extends HTMLElement {
         stateValue.type = "button";
         stateValue.addEventListener("click", () => this._openDetailDialog(entityId));
       }
-      info.appendChild(stateValue);
-      header.appendChild(info);
-      body.appendChild(header);
+      // state.attributes.friendly_name, already the device's own real name
+      // by the time it gets here (see entityState's own comment), not a
+      // second, redundant friendlyEntityName(this._hass, entityId) call.
+      this._buildDialogHeaderShell(body, stateBadge, (state.attributes && state.attributes.friendly_name) || entityId, stateValue);
     } else {
       // A purely historical entry for an entity that no longer exists at
       // all (direct user feedback, 2026-11-06, after the auto-close bug
@@ -5876,21 +5898,10 @@ class UpdateManagerPanel extends HTMLElement {
       // "Unavailable" instead of the usual Up-to-date/Update available
       // pair, which wouldn't mean anything for an entity Home Assistant
       // doesn't even know about anymore.
-      const header = document.createElement("div");
-      header.className = "dialog-header";
-      header.appendChild(document.createElement("state-badge"));
-      const info = document.createElement("div");
-      info.className = "dialog-header-info";
-      const nameEl = document.createElement("div");
-      nameEl.className = "dialog-header-name";
-      nameEl.textContent = friendlyEntityName(this._hass, entityId);
-      info.appendChild(nameEl);
       const stateValue = document.createElement("ha-badge");
       stateValue.className = "dialog-header-status";
       stateValue.textContent = tr.status_unavailable;
-      info.appendChild(stateValue);
-      header.appendChild(info);
-      body.appendChild(header);
+      this._buildDialogHeaderShell(body, document.createElement("state-badge"), friendlyEntityName(this._hass, entityId), stateValue);
     }
 
     // A purely historical entity (no pending update at all) no longer gets
@@ -6258,11 +6269,9 @@ class UpdateManagerPanel extends HTMLElement {
       });
     }
 
-    // Skipped entirely when there's no history at all, not shown with an
-    // empty-state message -- direct user feedback: a heading for a section
-    // with nothing under it just added noise, especially for a purely
-    // historical entity that's otherwise short on content anyway.
-    const entries = this._installLog.filter((entry) => entry.entity_id === entityId);
+    // entries (History entries for this entity) and repoLinks (its own
+    // Marketplace/Repository/Issues links) are both computed once, up near
+    // the top of this method now -- see their own comments there.
 
     // The header's own "Marketplace/Repository/Issues" menu, direct user
     // feedback, 2026-11-05: HA's own native more-info dialog already has a
@@ -6276,21 +6285,15 @@ class UpdateManagerPanel extends HTMLElement {
     // truthy, so opening the dialog from the History tab for an
     // already-up-to-date entity (or a live one, but via a historyEntry
     // override) silently had no menu at all, even though the repository is
-    // exactly as real either way. entries[0] (newest first, same order the
-    // History cards below render in) stands in for u.release_url, since the
-    // owner/repo a release_url resolves to never actually depends on which
-    // specific jump produced it. Appended to `dialog` (slot=
+    // exactly as real either way. Appended to `dialog` (slot=
     // "headerActionItems", see ha-adaptive-dialog's own real source) right
     // here rather than up where the title span is appended, simply because
-    // neither u nor entries is known yet up there: append order among
-    // differently-slotted light-DOM children doesn't affect where they're
-    // rendered. Omitted entirely (not an empty/disabled menu) when none of
-    // the three links resolve, e.g. Core/Supervisor/OS, which have no
-    // repository at all, or a brand-new entity with no History yet and no
-    // current pending update either.
+    // append order among differently-slotted light-DOM children doesn't
+    // affect where they're rendered. Omitted entirely (not an empty/
+    // disabled menu) when none of the three links resolve, e.g. Core/
+    // Supervisor/OS, which have no repository at all, or a brand-new
+    // entity with no History yet and no current pending update either.
     {
-      const releaseUrlForMenu = u ? u.release_url : entries[0] && entries[0].release_url;
-      const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForMenu);
       if (repoLinks.configuration || repoLinks.repository || repoLinks.issues) {
         // A real ha-icon-button trigger with an explicit placement, not the
         // toolbar's own plain-button pattern (_syncOverflowMenu's own
@@ -6389,9 +6392,7 @@ class UpdateManagerPanel extends HTMLElement {
         // HA core gap, not something fixable in ha-bottom-sheet.ts from
         // here, so this just stops our own dropdown's "wa-show"/
         // "wa-after-show" from ever reaching it in the first place.
-        repoMenu.addEventListener("closed", (e) => e.stopPropagation());
-        repoMenu.addEventListener("wa-show", (e) => e.stopPropagation());
-        repoMenu.addEventListener("wa-after-show", (e) => e.stopPropagation());
+        ["closed", "wa-show", "wa-after-show"].forEach((evt) => repoMenu.addEventListener(evt, (e) => e.stopPropagation()));
         dialog.appendChild(repoMenu);
       }
     }
@@ -7050,7 +7051,7 @@ class UpdateManagerPanel extends HTMLElement {
   // "N configured" label once this modal closes, not while it's still
   // open -- re-rendering mid-pick would rebuild the selector underneath
   // the user's own in-progress interaction.
-  _openListModal(tr, { key, otherKey, title, description, button, schema, countText = tr.entity_list_configured_count }) {
+  _openListModal(tr, { key, otherKey, title, description, button, schema, countText }) {
     const modal = document.createElement("ha-dialog");
     modal.headerTitle = title;
     // Snapshot of this one field only, not the whole settings object --
