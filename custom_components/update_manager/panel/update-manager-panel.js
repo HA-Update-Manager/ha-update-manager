@@ -8377,7 +8377,7 @@ class UpdateManagerPanel extends HTMLElement {
         --ha-badge-size: 20px; --ha-badge-font-size: var(--ha-font-size-xs, 11px);
         --ha-badge-icon-size: 14px; white-space: nowrap;
       }
-      /* The two colored variants verdictBadge's own `variant` field picks
+      /* The two colored variants verdictBadge's own "variant" field picks
          (see _buildTimerPill's own comment): --ha-card-background is
          ha-badge's own real exposed surface token (confirmed against its
          real source) for the pill's fill, matched to a real filled button's
@@ -8385,7 +8385,7 @@ class UpdateManagerPanel extends HTMLElement {
          components/button/#color, confirmed against the real docs) rather
          than this pill's usual neutral --secondary-background-color/-text-
          color default above. --badge-color tints the icon specifically
-         (ha-badge's own real accent token), the plain `color` below covers
+         (ha-badge's own real accent token), the plain "color" below covers
          the count text next to it. */
       .timer-pill-healthy {
         --ha-card-background: var(--ha-color-fill-success-normal-resting);
