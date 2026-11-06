@@ -946,8 +946,17 @@ function buildReleaseUrlLinkRow(tr, releaseUrl) {
 // plain heading, version number included either way once toVersion is
 // known -- that part costs nothing extra to show regardless of whether
 // the download count ever resolves.
-function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl, downloads) {
-  container.insertBefore(document.createElement("hr"), before);
+//
+// skipLeadingHr: experiment, 2026-11-06, easy to revert (just stop passing
+// it anywhere -- it defaults to false, this section's own leading <hr>
+// unconditionally, same as always). The one caller that passes it true
+// (the pending-update dialog's own appendReleaseNotesSection) already
+// confirmed nothing but the timeline itself (now its own bordered box, see
+// .timeline's own comment) sits directly above this section -- that
+// border already supplies the boundary this <hr> would otherwise draw a
+// second time right underneath it.
+function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl, downloads, skipLeadingHr) {
+  if (!skipLeadingHr) container.insertBefore(document.createElement("hr"), before);
   const heading = document.createElement("h3");
   heading.className = "release-notes-heading";
   const headingText = document.createElement("span");
@@ -5831,6 +5840,14 @@ class UpdateManagerPanel extends HTMLElement {
         if (!changed) return;
         this._openDetailDialog(entityId, historyEntry, live);
       };
+      // Experiment, 2026-11-06, easy to revert: the timeline now draws its
+      // own real border (see .timeline's own comment), so the Release
+      // notes section's usual leading <hr> would double up on that same
+      // boundary when nothing else landed in between -- tracked here
+      // rather than assumed, since a stuck-install alert can genuinely sit
+      // between the two (see stuckInfo below), and that alert still needs
+      // its own normal separators on both sides.
+      let timelineImmediatelyAboveReleaseNotes = true;
       body.appendChild(
         this._buildTimeline(u, tr, entityId, {
           isQueuedInRollout,
@@ -5938,6 +5955,7 @@ class UpdateManagerPanel extends HTMLElement {
         });
         alert.appendChild(stopWaitingBtn);
         body.appendChild(alert);
+        timelineImmediatelyAboveReleaseNotes = false;
       }
 
       // Not rendered here -- moved into the Release notes section below
@@ -5999,7 +6017,7 @@ class UpdateManagerPanel extends HTMLElement {
       // controls now (see addReportControls), which no longer depend on
       // this section existing at all.
       const appendReleaseNotesSection = (notes, linkUrl) => {
-        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, marketplaceInfo && marketplaceInfo.downloads);
+        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, marketplaceInfo && marketplaceInfo.downloads, timelineImmediatelyAboveReleaseNotes);
         if (notes) this._appendUpstreamReleaseNotes(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version);
       };
       // entityId === CORE_UPDATE_ENTITY_ID only: also resolve the blog
@@ -9009,19 +9027,21 @@ class UpdateManagerPanel extends HTMLElement {
       .step.last .step-line { display: none; }
       .step-content { margin-top: 2px; }
       .step:not(.last) .step-content { padding-bottom: 16px; }
-      /* No top border of its own anymore (direct user feedback, 2026-11-05):
-         .dialog-header right above is now its own bordered box (see that
-         rule's own comment), which already supplies the boundary this
-         border-top used to draw a second time right underneath it.
-         padding-top kept, for the breathing room alone. No bottom border/
-         divider of its own either: whatever follows already supplies one
-         when it needs to (Release notes' own leading <hr>, see
-         insertReleaseNotesSection), and when nothing follows at all (no
-         stuck alert, no release notes, no history) there's genuinely
-         nothing to separate from, so none is shown. This wrapper (and
-         everything from .step-title-row down) is this method's own
-         content, not part of ha-timeline's own real styles above. */
-      .timeline { display: flex; flex-direction: column; padding-top: var(--ha-space-3, 12px); }
+      /* Experiment, 2026-11-06, easy to revert (just restore the plain
+         "padding-top: var(--ha-space-3, 12px)" declaration this replaced,
+         and go back to unconditionally drawing Release notes' own leading
+         <hr>, see insertReleaseNotesSection's own skipLeadingHr comment):
+         a real bordered box now, same border-radius/padding shape
+         .dialog-header already uses, but -- unlike that one -- with the
+         visible border line actually kept, not dropped (see .dialog-
+         header's own comment for why it went the other way there). Purely
+         to see whether this reads calmer than the plain top-padding
+         version it replaces. */
+      .timeline {
+        display: flex; flex-direction: column;
+        border: 1px solid var(--ha-color-border-neutral-quiet); border-radius: 8px;
+        padding: var(--ha-space-3, 12px) var(--ha-space-4, 16px);
+      }
       .step-title-row { display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; min-height: 22px; }
       .step-title { font-size: var(--ha-font-size-m, 14px); font-weight: var(--ha-font-weight-medium, 500); }
       .step-time { font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color); font-variant-numeric: tabular-nums; }
