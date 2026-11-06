@@ -9232,7 +9232,7 @@ class UpdateManagerPanel extends HTMLElement {
       .timeline {
         display: flex; flex-direction: column;
         background: var(--ha-color-fill-neutral-quiet-resting); border-radius: 8px;
-        padding: var(--ha-space-3, 12px) var(--ha-space-4, 16px);
+        padding: var(--ha-space-4, 16px);
         margin-bottom: var(--ha-space-3, 12px);
       }
       .step-title-row { display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; min-height: 22px; }

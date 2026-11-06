@@ -390,10 +390,17 @@ export const TRANSLATIONS = {
     cancel_auto_install: "Cancel",
     // The pending-update dialog's own button, next to Cancel -- forces
     // this one jump to evaluate as ready immediately, skipping the rest of
-    // its postponement period. "Ready to install", not bare "Ready" --
-    // found live, 2026-10-10: a lone "Ready" read as a status ("this is
-    // already ready"), not an action to take.
-    dialog_force_ready: "Ready to install",
+    // its postponement period. Not bare "Ready" -- found live, 2026-10-10:
+    // a lone "Ready" read as a status ("this is already ready"), not an
+    // action to take. Not "Ready to install" either (changed 2026-11-07,
+    // direct user feedback): this button sits right on the timeline's own
+    // "Ready to update" step (group_ready below), where the near-identical
+    // wording read as redundant right next to it. "Ready now" keeps the
+    // same shared "Ready ___" core word as mark_all_ready's own "Ready
+    // all" below (still the same action applied in bulk), reads as an
+    // action either way (it's a button), and no longer collides with the
+    // step label it sits on.
+    dialog_force_ready: "Ready now",
     dialog_open_update: "Open update",
     dialog_skip: "Skip",
     dialog_unskip: "Clear skipped",
@@ -719,7 +726,7 @@ export const TRANSLATIONS = {
     save: "Opslaan",
     settings_saved_toast: "Instellingen opgeslagen",
     cancel_auto_install: "Annuleren",
-    dialog_force_ready: "Klaar voor installatie",
+    dialog_force_ready: "Nu klaar",
     dialog_open_update: "Update openen",
     dialog_skip: "Overslaan",
     dialog_unskip: "Overslaan ongedaan maken",
