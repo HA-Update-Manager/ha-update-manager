@@ -9178,16 +9178,25 @@ class UpdateManagerPanel extends HTMLElement {
          "padding-top: var(--ha-space-3, 12px)" declaration this replaced,
          and go back to unconditionally drawing Release notes' own leading
          <hr>, see insertReleaseNotesSection's own skipLeadingHr comment):
-         a real bordered box now, same border-radius/padding shape
-         .dialog-header already uses, but -- unlike that one -- with the
-         visible border line actually kept, not dropped (see .dialog-
-         header's own comment for why it went the other way there). Purely
-         to see whether this reads calmer than the plain top-padding
-         version it replaces. */
+         a real box now, same border-radius/padding shape .dialog-header
+         already uses. Purely to see whether this reads calmer than the
+         plain top-padding version it replaces.
+         A light neutral fill, not a border (changed 2026-11-07, direct
+         user feedback), via --ha-color-fill-neutral-quiet-resting -- a
+         real, widely-used HA token for exactly this "subtle grey card
+         background" look (confirmed against its real source,
+         semantic.globals.ts, and against its own real usage: integration
+         cards, automation notes, map overlays, suggestion cards).
+         margin-bottom added the same day, separately: skipping the
+         leading <hr> below also removed one of the two .dialog-content
+         flex-gap applications that used to sit either side of it, so
+         Release notes ended up only half as far from this box as every
+         other section is from its own neighbor. */
       .timeline {
         display: flex; flex-direction: column;
-        border: 1px solid var(--ha-color-border-neutral-quiet); border-radius: 8px;
+        background: var(--ha-color-fill-neutral-quiet-resting); border-radius: 8px;
         padding: var(--ha-space-3, 12px) var(--ha-space-4, 16px);
+        margin-bottom: var(--ha-space-3, 12px);
       }
       .step-title-row { display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; min-height: 22px; }
       .step-title { font-size: var(--ha-font-size-m, 14px); font-weight: var(--ha-font-weight-medium, 500); }
