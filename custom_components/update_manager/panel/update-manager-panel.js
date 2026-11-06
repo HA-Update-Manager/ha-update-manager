@@ -955,28 +955,49 @@ function buildReleaseUrlLinkRow(tr, releaseUrl) {
 // .timeline's own comment) sits directly above this section -- that
 // border already supplies the boundary this <hr> would otherwise draw a
 // second time right underneath it.
+// Shared by insertReleaseNotesSection's own initial build below and by
+// _openDetailDialog's marketplace-info resolve callback, which calls this
+// a second time, later, once a still-resolving downloads count actually
+// comes in -- a download count of exactly 0 is left out either time (not
+// wrong, but not worth the clutter for a brand-new/unpopular repo, direct
+// user feedback, 2026-11-07), and calling this twice for the same heading
+// is harmless (querySelector guard below).
+function _applyReleaseNotesDownloads(heading, downloads) {
+  if (!downloads || heading.querySelector(".release-notes-downloads")) return;
+  // One single span, not loose text/icon siblings directly on `heading`
+  // itself -- .release-notes-heading's own flex layout (gap, centered
+  // items) is built for a small set of real flex items, not a mix of
+  // elements and bare text nodes, which wouldn't pick up that gap or
+  // align to the same baseline as the icon between them.
+  const downloadCount = document.createElement("span");
+  downloadCount.className = "release-notes-downloads";
+  downloadCount.append("(");
+  const dlIcon = document.createElement("ha-svg-icon");
+  dlIcon.path = ICON_DOWNLOAD;
+  downloadCount.appendChild(dlIcon);
+  downloadCount.append(`${downloads})`);
+  heading.appendChild(downloadCount);
+}
+
+// Returns the heading element it built, so a caller whose own downloads
+// figure was still resolving at the time (see _openDetailDialog's own
+// marketplaceInfo comment) can hand it to _applyReleaseNotesDownloads a
+// second time, later, without this whole section being torn down and
+// rebuilt just for that.
 function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fromVersion, toVersion, linkUrl, downloads, skipLeadingHr) {
   if (!skipLeadingHr) container.insertBefore(document.createElement("hr"), before);
   const heading = document.createElement("h3");
   heading.className = "release-notes-heading";
   const headingText = document.createElement("span");
-  headingText.textContent = toVersion ? tr.dialog_release_notes_heading_version(toVersion) : tr.dialog_release_notes_heading;
+  // toVersion often already carries its own leading "v" (e.g. a GitHub
+  // release tagged "v0.8.0") -- dialog_release_notes_heading_version adds
+  // one unconditionally, so a version that already has one must be
+  // stripped first, or the heading reads "Release notes vv0.8.0" (found
+  // live, 2026-11-07).
+  const versionText = toVersion != null ? String(toVersion).replace(/^v/i, "") : toVersion;
+  headingText.textContent = versionText ? tr.dialog_release_notes_heading_version(versionText) : tr.dialog_release_notes_heading;
   heading.appendChild(headingText);
-  if (downloads != null) {
-    // One single span, not loose text/icon siblings directly on `heading`
-    // itself -- .release-notes-heading's own flex layout (gap, centered
-    // items) is built for a small set of real flex items, not a mix of
-    // elements and bare text nodes, which wouldn't pick up that gap or
-    // align to the same baseline as the icon between them.
-    const downloadCount = document.createElement("span");
-    downloadCount.className = "release-notes-downloads";
-    downloadCount.append("(");
-    const dlIcon = document.createElement("ha-svg-icon");
-    dlIcon.path = ICON_DOWNLOAD;
-    downloadCount.appendChild(dlIcon);
-    downloadCount.append(`${downloads})`);
-    heading.appendChild(downloadCount);
-  }
+  _applyReleaseNotesDownloads(heading, downloads);
   container.insertBefore(heading, before);
   if (notes) {
     const markdown = document.createElement("ha-markdown");
@@ -985,6 +1006,7 @@ function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fro
   }
   const linkRow = buildReleaseUrlLinkRow(tr, linkUrl || releaseUrl);
   if (linkRow) container.insertBefore(linkRow, before);
+  return heading;
 }
 
 // A small, centered loading spinner shown right where release notes will
@@ -3970,7 +3992,13 @@ class UpdateManagerPanel extends HTMLElement {
     pillIcon.slot = "icon";
     badge.appendChild(pillIcon);
     badge.title = timerBadgeInfo.title || "";
-    if (timerBadgeInfo.text) badge.textContent = timerBadgeInfo.text;
+    // badge.append(...), not badge.textContent = ... -- found live,
+    // 2026-11-07, direct user feedback ("de badge mist soms het icoon"):
+    // textContent's setter replaces *every* existing child, which silently
+    // threw away pillIcon right above the moment any pill had text at all
+    // (every countdown/verdict pill; only an icon-only pill, which never
+    // reaches this branch, was ever unaffected).
+    if (timerBadgeInfo.text) badge.append(timerBadgeInfo.text);
     else badge.iconOnly = true;
     return badge;
   }
@@ -5513,12 +5541,34 @@ class UpdateManagerPanel extends HTMLElement {
     // entity never triggers a network request for a stat it can't have.
     const earlyReleaseUrl = u ? u.release_url : historyEntry ? historyEntry.release_url : (this._installLog.find((e) => e.entity_id === entityId) || {}).release_url;
     let marketplaceInfo = null;
+    // Both assigned later, once the menu/release-notes section below is
+    // actually built -- read by the resolve callback right below, which
+    // only ever *runs* later still (after this whole synchronous dialog
+    // build has finished), so both are guaranteed to already hold their
+    // real elements whenever that callback actually fires.
+    let issuesMenuItemEl = null;
+    let liveReleaseNotesHeading = null;
     const earlyConfiguration = _repoMenuLinks(this._hass, entityId, earlyReleaseUrl).configuration;
     if (earlyConfiguration && earlyConfiguration.marketplace) {
       const parsedForInfo = _parseGithubReleaseUrl(earlyReleaseUrl);
       if (parsedForInfo) {
-        marketplaceInfo = _resolveMarketplaceInfo(this._hass, parsedForInfo.owner, parsedForInfo.repo, () => {
-          if (!isDialogStale()) this._openDetailDialog(entityId, historyEntry, communityOverride);
+        marketplaceInfo = _resolveMarketplaceInfo(this._hass, parsedForInfo.owner, parsedForInfo.repo, (result) => {
+          // A full _openDetailDialog re-render used to sit here. Found
+          // live, 2026-11-07: this fires whenever the Marketplace fetch
+          // happens to resolve while the dialog's already open, which
+          // tore the whole dialog down and rebuilt it from scratch -- a
+          // visible flicker every time, and if the user had the ⋮ menu
+          // open at that exact moment, the fresh rebuild's brand new
+          // dropdown replaced it already closed, reading as the menu
+          // closing itself for no reason. Patching just the two spots
+          // that actually depend on this result avoids both.
+          if (isDialogStale()) return;
+          marketplaceInfo = result;
+          if (issuesMenuItemEl && result.issues != null) {
+            while (issuesMenuItemEl.lastChild !== issuesMenuItemEl.firstChild) issuesMenuItemEl.removeChild(issuesMenuItemEl.lastChild);
+            issuesMenuItemEl.append(tr.dialog_menu_issue_tracker_count(result.issues));
+          }
+          if (liveReleaseNotesHeading) _applyReleaseNotesDownloads(liveReleaseNotesHeading, result.downloads);
         });
       }
     }
@@ -6062,7 +6112,10 @@ class UpdateManagerPanel extends HTMLElement {
       // controls now (see addReportControls), which no longer depend on
       // this section existing at all.
       const appendReleaseNotesSection = (notes, linkUrl) => {
-        insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, marketplaceInfo && marketplaceInfo.downloads, timelineImmediatelyAboveReleaseNotes);
+        // Captured into the outer liveReleaseNotesHeading (see this
+        // method's own marketplaceInfo comment) so a downloads count that
+        // resolves after this heading already exists can still reach it.
+        liveReleaseNotesHeading = insertReleaseNotesSection(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version, linkUrl, marketplaceInfo && marketplaceInfo.downloads, timelineImmediatelyAboveReleaseNotes);
         if (notes) this._appendUpstreamReleaseNotes(body, releaseNotesAnchor, tr, notes, releaseUrl, u.installed_version, u.latest_version);
       };
       // entityId === CORE_UPDATE_ENTITY_ID only: also resolve the blog
@@ -6252,6 +6305,7 @@ class UpdateManagerPanel extends HTMLElement {
           item.innerHTML = `<ha-icon slot="icon" icon="${icon}"></ha-icon>`;
           item.append(label);
           repoMenu.appendChild(item);
+          return item;
         };
         if (repoLinks.configuration) {
           const { marketplace } = repoLinks.configuration;
@@ -6263,9 +6317,11 @@ class UpdateManagerPanel extends HTMLElement {
           // info has already resolved it (marketplaceInfo, see this
           // method's own top comment) -- null/undefined (still resolving,
           // or not a Marketplace repository at all) keeps the plain,
-          // countless label instead.
+          // countless label instead. Captured into the outer
+          // issuesMenuItemEl either way, so a count that resolves after
+          // this item already exists can still reach it in place.
           const issueCount = marketplaceInfo && marketplaceInfo.issues;
-          addMenuLink("issues", "mdi:bug", issueCount != null ? tr.dialog_menu_issue_tracker_count(issueCount) : tr.dialog_menu_issue_tracker);
+          issuesMenuItemEl = addMenuLink("issues", "mdi:bug", issueCount != null ? tr.dialog_menu_issue_tracker_count(issueCount) : tr.dialog_menu_issue_tracker);
         }
         // wa-select, not a click listener on each item: same real event
         // (confirmed against ha-dropdown.ts) the toolbar's own overflow
@@ -6530,7 +6586,13 @@ class UpdateManagerPanel extends HTMLElement {
           // already-available data (install_log.py's own frozen snapshot),
           // no fetch involved, same as every other synchronously-built part
           // of this card.
-          insertReleaseNotesSection(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version, null, marketplaceInfo && marketplaceInfo.downloads);
+          //
+          // No downloads count here, unlike the pending-update section's own
+          // call above -- marketplaceInfo.downloads is the repository's
+          // all-time total, not a per-version figure, and this card is about
+          // whichever past version entry.to_version names, almost never the
+          // repo's current latest. Direct user feedback, 2026-11-07.
+          insertReleaseNotesSection(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version, null, undefined);
           this._appendUpstreamReleaseNotes(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version);
         }
         // Same last-resort GitHub fallback as the pending-update section
@@ -6606,7 +6668,9 @@ class UpdateManagerPanel extends HTMLElement {
             // find the wrong node (its own just-inserted <hr>, not the
             // original insertion point).
             const insertionPoint = changelogAnchor.nextSibling;
-            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl, marketplaceInfo && marketplaceInfo.downloads);
+            // No downloads count here either -- same reasoning as this
+            // card's other insertReleaseNotesSection call above.
+            insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl, undefined);
             if (notes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version);
           });
         };
@@ -6961,6 +7025,13 @@ class UpdateManagerPanel extends HTMLElement {
   _openListModal(tr, { key, otherKey, title, description, button, schema, countText = tr.entity_list_configured_count }) {
     const modal = document.createElement("ha-dialog");
     modal.headerTitle = title;
+    // Snapshot of this one field only, not the whole settings object --
+    // every other field autosaves independently of this modal (see
+    // _buildSettingsCard's own comment), this is only ever about reverting
+    // `key` itself if the modal closes without Save. Restored in the
+    // "closed" listener below unless savedDraft ends up true.
+    const originalValue = this._formData[key];
+    let savedDraft = false;
 
     const desc = document.createElement("p");
     desc.className = "hint";
@@ -7005,26 +7076,36 @@ class UpdateManagerPanel extends HTMLElement {
       const chosen = e.detail.value[key] || [];
       this._formData = { ...this._formData, [key]: chosen };
       form.data = this._formData;
-      this._scheduleAutosave();
+      // No _scheduleAutosave() here anymore -- found live, 2026-11-07,
+      // direct user feedback: the Save button below looked like it deferred
+      // persisting until pressed, but every pick was already autosaving
+      // itself in the background regardless, same as before the button
+      // existed. A pick now only ever updates this local draft; Save is
+      // what actually commits it (see its own comment below).
     });
     modal.appendChild(form);
 
     // "Save", not the old "Close" -- direct user feedback, 2026-11-06: more
-    // logical for a dialog than a bare Close. Purely a label change: this
-    // modal already autosaves on every pick (_scheduleAutosave above, in
-    // the form's own value-changed listener), so there's no unsaved state
-    // left for this click to actually commit, it still just closes the
-    // modal the same as it always did.
-    const closeBtn = document.createElement("ha-button");
-    closeBtn.slot = "footer";
-    closeBtn.textContent = tr.save;
-    closeBtn.addEventListener("click", () => {
+    // logical for a dialog than a bare Close. Actually defers now too
+    // (2026-11-07 fix, see value-changed's own comment above): this is the
+    // one thing in this modal that calls _saveSettingsNow at all.
+    const saveBtn = document.createElement("ha-button");
+    saveBtn.slot = "footer";
+    saveBtn.textContent = tr.save;
+    saveBtn.addEventListener("click", () => {
+      savedDraft = true;
+      this._saveSettingsNow();
       modal.open = false;
     });
-    modal.appendChild(closeBtn);
+    modal.appendChild(saveBtn);
 
     modal.addEventListener("closed", () => {
       modal.remove();
+      // Closed some other way (Escape/backdrop, never a Cancel button of
+      // its own) without ever pressing Save -- this field's own draft picks
+      // must not linger in the live, shared this._formData for some
+      // unrelated field's own later autosave to persist by accident.
+      if (!savedDraft) this._formData = { ...this._formData, [key]: originalValue };
       // Refreshes the count only, not a full _renderContent -- same
       // mid-edit-focus-loss reasoning _saveSettingsNow's own caller
       // comment already gives for Settings in general.
@@ -8367,14 +8448,17 @@ class UpdateManagerPanel extends HTMLElement {
       div[slot="start"] { position: relative; height: 40px; }
       .row-end { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       /* _buildTimerPill, a real ha-badge now (2026-11-06, see its own
-         comment). Sized down from ha-badge's own real defaults (36px/18px
-         icon, confirmed against its real source) to land close to the old
-         hand-rolled pill's own look (4/8px padding, 11px text, 14px icon) --
-         --ha-badge-size itself only sets height/min-width, so white-space:
-         nowrap is kept here too, same reason the old version needed it: a
-         short countdown string should never wrap mid-pill. */
+         comment). Not a hand-picked size of our own (direct user feedback,
+         2026-11-07: "niet zelf tweaken maar gewoon de standaard kiezen") --
+         these three values are HA's own existing small-badge preset, copied
+         verbatim from ha-filter-integrations.ts's real source (its inline
+         count badges, the closest real precedent for a small badge inside a
+         list row). --ha-badge-size itself only sets height/min-width, so
+         white-space: nowrap is kept here too, same reason the old
+         hand-rolled pill needed it: a short countdown string should never
+         wrap mid-pill. */
       .timer-pill {
-        --ha-badge-size: 20px; --ha-badge-font-size: var(--ha-font-size-xs, 11px);
+        --ha-badge-size: 22px; --ha-badge-font-size: var(--ha-font-size-xs);
         --ha-badge-icon-size: 14px; white-space: nowrap;
       }
       /* The two colored variants verdictBadge's own "variant" field picks
