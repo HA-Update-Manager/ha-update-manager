@@ -134,6 +134,10 @@ export const TRANSLATIONS = {
     // state.state, "on"/"off", in plain words.
     status_update_available: "Update available",
     status_up_to_date: "Up-to-date",
+    // The same dialog header badge, for a History entry whose entity no
+    // longer exists at all -- distinct from both strings above, which
+    // both imply a real, currently-known entity.
+    status_unavailable: "Unavailable",
     // Lowercase, distinct from the Title Case group heading above -- matches
     // ha-config-updates.ts's own row template, confirmed against its real
     // source: `${title} ${latest_version} (${localize("ui.panel.config.updates.skipped")})`.
@@ -583,6 +587,7 @@ export const TRANSLATIONS = {
     status_skipped_suffix: "overgeslagen",
     status_update_available: "Update beschikbaar",
     status_up_to_date: "Up-to-date",
+    status_unavailable: "Niet beschikbaar",
     status_installing: "Bezig met installeren…",
     status_pending_install: (when) => `Wordt automatisch geüpdatet ${when}`,
     status_postponed: (version) => `Uitgesteld tot Home Assistant ${version} of nieuwer`,

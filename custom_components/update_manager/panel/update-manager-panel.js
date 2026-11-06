@@ -5446,8 +5446,22 @@ class UpdateManagerPanel extends HTMLElement {
     // Live-updated by _updateDialogProgress (see set hass) as real
     // state_changed pushes stream in, exactly like more-info-update.ts's
     // own reactive stateObj -- not something this one-shot render call
-    // itself keeps current.
-    this._dialogLastState = entityState(this._hass, entityId) || null;
+    // itself keeps current. No `|| null` fallback anymore (found live,
+    // 2026-11-06, the real cause of "opening a deleted entity's History
+    // entry crashes the dialog the first time"): entityState() itself
+    // returns a genuine `undefined` for an entity that's already gone at
+    // open time, but coercing that to `null` here made
+    // _updateDialogProgress's own `this._dialogLastState !== undefined`
+    // guard (meant only to catch a *live* entity vanishing *after* the
+    // dialog opened, e.g. a rename via HA's own more-info dialog, see that
+    // method's own comment) true anyway, since `null !== undefined`.  The
+    // very next hass push then closed the dialog right back out again, for
+    // an entity that was never there to begin with. Plain `undefined` here
+    // matches entityState()'s own return exactly, so a still-missing
+    // entity on the next tick reads `state === this._dialogLastState`
+    // (both undefined) and that whole branch is skipped -- stays open, as
+    // it should for a purely historical entry.
+    this._dialogLastState = entityState(this._hass, entityId);
     this._dialogActionButtons = [];
     dialog.innerHTML = "";
     // A slotted span (slot="headerTitle"), not the plain dialog.headerTitle
@@ -5773,6 +5787,37 @@ class UpdateManagerPanel extends HTMLElement {
         stateValue.type = "button";
         stateValue.addEventListener("click", () => this._openDetailDialog(entityId));
       }
+      info.appendChild(stateValue);
+      header.appendChild(info);
+      body.appendChild(header);
+    } else {
+      // A purely historical entry for an entity that no longer exists at
+      // all (direct user feedback, 2026-11-06, after the auto-close bug
+      // above was found and fixed: with the dialog no longer closing
+      // itself right back out, this bare case -- opening History for a
+      // long-removed entity -- had no header at all). A real state-badge
+      // with no stateObj set renders the same warning-triangle fallback
+      // (confirmed against its real source, mdiAlert in a yellow .missing
+      // box) the Updates/History list rows already show for free for this
+      // exact case (_buildListRow's own identical
+      // stateBadge.stateObj = entityState(...) pattern, also undefined
+      // here). friendlyEntityName's own entityId fallback stands in for a
+      // name, same as the dialog's own title bar above already uses.
+      // "Unavailable" instead of the usual Up-to-date/Update available
+      // pair, which wouldn't mean anything for an entity Home Assistant
+      // doesn't even know about anymore.
+      const header = document.createElement("div");
+      header.className = "dialog-header";
+      header.appendChild(document.createElement("state-badge"));
+      const info = document.createElement("div");
+      info.className = "dialog-header-info";
+      const nameEl = document.createElement("div");
+      nameEl.className = "dialog-header-name";
+      nameEl.textContent = friendlyEntityName(this._hass, entityId);
+      info.appendChild(nameEl);
+      const stateValue = document.createElement("ha-badge");
+      stateValue.className = "dialog-header-status";
+      stateValue.textContent = tr.status_unavailable;
       info.appendChild(stateValue);
       header.appendChild(info);
       body.appendChild(header);
