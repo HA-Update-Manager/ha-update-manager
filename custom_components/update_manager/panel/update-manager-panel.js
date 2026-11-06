@@ -6948,9 +6948,15 @@ class UpdateManagerPanel extends HTMLElement {
     });
     modal.appendChild(form);
 
+    // "Save", not the old "Close" -- direct user feedback, 2026-11-06: more
+    // logical for a dialog than a bare Close. Purely a label change: this
+    // modal already autosaves on every pick (_scheduleAutosave above, in
+    // the form's own value-changed listener), so there's no unsaved state
+    // left for this click to actually commit, it still just closes the
+    // modal the same as it always did.
     const closeBtn = document.createElement("ha-button");
     closeBtn.slot = "footer";
-    closeBtn.textContent = tr.close;
+    closeBtn.textContent = tr.save;
     closeBtn.addEventListener("click", () => {
       modal.open = false;
     });

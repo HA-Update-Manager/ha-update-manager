@@ -172,7 +172,7 @@ export const TRANSLATIONS = {
     field_whitelisted_entities_helper:
       "Installs the instant a new version is available, skipping the wait and the community vote check entirely, regardless of your other auto-update settings.",
     entity_list_configured_count: (count) => (count === 1 ? "1 entity" : `${count} entities`),
-    close: "Close",
+    save: "Save",
     field_wait_days_unit: "days",
     field_auto_install: "Update automatically",
     auto_install_section_title: "Auto-update",
@@ -591,7 +591,7 @@ export const TRANSLATIONS = {
     field_whitelisted_entities_helper:
       "Installeert direct zodra er een nieuwe versie beschikbaar is, en slaat daarbij de wachttijd en de community-stemcontrole helemaal over, ongeacht je overige auto-update-instellingen.",
     entity_list_configured_count: (count) => (count === 1 ? "1 entiteit" : `${count} entiteiten`),
-    close: "Sluiten",
+    save: "Opslaan",
     field_wait_days_unit: "dagen",
     field_auto_install: "Automatisch updaten",
     auto_install_section_title: "Auto-update",
