@@ -376,12 +376,32 @@ function knownSettingsFields() {
 // into it (found live, 2026-08-11).
 const LIST_SETTINGS_FIELDS = new Set(["excluded_entities", "whitelisted_entities", "trusted_voters"]);
 
+// trusted_voters only accepts a bare GitHub username at the websocket API
+// level -- this tolerates a few of the forms someone pasting a profile
+// link would actually type ("https://github.com/klaptafel",
+// "github.com/klaptafel", "/klaptafel", "@klaptafel"), stripping down to
+// just the username, same as plain "klaptafel" already was. Direct user
+// feedback, 2026-11-07. Only ever applied at save time (pickKnownSettings
+// below), not to the live widget's own value -- same "don't touch
+// _formData/the live chip itself" reasoning LIST_SETTINGS_FIELDS' own
+// blank-entry filtering above already follows.
+function _normalizeTrustedVoterUsername(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return trimmed;
+  const stripped = trimmed.replace(/^https?:\/\//i, "").replace(/^github\.com\//i, "").replace(/^\//, "").replace(/^@/, "");
+  return stripped.split("/")[0] || trimmed;
+}
+
 function pickKnownSettings(data) {
   const known = knownSettingsFields();
   const result = {};
   for (const key of known) {
     if (!(key in data)) continue;
-    result[key] = LIST_SETTINGS_FIELDS.has(key) ? (data[key] || []).filter((v) => v && String(v).trim()) : data[key];
+    if (key === "trusted_voters") {
+      result[key] = (data[key] || []).map(_normalizeTrustedVoterUsername).filter((v) => v && v.trim());
+    } else {
+      result[key] = LIST_SETTINGS_FIELDS.has(key) ? (data[key] || []).filter((v) => v && String(v).trim()) : data[key];
+    }
   }
   return result;
 }
@@ -6956,6 +6976,14 @@ class UpdateManagerPanel extends HTMLElement {
     try {
       await this._hass.callWS({ type: "update_manager/save_settings", ...settingsOnly });
       this._settings = { ...settingsOnly };
+      // _formData too, not just _settings -- trusted_voters' own
+      // normalization above (_normalizeTrustedVoterUsername) can change
+      // what actually got saved from what the live widget still holds, and
+      // _formData is never otherwise refreshed from _settings past the
+      // very first load (see _loadAll's own `if (!this._formData)` guard).
+      // Left stale, a picker modal reopened later would show the
+      // unstripped text back, as if the normalization never happened.
+      this._formData = { ...this._formData, ...settingsOnly };
       // Re-fetch Updates/History too, not just settings -- new rules can
       // change an entity's ready/waiting/blocked verdict immediately (see
       // coordinator.py's async_update_rules). Doesn't re-render (this only
@@ -7039,6 +7067,12 @@ class UpdateManagerPanel extends HTMLElement {
     modal.appendChild(desc);
 
     const form = document.createElement("ha-form");
+    // Direct user feedback, 2026-11-07: desc/form had no gap of their own
+    // (.hint's own margin is 0, see its comment, and this modal's children
+    // sit in plain document order, no .dialog-content-style flex gap here)
+    // -- read as the add-username control sitting right up against the
+    // helper text above it.
+    form.className = "list-modal-form";
     form.hass = this._hass;
     // The never/always auto-update pair's own entity-selector shape stays
     // the default (no caller passes `schema` for those two), kept exactly
@@ -8631,6 +8665,9 @@ class UpdateManagerPanel extends HTMLElement {
         color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px);
         line-height: 1.4; margin: 0;
       }
+      /* _openListModal's own form, right after this same .hint -- see its
+         own comment for why this gap is needed here specifically. */
+      .list-modal-form { margin-top: var(--ha-space-4, 16px); }
       /* A manually-drawn field label (see _buildAutoInstallCard), for a
          field whose own ha-form label had to be suppressed so a hint
          could sit between it and its control. Normal weight, not bold/
