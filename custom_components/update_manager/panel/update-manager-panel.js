@@ -118,14 +118,11 @@ const ICON_COG =
 // glyph didn't actually say "automatic" at a glance.
 const ICON_AUTO_DOWNLOAD =
   "M22 17V19H11V17H22M19 4.5V9.5H22L16.5 15L11 9.5H14V4.5H19M10.7 15H8.8L8.1 13H4.9L4.2 15H2.3L5.5 6H7.5L10.7 15M7.65 11.65L6.5 8L5.35 11.65H7.65Z";
-// The plain mdi:download glyph ICON_AUTO_DOWNLOAD above deliberately moved
-// away from (see its own comment: that one now means specifically "Update
-// Manager's own auto-install"). A genuinely different fact lives here
-// instead -- a Marketplace repository's own real download count (see
-// _resolveMarketplaceInfo), nothing to do with auto-install at all --
-// verified against Templarian/MaterialDesign's own real download.svg,
-// 2026-11-06, same mdiDownload path ha-marketplace-repository-dashboard.ts
-// itself renders for this exact stat.
+// A Marketplace repository's own real download count (see
+// _resolveMarketplaceInfo), distinct from ICON_AUTO_DOWNLOAD above, which
+// means Update Manager's own auto-install. Verified against
+// Templarian/MaterialDesign's own download.svg, the same mdiDownload path
+// ha-marketplace-repository-dashboard.ts renders for this stat.
 const ICON_DOWNLOAD = "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z";
 const ICON_CLOCK_OUTLINE =
   "M12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22C6.47,22 2,17.5 2,12A10,10 0 0,1 12,2M12.5,7V12.25L17,14.92L16.25,16.15L11,13V7H12.5Z";
@@ -377,14 +374,12 @@ function knownSettingsFields() {
 const LIST_SETTINGS_FIELDS = new Set(["excluded_entities", "whitelisted_entities", "trusted_voters"]);
 
 // trusted_voters only accepts a bare GitHub username at the websocket API
-// level -- this tolerates a few of the forms someone pasting a profile
-// link would actually type ("https://github.com/klaptafel",
-// "https://www.github.com/klaptafel", "github.com/klaptafel", "/klaptafel",
-// "@klaptafel"), stripping down to just the username, same as plain
-// "klaptafel" already was. Direct user feedback, 2026-11-07. Only ever
-// applied at save time (pickKnownSettings below), not to the live widget's
-// own value -- same "don't touch _formData/the live chip itself" reasoning
-// LIST_SETTINGS_FIELDS' own blank-entry filtering above already follows.
+// level. This tolerates a few of the forms someone pasting a profile link
+// would actually type (a full https URL, with or without "www.", a bare
+// "github.com/...", a leading "/" or "@"), stripping down to just the
+// username either way. Only applied at save time (pickKnownSettings
+// below), not to the live widget's own value, same as
+// LIST_SETTINGS_FIELDS' own blank-entry filtering above.
 function _normalizeTrustedVoterUsername(raw) {
   const trimmed = String(raw || "").trim();
   if (!trimmed) return trimmed;
@@ -862,13 +857,12 @@ function verdictBadge(tr, verdict) {
     icon: verdictIcon(isProblematic),
     text: String(isProblematic ? verdict.problematic_count : verdict.healthy_count),
     title,
-    // _buildTimerPill's own two colored variants, matching the filled
+    // _buildTimerPill's own two colored variants, matching a filled
     // button's real success/warning tokens (contributors.home-assistant.
-    // io/design/components/button/#color, confirmed against the real docs,
-    // 2026-11-06): the one place in this panel a timer-pill-shaped badge
-    // carries a judgment (healthy vs. problematic), not just a neutral
-    // fact, so it's the one place that earns a color instead of this
-    // pill's usual neutral default.
+    // io/design/components/button/#color). The one place in this panel a
+    // timer-pill-shaped badge carries a judgment (healthy vs. problematic)
+    // rather than a neutral fact, so it's the one place that earns color
+    // instead of this pill's usual neutral default.
     variant: isProblematic ? "problematic" : "healthy",
   };
 }
@@ -958,35 +952,26 @@ function buildReleaseUrlLinkRow(tr, releaseUrl) {
 //
 // downloads, when given (Marketplace's own real download count for this
 // repository, see _resolveMarketplaceInfo), turns the plain "Release
-// notes" heading into "Release notes vX.X.X (⬇ N)" -- toVersion's own
-// value spelled out (every caller already has it, trimming notes down to
-// it right below is the whole reason it's a parameter here at all) plus a
-// real mdi:download icon (ICON_DOWNLOAD, never the emoji the user first
-// sketched this as, 2026-11-06) and the count. null/undefined downloads
-// (still resolving, or not a Marketplace repository at all) keeps the
-// plain heading, version number included either way once toVersion is
-// known -- that part costs nothing extra to show regardless of whether
-// the download count ever resolves.
+// notes" heading into "Release notes vX.X.X (⬇ N)": toVersion spelled out
+// plus a real mdi:download icon (ICON_DOWNLOAD) and the count. A
+// null/undefined downloads value just keeps the plain heading, version
+// number included either way once toVersion is known.
 //
-// skipLeadingHr: experiment, 2026-11-06, easy to revert (just stop passing
-// it anywhere -- it defaults to false, this section's own leading <hr>
-// unconditionally, same as always). The one caller that passes it true
-// (the pending-update dialog's own appendReleaseNotesSection) already
-// confirmed nothing but the timeline itself (now its own bordered box, see
-// .timeline's own comment) sits directly above this section -- that
-// border already supplies the boundary this <hr> would otherwise draw a
-// second time right underneath it.
-// Shared by insertReleaseNotesSection's own initial build below and by
-// _openDetailDialog's marketplace-info resolve callback, which calls this
-// a second time, later, once a still-resolving downloads count actually
-// comes in -- a download count of exactly 0 is left out either time (not
-// wrong, but not worth the clutter for a brand-new/unpopular repo, direct
-// user feedback, 2026-11-07), and calling this twice for the same heading
-// is harmless (querySelector guard below).
+// skipLeadingHr defaults to false, drawing this section's own leading
+// <hr> as always. The one caller that passes it true (the pending-update
+// dialog's own appendReleaseNotesSection) only does so because the
+// timeline's own box directly above already supplies that same boundary.
+//
+// _applyReleaseNotesDownloads is shared by insertReleaseNotesSection's own
+// initial build below and by _openDetailDialog's marketplace-info resolve
+// callback, which calls this a second time once a still-resolving
+// downloads count comes in. A download count of exactly 0 is left out
+// (not worth the clutter for a brand-new/unpopular repo); calling this
+// twice for the same heading is harmless (querySelector guard below).
 function _applyReleaseNotesDownloads(heading, downloads) {
   if (!downloads || heading.querySelector(".release-notes-downloads")) return;
   // One single span, not loose text/icon siblings directly on `heading`
-  // itself -- .release-notes-heading's own flex layout (gap, centered
+  // itself. .release-notes-heading's own flex layout (gap, centered
   // items) is built for a small set of real flex items, not a mix of
   // elements and bare text nodes, which wouldn't pick up that gap or
   // align to the same baseline as the icon between them.
@@ -1011,10 +996,9 @@ function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fro
   heading.className = "release-notes-heading";
   const headingText = document.createElement("span");
   // toVersion often already carries its own leading "v" (e.g. a GitHub
-  // release tagged "v0.8.0") -- dialog_release_notes_heading_version adds
-  // one unconditionally, so a version that already has one must be
-  // stripped first, or the heading reads "Release notes vv0.8.0" (found
-  // live, 2026-11-07).
+  // release tagged "v0.8.0"). dialog_release_notes_heading_version adds one
+  // unconditionally, so a version that already has one must be stripped
+  // first, or the heading reads "Release notes vv0.8.0".
   const versionText = toVersion != null ? String(toVersion).replace(/^v/i, "") : toVersion;
   headingText.textContent = versionText ? tr.dialog_release_notes_heading_version(versionText) : tr.dialog_release_notes_heading;
   heading.appendChild(headingText);
@@ -2060,19 +2044,15 @@ function _repoMenuLinks(hass, entityId, releaseUrl) {
 }
 
 // Marketplace's own real community stats (downloads/open issues) for a
-// repository, direct user feedback, 2026-11-06, after seeing this shown on
-// its own real /marketplace/repository/<id> page. Confirmed against its
-// real frontend source (src/data/marketplace/repository.ts): two plain
-// hass.callWS commands, no core-only restriction, so reachable from this
-// custom panel the same as any built-in one. "marketplace/repositories/
-// list" alone already carries `downloads` for every repo in one call;
-// `issues` only comes from the second, per-repo "marketplace/repository/
-// info" call (needs that first call's own `id`, there's no owner/repo-
-// keyed lookup of this on its own). Two separate caches, not one: the list
-// itself only ever needs fetching once per session (every repo's own
-// `downloads` lives in it already), while the per-repo info call is worth
-// skipping entirely for a repository nobody's ever actually opened the
-// menu/release-notes section for.
+// repository. Confirmed against its real frontend source
+// (src/data/marketplace/repository.ts): two plain hass.callWS commands,
+// no core-only restriction, reachable from this custom panel like any
+// built-in one. "marketplace/repositories/list" alone already carries
+// `downloads` for every repo in one call; `issues` only comes from the
+// second, per-repo "marketplace/repository/info" call (needs that first
+// call's own `id`). Two separate caches: the list only needs fetching
+// once per session, while the per-repo info call is worth skipping for a
+// repository nobody's opened the menu/release-notes section for.
 let _marketplaceRepoListPromise = null;
 function _fetchMarketplaceRepoList(hass) {
   if (!_marketplaceRepoListPromise) {
@@ -2083,31 +2063,46 @@ function _fetchMarketplaceRepoList(hass) {
 
 // { downloads, issues }, or null once confirmed there's genuinely nothing
 // to find (no Marketplace integration on this instance at all, or this
-// exact owner/repo isn't a known Marketplace repository -- a legacy-HACS-
-// custom-repo install, for instance). Same cache-plus-callback shape as
+// exact owner/repo isn't a known Marketplace repository, a legacy-HACS-
+// custom-repo install for instance). Same cache-plus-callback shape as
 // _fallbackBrandLogoUrl/_resolveBrandApiLogo above: returns whatever's
 // already known synchronously (undefined while still resolving), and
 // calls onResolved once a real network round trip actually finishes, for
 // a caller to re-render with.
+//
+// _marketplaceInfoPending queues every caller's onResolved for a given
+// key until that key's fetch settles, then fires them all together. A
+// second call for the same key while the first fetch is still in flight
+// used to see the placeholder already in the cache and return
+// immediately, silently dropping its own onResolved; if that second call
+// came from a newer dialog render, the fetch's result then only ever
+// reached a detached render, and the one on screen never got its count.
 const _marketplaceInfoCache = new Map();
+const _marketplaceInfoPending = new Map();
 function _resolveMarketplaceInfo(hass, owner, repo, onResolved) {
   const key = `${owner}/${repo}`.toLowerCase();
   if (_marketplaceInfoCache.has(key)) return _marketplaceInfoCache.get(key);
-  _marketplaceInfoCache.set(key, undefined);
+  if (_marketplaceInfoPending.has(key)) {
+    if (onResolved) _marketplaceInfoPending.get(key).push(onResolved);
+    return undefined;
+  }
+  _marketplaceInfoPending.set(key, onResolved ? [onResolved] : []);
+  const settle = (value) => {
+    _marketplaceInfoCache.set(key, value);
+    const waiting = _marketplaceInfoPending.get(key) || [];
+    _marketplaceInfoPending.delete(key);
+    if (value) waiting.forEach((cb) => cb(value));
+  };
   _fetchMarketplaceRepoList(hass).then((list) => {
     const match = (list || []).find((r) => r.full_name && r.full_name.toLowerCase() === key);
     if (!match) {
-      _marketplaceInfoCache.set(key, null);
+      settle(null);
       return;
     }
     hass
       .callWS({ type: "marketplace/repository/info", repository_id: match.id })
-      .then((info) => {
-        const result = { downloads: info.downloads, issues: info.issues };
-        _marketplaceInfoCache.set(key, result);
-        if (onResolved) onResolved(result);
-      })
-      .catch(() => _marketplaceInfoCache.set(key, null));
+      .then((info) => settle({ downloads: info.downloads, issues: info.issues }))
+      .catch(() => settle(null));
   });
   return undefined;
 }
@@ -3992,19 +3987,17 @@ class UpdateManagerPanel extends HTMLElement {
   // repeated text down a long list). The title attribute stands in for
   // that dropped label so the meaning isn't lost, just not spelled out inline.
   //
-  // A real ha-badge now, not a hand-rolled div+ha-svg-icon+span (2026-11-06,
-  // direct user feedback: "dat zou wel een logische plek zijn om dit
-  // bestaande component te gebruiken"): .iconOnly is ha-badge's own real
-  // property for exactly the "no text" case above (confirmed against its
-  // real source, ha-badge.ts -- hides the text block, drops the horizontal
-  // padding, zeroes the icon's own negative margins), so that branch needed
-  // no CSS of its own to recreate, unlike the old plain-div version. `title`
-  // moved from the icon to the badge host itself -- a native tooltip over
-  // the whole pill, not just its icon half, reads the same either way.
-  // `timerBadgeInfo.variant` ("healthy"/"problematic", see verdictBadge
-  // below): an optional CSS class for the two colored variants, see
-  // .timer-pill-healthy/-problematic below -- every other caller passes no
-  // variant at all and gets this pill's plain, neutral default coloring.
+  // A real ha-badge now, not a hand-rolled div+ha-svg-icon+span.
+  // .iconOnly is ha-badge's own real property for exactly the "no text"
+  // case above (confirmed against its real source, ha-badge.ts: hides the
+  // text block, drops the horizontal padding, zeroes the icon's own
+  // negative margins), so that branch needs no CSS of its own. `title`
+  // sits on the badge host itself, a native tooltip over the whole pill,
+  // not just its icon half. `timerBadgeInfo.variant` ("healthy"/
+  // "problematic", see verdictBadge below) is an optional CSS class for
+  // the two colored variants (.timer-pill-healthy/-problematic below);
+  // every other caller passes no variant and gets this pill's plain,
+  // neutral default coloring.
   _buildTimerPill(timerBadgeInfo) {
     const badge = document.createElement("ha-badge");
     badge.className = timerBadgeInfo.variant ? `timer-pill timer-pill-${timerBadgeInfo.variant}` : "timer-pill";
@@ -4013,12 +4006,11 @@ class UpdateManagerPanel extends HTMLElement {
     pillIcon.slot = "icon";
     badge.appendChild(pillIcon);
     badge.title = timerBadgeInfo.title || "";
-    // badge.append(...), not badge.textContent = ... -- found live,
-    // 2026-11-07, direct user feedback ("de badge mist soms het icoon"):
-    // textContent's setter replaces *every* existing child, which silently
-    // threw away pillIcon right above the moment any pill had text at all
-    // (every countdown/verdict pill; only an icon-only pill, which never
-    // reaches this branch, was ever unaffected).
+    // badge.append(...), not badge.textContent = ...: textContent's setter
+    // replaces every existing child, which silently threw away pillIcon
+    // right above the moment any pill had text at all (every
+    // countdown/verdict pill; only an icon-only pill, which never reaches
+    // this branch, was unaffected).
     if (timerBadgeInfo.text) badge.append(timerBadgeInfo.text);
     else badge.iconOnly = true;
     return badge;
@@ -5450,12 +5442,11 @@ class UpdateManagerPanel extends HTMLElement {
 
   // The .dialog-header/.dialog-header-info/.dialog-header-name skeleton
   // shared by _openDetailDialog's own two header branches (a real entity,
-  // or one that no longer exists at all) -- found by review, 2026-11-07:
-  // both hand-built the exact same four elements in the same order, a
-  // near copy-paste that could silently drift apart. Each branch builds
-  // its own stateBadgeEl/statusBadgeEl fully configured (logo/classList,
-  // or textContent/type/click-listener) before calling this, since that
-  // part genuinely differs between the two.
+  // or one that no longer exists at all), which used to hand-build the
+  // same four elements independently. Each branch builds its own
+  // stateBadgeEl/statusBadgeEl fully configured (logo/classList, or
+  // textContent/type/click-listener) before calling this, since that part
+  // genuinely differs between the two.
   _buildDialogHeaderShell(body, stateBadgeEl, nameText, statusBadgeEl) {
     const header = document.createElement("div");
     header.className = "dialog-header";
@@ -5518,21 +5509,17 @@ class UpdateManagerPanel extends HTMLElement {
     // Live-updated by _updateDialogProgress (see set hass) as real
     // state_changed pushes stream in, exactly like more-info-update.ts's
     // own reactive stateObj -- not something this one-shot render call
-    // itself keeps current. No `|| null` fallback anymore (found live,
-    // 2026-11-06, the real cause of "opening a deleted entity's History
-    // entry crashes the dialog the first time"): entityState() itself
-    // returns a genuine `undefined` for an entity that's already gone at
-    // open time, but coercing that to `null` here made
-    // _updateDialogProgress's own `this._dialogLastState !== undefined`
-    // guard (meant only to catch a *live* entity vanishing *after* the
-    // dialog opened, e.g. a rename via HA's own more-info dialog, see that
-    // method's own comment) true anyway, since `null !== undefined`.  The
-    // very next hass push then closed the dialog right back out again, for
-    // an entity that was never there to begin with. Plain `undefined` here
-    // matches entityState()'s own return exactly, so a still-missing
-    // entity on the next tick reads `state === this._dialogLastState`
-    // (both undefined) and that whole branch is skipped -- stays open, as
-    // it should for a purely historical entry.
+    // itself keeps current. No `|| null` fallback: entityState() returns a
+    // genuine `undefined` for an entity that's already gone at open time,
+    // but coercing that to `null` made _updateDialogProgress's own
+    // `this._dialogLastState !== undefined` guard (meant only to catch a
+    // live entity vanishing after the dialog opened, e.g. a rename via
+    // HA's own more-info dialog) fire anyway, since `null !== undefined`,
+    // closing the dialog right back out for an entity that was never
+    // there to begin with. Plain `undefined` matches entityState()'s own
+    // return, so a still-missing entity reads `state ===
+    // this._dialogLastState` (both undefined) and stays open, as it
+    // should for a purely historical entry.
     this._dialogLastState = entityState(this._hass, entityId);
     this._dialogActionButtons = [];
     dialog.innerHTML = "";
@@ -5565,57 +5552,53 @@ class UpdateManagerPanel extends HTMLElement {
     // the entity's unrelated current pending update dragged in above it.
     const showPendingUpdate = u && !historyEntry;
 
-    // Hoisted up here from right above the History section further down
-    // (found by review, 2026-11-07: this used to be computed twice, once
-    // down there for the History list and once more, by hand, just for
-    // this entity's own release_url -- genuinely risked drifting apart,
-    // since the second copy didn't even have the same fallback chain, see
-    // repoLinks' own comment right below). Skipped entirely when there's
-    // no history at all, not shown with an empty-state message -- direct
-    // user feedback: a heading for a section with nothing under it just
-    // added noise, especially for a purely historical entity that's
-    // otherwise short on content anyway.
+    // Hoisted up here from right above the History section further down:
+    // this used to be computed twice, once there for the History list and
+    // once more by hand just for this entity's own release_url, with a
+    // different fallback chain each time (see repoLinks' own comment
+    // below). Skipped entirely when there's no history at all, not shown
+    // with an empty-state message: a heading for a section with nothing
+    // under it just adds noise, especially for a purely historical entity
+    // that's otherwise short on content.
     const entries = this._installLog.filter((entry) => entry.entity_id === entityId);
 
     // This entity's own repo links/Marketplace-repository gate, resolved
     // once up here rather than separately at each of the early
-    // Marketplace-info/menu-building call sites below -- both are a
+    // Marketplace-info/menu-building call sites below. Both are a
     // per-repository fact, the same regardless of which specific version a
-    // given History entry/the live pending update happens to be about.
-    // `u.release_url` when there's a live pending update, else
-    // entries[0]'s own (newest first, same order the History cards below
-    // render in) -- the owner/repo a release_url resolves to never
-    // actually depends on which specific jump produced it, so this doesn't
-    // need its own historyEntry-specific branch, same reasoning the
-    // History section's own menu-building already relied on before this
-    // was hoisted up to share with it.
+    // given History entry/the live pending update is about. `u.release_url`
+    // when there's a live pending update, else entries[0]'s own (newest
+    // first, same order the History cards below render in): the owner/repo
+    // a release_url resolves to never depends on which specific jump
+    // produced it, so this doesn't need its own historyEntry-specific
+    // branch, same reasoning the History section's own menu-building
+    // already relied on before this was hoisted up to share with it.
     const releaseUrlForRepo = u ? u.release_url : entries[0] && entries[0].release_url;
     const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForRepo);
     let marketplaceInfo = null;
     // Both assigned later, once the menu/release-notes section below is
-    // actually built -- read by the resolve callback right below, which
-    // only ever *runs* later still (after this whole synchronous dialog
-    // build has finished), so both are guaranteed to already hold their
-    // real elements whenever that callback actually fires.
+    // built, and read by the resolve callback right below, which only
+    // runs later still (after this whole synchronous dialog build has
+    // finished), so both are guaranteed to already hold their real
+    // elements whenever that callback fires.
     let issuesMenuItemEl = null;
     let liveReleaseNotesHeading = null;
-    // Only ever worth asking for a confirmed Marketplace repository --
-    // re-derived from the device's own configuration_url (via repoLinks
-    // above) so a legacy-HACS-custom-repo/Core/OS/Supervisor-add-on entity
-    // never triggers a network request for a stat it can't have.
+    // Only worth asking for a confirmed Marketplace repository, re-derived
+    // from the device's own configuration_url (via repoLinks above) so a
+    // legacy-HACS-custom-repo/Core/OS/Supervisor-add-on entity never
+    // triggers a network request for a stat it can't have.
     if (repoLinks.configuration && repoLinks.configuration.marketplace) {
       const parsedForInfo = _parseGithubReleaseUrl(releaseUrlForRepo);
       if (parsedForInfo) {
         marketplaceInfo = _resolveMarketplaceInfo(this._hass, parsedForInfo.owner, parsedForInfo.repo, (result) => {
-          // A full _openDetailDialog re-render used to sit here. Found
-          // live, 2026-11-07: this fires whenever the Marketplace fetch
-          // happens to resolve while the dialog's already open, which
-          // tore the whole dialog down and rebuilt it from scratch -- a
-          // visible flicker every time, and if the user had the ⋮ menu
-          // open at that exact moment, the fresh rebuild's brand new
-          // dropdown replaced it already closed, reading as the menu
-          // closing itself for no reason. Patching just the two spots
-          // that actually depend on this result avoids both.
+          // A full _openDetailDialog re-render used to sit here, firing
+          // whenever the Marketplace fetch resolved while the dialog was
+          // already open, which tore the whole dialog down and rebuilt it:
+          // a visible flicker every time, and if the ⋮ menu happened to be
+          // open, the fresh rebuild's new dropdown replaced it already
+          // closed, reading as the menu closing itself for no reason.
+          // Patching just the two spots that depend on this result avoids
+          // both.
           if (isDialogStale()) return;
           marketplaceInfo = result;
           if (issuesMenuItemEl && result.issues != null) {
@@ -5839,21 +5822,20 @@ class UpdateManagerPanel extends HTMLElement {
       // the History dialog (a purely historical entry, u falsy or
       // historyEntry set) had no badge at all before this, the simple
       // "Up to date"/"Update available" pair below reads `u` (Update
-      // Manager's own tracking), not the entity's own raw state.state --
-      // found live, 2026-11-05: a postponed/held-back entity that this
-      // project's own "hide postponed" feature has set skipped_version ==
-      // latest_version on (so HA Core's own default updates-available count
-      // doesn't nag about something that can't install yet anyway) reports
-      // state=off by HA Core's own real, documented skip semantics
-      // (confirmed against its real source, same one latestVersionIsSkipped
-      // above already accounts for), even though there's a very real,
-      // currently-tracked pending version -- `u` is never fooled by that,
-      // it's this project's own independent, authoritative "is anything
-      // actually pending right now" signal everywhere else in this panel.
-      // state.state === "on" kept only as a fallback for the one case `u`
-      // can't cover: an entity genuinely not tracked in this._updates at
-      // all (not supposed to happen for anything this panel manages, kept
-      // defensive rather than assumed).
+      // Manager's own tracking), not the entity's own raw state.state. A
+      // postponed/held-back entity that this project's own "hide
+      // postponed" feature has set skipped_version == latest_version on
+      // (so HA Core's own default updates-available count doesn't nag
+      // about something that can't install yet) reports state=off by HA
+      // Core's own real, documented skip semantics (confirmed against its
+      // real source, same one latestVersionIsSkipped above already
+      // accounts for), even though there's a real, currently-tracked
+      // pending version. `u` is never fooled by that; it's this project's
+      // own independent, authoritative "is anything actually pending
+      // right now" signal everywhere else in this panel. state.state ===
+      // "on" is kept only as a fallback for the one case `u` can't cover:
+      // an entity genuinely not tracked in this._updates at all (not
+      // supposed to happen, kept defensive rather than assumed).
       const stateValue = document.createElement("ha-badge");
       stateValue.className = "dialog-header-status";
       const hasPendingUpdate = !!u || state.state === "on";
@@ -5863,11 +5845,9 @@ class UpdateManagerPanel extends HTMLElement {
       // against its real source, gives it the ripple/cursor/role a plain
       // badge doesn't have on its own), opening this same entity's live
       // pending-update dialog (_openDetailDialog with no historyEntry)
-      // instead of just stating a fact with nowhere to go, direct user
-      // feedback, 2026-11-05: "ik zou graag op de update available badge
-      // willen drukken om de juiste dialog te openen... met daarin de
-      // nieuwste update". "Up-to-date" and showPendingUpdate's own richer
-      // text stay plain, nothing useful to navigate to from either.
+      // instead of just stating a fact with nowhere to go. "Up-to-date"
+      // and showPendingUpdate's own richer text stay plain, nothing
+      // useful to navigate to from either.
       const canOpenPending = !showPendingUpdate && hasPendingUpdate;
       stateValue.textContent = showPendingUpdate
         ? headerStateText
@@ -5884,20 +5864,18 @@ class UpdateManagerPanel extends HTMLElement {
       this._buildDialogHeaderShell(body, stateBadge, (state.attributes && state.attributes.friendly_name) || entityId, stateValue);
     } else {
       // A purely historical entry for an entity that no longer exists at
-      // all (direct user feedback, 2026-11-06, after the auto-close bug
-      // above was found and fixed: with the dialog no longer closing
-      // itself right back out, this bare case -- opening History for a
-      // long-removed entity -- had no header at all). A real state-badge
-      // with no stateObj set renders the same warning-triangle fallback
-      // (confirmed against its real source, mdiAlert in a yellow .missing
-      // box) the Updates/History list rows already show for free for this
-      // exact case (_buildListRow's own identical
-      // stateBadge.stateObj = entityState(...) pattern, also undefined
-      // here). friendlyEntityName's own entityId fallback stands in for a
-      // name, same as the dialog's own title bar above already uses.
-      // "Unavailable" instead of the usual Up-to-date/Update available
-      // pair, which wouldn't mean anything for an entity Home Assistant
-      // doesn't even know about anymore.
+      // all: opening History for a long-removed entity used to have no
+      // header at all. A real state-badge with no stateObj set renders
+      // the same warning-triangle fallback (confirmed against its real
+      // source, mdiAlert in a yellow .missing box) the Updates/History
+      // list rows already show for free for this exact case
+      // (_buildListRow's own identical stateBadge.stateObj =
+      // entityState(...) pattern, also undefined here).
+      // friendlyEntityName's own entityId fallback stands in for a name,
+      // same as the dialog's own title bar above. "Unavailable" instead
+      // of the usual Up-to-date/Update available pair, which wouldn't
+      // mean anything for an entity Home Assistant doesn't know about
+      // anymore.
       const stateValue = document.createElement("ha-badge");
       stateValue.className = "dialog-header-status";
       stateValue.textContent = tr.status_unavailable;
@@ -5966,13 +5944,13 @@ class UpdateManagerPanel extends HTMLElement {
         if (!changed) return;
         this._openDetailDialog(entityId, historyEntry, live);
       };
-      // Experiment, 2026-11-06, easy to revert: the timeline now draws its
-      // own real border (see .timeline's own comment), so the Release
-      // notes section's usual leading <hr> would double up on that same
-      // boundary when nothing else landed in between -- tracked here
-      // rather than assumed, since a stuck-install alert can genuinely sit
-      // between the two (see stuckInfo below), and that alert still needs
-      // its own normal separators on both sides.
+      // Experiment: the timeline now has its own styled box (see
+      // .timeline's own comment), so the Release notes section's usual
+      // leading <hr> would double up on that same boundary when nothing
+      // else landed in between. Tracked here rather than assumed, since a
+      // stuck-install alert can genuinely sit between the two (see
+      // stuckInfo below), and that alert still needs its own normal
+      // separators on both sides.
       let timelineImmediatelyAboveReleaseNotes = true;
       body.appendChild(
         this._buildTimeline(u, tr, entityId, {
@@ -6271,7 +6249,7 @@ class UpdateManagerPanel extends HTMLElement {
 
     // entries (History entries for this entity) and repoLinks (its own
     // Marketplace/Repository/Issues links) are both computed once, up near
-    // the top of this method now -- see their own comments there.
+    // the top of this method now, see their own comments there.
 
     // The header's own "Marketplace/Repository/Issues" menu, direct user
     // feedback, 2026-11-05: HA's own native more-info dialog already has a
@@ -6295,15 +6273,16 @@ class UpdateManagerPanel extends HTMLElement {
     // entity with no History yet and no current pending update either.
     {
       if (repoLinks.configuration || repoLinks.repository || repoLinks.issues) {
-        // A real ha-icon-button trigger with an explicit placement, not the
-        // toolbar's own plain-button pattern (_syncOverflowMenu's own
-        // menuBtn above) -- direct user feedback, 2026-11-05: opening this
-        // specific menu scrolled the dialog's own body to the top. Matched
-        // to HA's own real dialog-header dropdown (ha-more-info-dialog.ts's
-        // own admin/camera overflow menus, confirmed against its real
-        // source): both use <ha-icon-button slot="trigger"> plus
-        // placement="bottom-end" on the ha-dropdown itself, never a plain
-        // <button>, and never left on the library's own default placement.
+        // A real ha-icon-button trigger with an explicit placement, not
+        // the toolbar's own plain-button pattern (_syncOverflowMenu's own
+        // menuBtn above), fixing an earlier bug where opening this
+        // specific menu scrolled the dialog's own body to the top.
+        // Matched to HA's own real dialog-header dropdown
+        // (ha-more-info-dialog.ts's own admin/camera overflow menus,
+        // confirmed against its real source): both use <ha-icon-button
+        // slot="trigger"> plus placement="bottom-end" on the ha-dropdown
+        // itself, never a plain <button>, and never left on the
+        // library's own default placement.
         const menuBtn = document.createElement("ha-icon-button");
         menuBtn.label = this._hass.localize("ui.common.menu");
         menuBtn.setAttribute("slot", "trigger");
@@ -6338,7 +6317,7 @@ class UpdateManagerPanel extends HTMLElement {
         if (repoLinks.issues) {
           // The open-issue count, when Marketplace's own real repository
           // info has already resolved it (marketplaceInfo, see this
-          // method's own top comment) -- null/undefined (still resolving,
+          // method's own top comment). null/undefined (still resolving,
           // or not a Marketplace repository at all) keeps the plain,
           // countless label instead. Captured into the outer
           // issuesMenuItemEl either way, so a count that resolves after
@@ -6363,35 +6342,27 @@ class UpdateManagerPanel extends HTMLElement {
             window.open(repoLinks[value], "_blank", "noopener");
           }
         });
-        // The real bug behind the "opening this menu scrolls the dialog to
-        // the top" report, found by actually reading _ensureShell's own
-        // `dialog.addEventListener("closed", ...)`: that listener is on
-        // `dialog` itself with no target check, so this dropdown's own
-        // "closed" event bubbles straight through this light-DOM child into
-        // it. Doesn't actually explain the reported scroll-jump on its own
-        // (that fires on *close*, after the jump already happened), kept
-        // anyway since it's still a real gap matching ha-more-info-dialog.
-        // ts's own @closed=${stopPropagation} on both its header dropdowns.
+        // _ensureShell's own `dialog.addEventListener("closed", ...)` has
+        // no target check, so this dropdown's own "closed" event bubbles
+        // straight through into it. That alone doesn't explain the
+        // reported scroll-jump (it fires on close, after the jump already
+        // happened), but it's still a real gap matching
+        // ha-more-info-dialog.ts's own @closed=${stopPropagation} on both
+        // its header dropdowns, so it's stopped here too.
         //
-        // The real cause, found live, 2026-11-05 (only ever happened in the
-        // narrow-viewport ha-bottom-sheet variant, never the desktop
-        // ha-dialog one, menu itself opened and stayed open fine, nothing
-        // in the console): ha-bottom-sheet.ts's own wa-drawer listens for
-        // "wa-show" with no event.target/eventPhase check at all (confirmed
-        // against its real source -- its own sibling _handleHide right next
-        // to it does guard with `ev.eventPhase !== Event.AT_TARGET`, _handleShow
-        // doesn't). On the bottom-sheet variant this dropdown's slotted
-        // content is a real composed-tree descendant of that same wa-drawer,
-        // so this dropdown's own "wa-show" (fired by the underlying Web
-        // Awesome dropdown it's built on, confirmed bubbling+composed)
-        // reaches that unguarded handler too, which re-runs its own open
-        // bookkeeping and focuses its own autofocus element -- that focus()
-        // call is what actually scrolls the sheet's content back to the
-        // top. Never reached on desktop since ha-dialog's own wrapper isn't
-        // a wa-drawer and doesn't listen for "wa-show" the same way. A real
-        // HA core gap, not something fixable in ha-bottom-sheet.ts from
-        // here, so this just stops our own dropdown's "wa-show"/
-        // "wa-after-show" from ever reaching it in the first place.
+        // The actual cause, only on the narrow-viewport ha-bottom-sheet
+        // variant: ha-bottom-sheet.ts's own wa-drawer listens for "wa-show"
+        // with no event.target/eventPhase check (its sibling _handleHide
+        // guards with `ev.eventPhase !== Event.AT_TARGET`, _handleShow
+        // doesn't). This dropdown's slotted content is a real
+        // composed-tree descendant of that same wa-drawer, so its own
+        // "wa-show" (bubbling+composed) reaches that unguarded handler,
+        // which re-runs its own open bookkeeping and focuses its autofocus
+        // element, and that focus() call is what scrolls the sheet's
+        // content back to the top. Never reached on desktop, since
+        // ha-dialog's own wrapper isn't a wa-drawer. A real HA Core gap,
+        // not fixable from here, so this just stops this dropdown's own
+        // "wa-show"/"wa-after-show" from reaching it at all.
         ["closed", "wa-show", "wa-after-show"].forEach((evt) => repoMenu.addEventListener(evt, (e) => e.stopPropagation()));
         dialog.appendChild(repoMenu);
       }
@@ -6608,11 +6579,11 @@ class UpdateManagerPanel extends HTMLElement {
           // no fetch involved, same as every other synchronously-built part
           // of this card.
           //
-          // No downloads count here, unlike the pending-update section's own
-          // call above -- marketplaceInfo.downloads is the repository's
-          // all-time total, not a per-version figure, and this card is about
-          // whichever past version entry.to_version names, almost never the
-          // repo's current latest. Direct user feedback, 2026-11-07.
+          // No downloads count here, unlike the pending-update section's
+          // own call above: marketplaceInfo.downloads is the repository's
+          // all-time total, not a per-version figure, and this card is
+          // about whichever past version entry.to_version names, almost
+          // never the repo's current latest.
           insertReleaseNotesSection(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version, null, undefined);
           this._appendUpstreamReleaseNotes(expandWrap, null, tr, entry.release_notes, entry.release_url, entry.from_version, entry.to_version);
         }
@@ -6689,7 +6660,7 @@ class UpdateManagerPanel extends HTMLElement {
             // find the wrong node (its own just-inserted <hr>, not the
             // original insertion point).
             const insertionPoint = changelogAnchor.nextSibling;
-            // No downloads count here either -- same reasoning as this
+            // No downloads count here either, same reasoning as this
             // card's other insertReleaseNotesSection call above.
             insertReleaseNotesSection(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version, linkUrl, undefined);
             if (notes) this._appendUpstreamReleaseNotes(expandWrap, insertionPoint, tr, notes, entry.release_url, entry.from_version, entry.to_version);
@@ -6977,7 +6948,7 @@ class UpdateManagerPanel extends HTMLElement {
     try {
       await this._hass.callWS({ type: "update_manager/save_settings", ...settingsOnly });
       this._settings = { ...settingsOnly };
-      // _formData too, not just _settings -- trusted_voters' own
+      // _formData too, not just _settings: trusted_voters' own
       // normalization above (_normalizeTrustedVoterUsername) can change
       // what actually got saved from what the live widget still holds, and
       // _formData is never otherwise refreshed from _settings past the
@@ -6999,22 +6970,20 @@ class UpdateManagerPanel extends HTMLElement {
   }
 
   // A heading + a button showing how many entries are currently
-  // configured, opening the real picker in its own modal (_openListModal)
-  // -- no description span here on the page itself, direct user feedback:
-  // that same text already sits in the modal (passed through as
-  // `descriptionText` below), showing it twice was redundant. Originally
-  // built only for the never/always auto-update pair (`key`/`otherKey`
-  // always the two opposite sides of the same pair, excluded_entities vs.
+  // configured, opening the real picker in its own modal (_openListModal).
+  // No description span here on the page itself: that same text already
+  // sits in the modal (passed through as `descriptionText` below),
+  // showing it twice would be redundant. Originally built only for the
+  // never/always auto-update pair (`key`/`otherKey` always the two
+  // opposite sides of the same pair, excluded_entities vs.
   // whitelisted_entities, so an entity already on the other list can be
-  // excluded from this one's own entity-selector picker), generalized
-  // 2026-11-06 (direct user feedback: "de trusted voters ook in zo'n
-  // dialog ipv direct op de settings tab, zelfde patroon") to also cover
-  // trusted_voters' own plain text-chip list -- `schema`, when given,
-  // overrides _openListModal's own entity-selector default entirely,
-  // `otherKey` stays meaningless (and unused) for a schema-driven caller.
-  // `countText` too, defaulting to tr.entity_list_configured_count's own
-  // "N entities" -- genuinely wrong wording for trusted_voters' own list
-  // of usernames, not entities at all, so that caller passes its own.
+  // excluded from this one's own entity-selector picker), generalized to
+  // also cover trusted_voters' own plain text-chip list. `schema`, when
+  // given, overrides _openListModal's own entity-selector default
+  // entirely; `otherKey` stays meaningless (and unused) for a
+  // schema-driven caller. `countText` too, defaulting to
+  // tr.entity_list_configured_count's own "N entities", wrong wording for
+  // trusted_voters' own list of usernames, so that caller passes its own.
   _buildListSummary(tr, { key, otherKey, headingText, descriptionText, schema, countText = tr.entity_list_configured_count }) {
     const row = document.createElement("ha-settings-row");
     const heading = document.createElement("span");
@@ -7039,7 +7008,7 @@ class UpdateManagerPanel extends HTMLElement {
     return row;
   }
 
-  // The modal _buildListSummary's own button opens -- a separate,
+  // The modal _buildListSummary's own button opens: a separate,
   // dedicated ha-dialog (not this panel's own this._dialogEl, which is
   // already heavily tied to one specific update entity's own detail view,
   // see _openDetailDialog) since this one is a plain, generic "pick some
@@ -7049,14 +7018,14 @@ class UpdateManagerPanel extends HTMLElement {
   // it (see the form's own value-changed below) can't ever yank it out
   // from under an open picker. `button` is only used to refresh its own
   // "N configured" label once this modal closes, not while it's still
-  // open -- re-rendering mid-pick would rebuild the selector underneath
+  // open: re-rendering mid-pick would rebuild the selector underneath
   // the user's own in-progress interaction.
   _openListModal(tr, { key, otherKey, title, description, button, schema, countText }) {
     const modal = document.createElement("ha-dialog");
     modal.headerTitle = title;
-    // Snapshot of this one field only, not the whole settings object --
-    // every other field autosaves independently of this modal (see
-    // _buildSettingsCard's own comment), this is only ever about reverting
+    // Snapshot of this one field only, not the whole settings object.
+    // Every other field autosaves independently of this modal (see
+    // _buildSettingsCard's own comment); this is only ever about reverting
     // `key` itself if the modal closes without Save. Restored in the
     // "closed" listener below unless savedDraft ends up true.
     const originalValue = this._formData[key];
@@ -7068,18 +7037,16 @@ class UpdateManagerPanel extends HTMLElement {
     modal.appendChild(desc);
 
     const form = document.createElement("ha-form");
-    // Direct user feedback, 2026-11-07: desc/form had no gap of their own
-    // (.hint's own margin is 0, see its comment, and this modal's children
-    // sit in plain document order, no .dialog-content-style flex gap here)
-    // -- read as the add-username control sitting right up against the
-    // helper text above it.
+    // desc/form had no gap of their own (.hint's own margin is 0, see its
+    // comment, and this modal's children sit in plain document order, no
+    // .dialog-content-style flex gap here), reading as the add-username
+    // control sitting right up against the helper text above it.
     form.className = "list-modal-form";
     form.hass = this._hass;
     // The never/always auto-update pair's own entity-selector shape stays
-    // the default (no caller passes `schema` for those two), kept exactly
-    // as it always was -- a `schema`-passing caller (trusted_voters) wants
-    // its own, different selector entirely, see _buildListSummary's own
-    // comment.
+    // the default (no caller passes `schema` for those two). A
+    // `schema`-passing caller (trusted_voters) wants its own, different
+    // selector entirely, see _buildListSummary's own comment.
     form.schema = schema || [
       {
         name: key,
@@ -7111,19 +7078,19 @@ class UpdateManagerPanel extends HTMLElement {
       const chosen = e.detail.value[key] || [];
       this._formData = { ...this._formData, [key]: chosen };
       form.data = this._formData;
-      // No _scheduleAutosave() here anymore -- found live, 2026-11-07,
-      // direct user feedback: the Save button below looked like it deferred
-      // persisting until pressed, but every pick was already autosaving
-      // itself in the background regardless, same as before the button
-      // existed. A pick now only ever updates this local draft; Save is
-      // what actually commits it (see its own comment below).
+      // No _scheduleAutosave() here anymore: the Save button below looked
+      // like it deferred persisting until pressed, but every pick was
+      // already autosaving itself in the background regardless, same as
+      // before the button existed. A pick now only updates this local
+      // draft; Save is what actually commits it (see its own comment
+      // below).
     });
     modal.appendChild(form);
 
-    // "Save", not the old "Close" -- direct user feedback, 2026-11-06: more
-    // logical for a dialog than a bare Close. Actually defers now too
-    // (2026-11-07 fix, see value-changed's own comment above): this is the
-    // one thing in this modal that calls _saveSettingsNow at all.
+    // "Save", not the old "Close": more logical for a dialog than a bare
+    // Close. Actually defers now too (see value-changed's own comment
+    // above): this is the one thing in this modal that calls
+    // _saveSettingsNow at all.
     const saveBtn = document.createElement("ha-button");
     saveBtn.slot = "footer";
     saveBtn.textContent = tr.save;
@@ -7137,7 +7104,7 @@ class UpdateManagerPanel extends HTMLElement {
     modal.addEventListener("closed", () => {
       modal.remove();
       // Closed some other way (Escape/backdrop, never a Cancel button of
-      // its own) without ever pressing Save -- this field's own draft picks
+      // its own) without ever pressing Save: this field's own draft picks
       // must not linger in the live, shared this._formData for some
       // unrelated field's own later autosave to persist by accident.
       if (!savedDraft) this._formData = { ...this._formData, [key]: originalValue };
@@ -8339,14 +8306,12 @@ class UpdateManagerPanel extends HTMLElement {
     body.appendChild(document.createElement("hr")).className = "divider";
 
     // Now a summary row + its own picker modal, same pattern as the never/
-    // always auto-update pair above (_buildListSummary/_openListModal),
-    // 2026-11-06, direct user feedback: "de trusted voters ook in zo'n
-    // dialog ipv direct op de settings tab, zelfde patroon". schema given
-    // explicitly here -- selector: { text: { multiple: true } }, HA's own
-    // native way to collect a free-text list as chips (verified against
-    // home-assistant/frontend's real StringSelector type, stable tag
-    // 20260624.6, not guessed), overriding _openListModal's own entity-
-    // selector default entirely: this is wanting a specific person's
+    // always auto-update pair above (_buildListSummary/_openListModal).
+    // schema given explicitly here: selector: { text: { multiple: true } },
+    // HA's own native way to collect a free-text list as chips (verified
+    // against home-assistant/frontend's real StringSelector type, stable
+    // tag 20260624.6, not guessed), overriding _openListModal's own
+    // entity-selector default entirely: this is wanting a specific person's
     // healthy verdict to always trigger auto-install regardless of your
     // own rules, then asking whether more than one person could be trusted
     // at once (yes, a list, see community_verdict.py's own aggregation:
@@ -8482,16 +8447,14 @@ class UpdateManagerPanel extends HTMLElement {
          around it. */
       div[slot="start"] { position: relative; height: 40px; }
       .row-end { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
-      /* _buildTimerPill, a real ha-badge now (2026-11-06, see its own
-         comment). Not a hand-picked size of our own (direct user feedback,
-         2026-11-07: "niet zelf tweaken maar gewoon de standaard kiezen") --
-         these three values are HA's own existing small-badge preset, copied
-         verbatim from ha-filter-integrations.ts's real source (its inline
-         count badges, the closest real precedent for a small badge inside a
-         list row). --ha-badge-size itself only sets height/min-width, so
-         white-space: nowrap is kept here too, same reason the old
-         hand-rolled pill needed it: a short countdown string should never
-         wrap mid-pill. */
+      /* _buildTimerPill, a real ha-badge now (see its own comment). Not a
+         hand-picked size of our own: these three values are HA's own
+         existing small-badge preset, copied verbatim from
+         ha-filter-integrations.ts's real source (its inline count badges,
+         the closest real precedent for a small badge inside a list row).
+         --ha-badge-size itself only sets height/min-width, so white-space:
+         nowrap is kept here too, same reason the old hand-rolled pill
+         needed it: a short countdown string should never wrap mid-pill. */
       .timer-pill {
         --ha-badge-size: 22px; --ha-badge-font-size: var(--ha-font-size-xs);
         --ha-badge-icon-size: 14px; white-space: nowrap;
@@ -8666,7 +8629,7 @@ class UpdateManagerPanel extends HTMLElement {
         color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px);
         line-height: 1.4; margin: 0;
       }
-      /* _openListModal's own form, right after this same .hint -- see its
+      /* _openListModal's own form, right after this same .hint. See its
          own comment for why this gap is needed here specifically. */
       .list-modal-form { margin-top: var(--ha-space-4, 16px); }
       /* A manually-drawn field label (see _buildAutoInstallCard), for a
@@ -8926,9 +8889,9 @@ class UpdateManagerPanel extends HTMLElement {
       }
       .release-notes-heading { display: flex; align-items: center; gap: var(--ha-space-2, 8px); flex-wrap: wrap; }
       /* Marketplace's own download count (insertReleaseNotesSection's own
-         comment, 2026-11-06): a plain, un-badged inline span -- a fact
-         sitting right next to this h3's own title, not a separate pill
-         competing with it for attention. Secondary-text color, same as
+         comment): a plain, un-badged inline span, a fact sitting right
+         next to this h3's own title, not a separate pill competing with
+         it for attention. Secondary-text color, same as
          every other small supporting detail in this dialog (e.g. .dialog-
          header-status's own neutral default), smaller than the heading's
          own 14px (.release-notes-heading above) since it's a parenthetical,
@@ -9063,15 +9026,15 @@ class UpdateManagerPanel extends HTMLElement {
          the text, rather than sharing a row with it. Scoped to this one
          header only, not a global override. */
       .dialog-header state-badge { width: 64px; height: 64px; }
-      /* The fallback mdi icon (no entity_picture at all, vrijwel altijd a
-         custom card -- direct user feedback, 2026-11-06) never grew to
-         match: a real picture is painted as the host's own background
-         (background-size: cover, confirmed against state-badge.ts's real
-         source), so it fills whatever box width/height above makes, but
-         the fallback icon is a separate child (<ha-state-icon>, confirmed
-         against its real source -- no width/height of its own, state-
-         badge.ts never sets any either), so it just sat at its own fixed,
-         unrelated default size inside this much bigger box. --mdc-icon-size
+      /* The fallback mdi icon (no entity_picture at all, almost always a
+         custom card) never grew to match: a real picture is painted as
+         the host's own background (background-size: cover, confirmed
+         against state-badge.ts's real source), so it fills whatever box
+         width/height above makes, but the fallback icon is a separate
+         child (<ha-state-icon>, confirmed against its real source, no
+         width/height of its own, state-badge.ts never sets any either),
+         so it just sat at its own fixed, unrelated default size inside
+         this much bigger box. --mdc-icon-size
          is ha-icon's/ha-svg-icon's own real sizing token, a plain CSS
          custom property, so it cascades straight through state-badge's
          own shadow DOM from here with no selector needed past the host.
@@ -9128,9 +9091,9 @@ class UpdateManagerPanel extends HTMLElement {
          rounded on this rule's own 40px default row size, direct user
          feedback the same session, the bigger 64px header icon below
          keeps its own, separately tuned radius instead, scoped on top of
-         this one. Both turned down a notch further, direct user feedback,
-         2026-11-05: rows from --ha-border-radius-md (8px) to -sm (4px),
-         the header from -lg (12px) to -md (8px). */
+         this one. Both turned down a notch further: rows from
+         --ha-border-radius-md (8px) to -sm (4px), the header from -lg
+         (12px) to -md (8px). */
       state-badge.has-no-radius { border-radius: var(--ha-border-radius-sm, 4px); }
       .dialog-header state-badge.has-no-radius { border-radius: var(--ha-border-radius-md, 8px); }
       .dialog-header-info { display: flex; flex-direction: column; align-items: center; gap: var(--ha-space-2, 8px); min-width: 0; max-width: 100%; }
@@ -9212,24 +9175,22 @@ class UpdateManagerPanel extends HTMLElement {
       .step.last .step-line { display: none; }
       .step-content { margin-top: 2px; }
       .step:not(.last) .step-content { padding-bottom: 16px; }
-      /* Experiment, 2026-11-06, easy to revert (just restore the plain
+      /* Experiment, easy to revert (just restore the plain
          "padding-top: var(--ha-space-3, 12px)" declaration this replaced,
          and go back to unconditionally drawing Release notes' own leading
          <hr>, see insertReleaseNotesSection's own skipLeadingHr comment):
          a real box now, same border-radius/padding shape .dialog-header
-         already uses. Purely to see whether this reads calmer than the
-         plain top-padding version it replaces.
-         A light neutral fill, not a border (changed 2026-11-07, direct
-         user feedback), via --ha-color-fill-neutral-quiet-resting -- a
-         real, widely-used HA token for exactly this "subtle grey card
+         already uses, to see whether this reads calmer than the plain
+         top-padding version it replaces. A light neutral fill, not a
+         border, via --ha-color-fill-neutral-quiet-resting, a real,
+         widely-used HA token for exactly this "subtle grey card
          background" look (confirmed against its real source,
          semantic.globals.ts, and against its own real usage: integration
          cards, automation notes, map overlays, suggestion cards).
-         margin-bottom added the same day, separately: skipping the
-         leading <hr> below also removed one of the two .dialog-content
-         flex-gap applications that used to sit either side of it, so
-         Release notes ended up only half as far from this box as every
-         other section is from its own neighbor. */
+         margin-bottom: skipping the leading <hr> below also removed one
+         of the two .dialog-content flex-gap applications that used to
+         sit either side of it, so Release notes ended up only half as far
+         from this box as every other section is from its own neighbor. */
       .timeline {
         display: flex; flex-direction: column;
         background: var(--ha-color-fill-neutral-quiet-resting); border-radius: 8px;

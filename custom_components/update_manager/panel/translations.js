@@ -135,8 +135,8 @@ export const TRANSLATIONS = {
     status_update_available: "Update available",
     status_up_to_date: "Up-to-date",
     // The same dialog header badge, for a History entry whose entity no
-    // longer exists at all -- distinct from both strings above, which
-    // both imply a real, currently-known entity.
+    // longer exists at all. Distinct from both strings above, which imply
+    // a real, currently-known entity.
     status_unavailable: "Unavailable",
     // Lowercase, distinct from the Title Case group heading above -- matches
     // ha-config-updates.ts's own row template, confirmed against its real
@@ -198,9 +198,9 @@ export const TRANSLATIONS = {
     field_trusted_voters: "Trusted voters",
     field_trusted_voters_helper:
       "GitHub usernames you trust more than your own rules. A healthy vote from any of them overrides your rules above and auto-installs that jump immediately, even over someone else's problematic report.",
-    // _buildListSummary's own countText override -- usernames, not
-    // entities, see its own comment for why entity_list_configured_count
-    // doesn't fit here.
+    // _buildListSummary's own countText override: usernames, not entities.
+    // See its own comment for why entity_list_configured_count doesn't fit
+    // here.
     trusted_voters_configured_count: (count) => (count === 1 ? "1 trusted voter" : `${count} trusted voters`),
     announce_hours_label: "Announcement notice",
     announce_hours_unit: "hours",
@@ -317,9 +317,9 @@ export const TRANSLATIONS = {
     dialog_history_backup_yes: "Taken before installing",
     dialog_history_backup_no: "Not supported by this entity",
     dialog_release_notes_heading: "Release notes",
-    // toVersion spelled out, once known -- see insertReleaseNotesSection's
-    // own comment (the download-count suffix is built separately, right
-    // next to this text, not part of this string).
+    // toVersion spelled out, once known. See insertReleaseNotesSection's own
+    // comment; the download-count suffix is built separately, right next
+    // to this text, not part of this string.
     dialog_release_notes_heading_version: (v) => `Release notes v${v}`,
     dialog_upstream_release_notes: (repo) => `${repo}'s own release notes:`,
     dialog_community_heading: "Community",
@@ -330,8 +330,8 @@ export const TRANSLATIONS = {
     dialog_menu_repository: "Repository",
     dialog_menu_issue_tracker: "Issues",
     // Marketplace's own real open-issue count, resolved async
-    // (_resolveMarketplaceInfo) -- only ever shown once that's actually
-    // known, see dialog_menu_issue_tracker above for the plain fallback.
+    // (_resolveMarketplaceInfo). Only shown once that's actually known; see
+    // dialog_menu_issue_tracker above for the plain fallback.
     dialog_menu_issue_tracker_count: (n) => `Issues (${n})`,
     paused_banner: "Update Manager is paused. Nothing below will be updated, announced, or hidden automatically.",
     // Renamed from "Update Manager" (2026-07-21, direct user feedback): now
@@ -390,16 +390,12 @@ export const TRANSLATIONS = {
     cancel_auto_install: "Cancel",
     // The pending-update dialog's own button, next to Cancel -- forces
     // this one jump to evaluate as ready immediately, skipping the rest of
-    // its postponement period. Not bare "Ready" -- found live, 2026-10-10:
-    // a lone "Ready" read as a status ("this is already ready"), not an
-    // action to take. Not "Ready to install" either (changed 2026-11-07,
-    // direct user feedback): this button sits right on the timeline's own
-    // "Ready to update" step (group_ready below), where the near-identical
-    // wording read as redundant right next to it. "Ready now" keeps the
-    // same shared "Ready ___" core word as mark_all_ready's own "Ready
-    // all" below (still the same action applied in bulk), reads as an
-    // action either way (it's a button), and no longer collides with the
-    // step label it sits on.
+    // its postponement period. Not bare "Ready" (reads as a status, not an
+    // action) and not "Ready to install" either (collides with the
+    // timeline's own "Ready to update" step, group_ready below). "Ready
+    // now" shares its "Ready ___" core word with mark_all_ready's own
+    // "Ready all" (the same action applied in bulk) without that
+    // collision.
     dialog_force_ready: "Ready now",
     dialog_open_update: "Open update",
     dialog_skip: "Skip",
