@@ -8829,6 +8829,25 @@ class UpdateManagerPanel extends HTMLElement {
          would shrink it to content width instead of stretching to fill. */
       .history-section-items > ha-card { width: 100%; max-width: 600px; margin: 0 auto; }
       .history-section-items .card-content { padding: 0; display: block; }
+      /* ha-list-item-button's own ::part(base) has no border-radius of its
+         own (confirmed against its real source), and ha-ripple's own
+         border-radius: inherit means the hover/ripple background stays a
+         hard rectangle unless this part sets one explicitly. Each History
+         row fills its own entire card edge to edge (.card-content's
+         padding above is 0), so its ripple needs to match all four of the
+         card's own corners, not just some. */
+      .history-section-items ha-list-item-button::part(base) { border-radius: var(--ha-card-border-radius, 12px); }
+      /* Same fix for the Updates tab's own grouped cards, where several
+         rows can share one card: only the edges that actually touch the
+         card boundary get rounded (a lone row in its own group gets all
+         four, same as History above). */
+      .update-groups-outer ha-list-item-button:only-child::part(base) { border-radius: var(--ha-card-border-radius, 12px); }
+      .update-groups-outer ha-list-item-button:first-child:not(:only-child)::part(base) {
+        border-radius: var(--ha-card-border-radius, 12px) var(--ha-card-border-radius, 12px) 0 0;
+      }
+      .update-groups-outer ha-list-item-button:last-child:not(:only-child)::part(base) {
+        border-radius: 0 0 var(--ha-card-border-radius, 12px) var(--ha-card-border-radius, 12px);
+      }
       /* No top margin: the gap above a section (including the very first
          one) already comes from the page's own top padding, or from the
          previous section's .history-section-items margin-bottom. */
@@ -9243,6 +9262,9 @@ class UpdateManagerPanel extends HTMLElement {
          component uses elsewhere in this file (Updates list), looking and
          feeling noticeably weaker by comparison. Direct user feedback. */
       .dialog-history-card ha-list-item-button { font-size: var(--ha-font-size-m, 14px); }
+      /* Same ripple/card-corner mismatch fix as .history-section-items
+         above: one row fills its own entire card here too. */
+      .dialog-history-card ha-list-item-button::part(base) { border-radius: var(--ha-card-border-radius, 12px); }
       /* font-size reset, same reasoning as ha-list-item-button above: the
          community/vote section embedded per entry (2026-07-25) is an
          action, not passive changelog text, and should read the same size
