@@ -683,21 +683,24 @@ class RolloutManager:
             return None
         return record
 
-    def was_manually_requested(self, entity_id: str, to_version: str) -> str | None:
+    def was_manually_requested(self, entity_id: str, to_version: str) -> tuple[bool, str | None]:
         """Consumed once by __init__.py's install-listener callback, the
         manual-attribution counterpart to install_manager.py's own
-        was_auto_installed. Returns the user_id that requested this exact
-        (entity_id, to_version) install, or None if this wasn't a manual
-        request this module knows about, or it was for a different
-        version. Only pops the record on an actual match, same reasoning
-        as was_auto_installed's own docstring: a still-pending record for a
-        different, later request must survive an unrelated version change
-        on the same entity landing first."""
+        was_auto_installed. Returns (True, user_id) once a matching record
+        for this exact (entity_id, to_version) install is found, or
+        (False, None) otherwise. user_id can still be None on a real match:
+        note_external_install_request below records a match whenever a real
+        update.install call is observed, whether or not it carried an
+        attributable user, and the caller needs to tell that apart from no
+        match at all. Only pops the record on an actual match, same
+        reasoning as was_auto_installed's own docstring: a still-pending
+        record for a different, later request must survive an unrelated
+        version change on the same entity landing first."""
         record = self._matching_manual_record(entity_id, to_version)
         if record is None:
-            return None
+            return False, None
         del self._recently_manual[entity_id]
-        return record[1]
+        return True, record[1]
 
     def note_external_install_request(self, entity_id: str, user_id: str | None) -> None:
         """Called by __init__.py's own global EVENT_CALL_SERVICE listener

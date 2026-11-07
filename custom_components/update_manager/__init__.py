@@ -348,6 +348,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         # reason) or one that genuinely finished within that 5-second
         # window.
         #
+        # was_manually_requested itself returns (found, user_id), not just
+        # user_id: an automation or Blueprint action rarely carries an
+        # attributable user even for a real, observed update.install call,
+        # so a bare, possibly-None user_id can't tell that apart from no
+        # record at all. Only the found flag decides "manual" here, exactly
+        # the gap that misread a notify-Blueprint install as "External".
+        #
         # A previous attempt at this exact fix was reverted, 2026-08-25,
         # direct user feedback, on suspicion it had caused a
         # real ESPHome install to go missing from History entirely rather
@@ -372,8 +379,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         elif retroactive:
             install_method = "manual"
         else:
-            manual_user_id = rollout_manager.was_manually_requested(entity_id, new_version) or new_state.context.user_id
-            install_method = "manual" if manual_user_id else "external"
+            requested, _ = rollout_manager.was_manually_requested(entity_id, new_version)
+            install_method = "manual" if requested or new_state.context.user_id else "external"
         cached = coordinator.cache.get(entity_id)
         hass.async_create_task(
             install_log.async_log_install(
