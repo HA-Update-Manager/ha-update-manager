@@ -8829,24 +8829,30 @@ class UpdateManagerPanel extends HTMLElement {
          would shrink it to content width instead of stretching to fill. */
       .history-section-items > ha-card { width: 100%; max-width: 600px; margin: 0 auto; }
       .history-section-items .card-content { padding: 0; display: block; }
-      /* ha-list-item-button's own ::part(base) has no border-radius of its
-         own (confirmed against its real source), and ha-ripple's own
-         border-radius: inherit means the hover/ripple background stays a
-         hard rectangle unless this part sets one explicitly. Each History
-         row fills its own entire card edge to edge (.card-content's
-         padding above is 0), so its ripple needs to match all four of the
-         card's own corners, not just some. */
-      .history-section-items ha-list-item-button::part(base) { border-radius: var(--ha-card-border-radius, 12px); }
+      /* Not ::part(base) -- tried first, found live, 2026-11-07: a part
+         selector from outside a shadow root loses a same-property fight
+         against that shadow tree's own internal rule for the same element,
+         and ha-list-item-base.ts's real source already sets its own
+         border-radius on .base (via --ha-list-item-focus-radius, its own
+         documented focus-outline radius, 4px default), so the external
+         rule never actually won. Feeding that exact custom property
+         instead works with the cascade, not against it: ha-ripple's own
+         border-radius: inherit then still picks up the real value, since
+         it reads .base's own computed radius either way. Each History row
+         fills its own entire card edge to edge (.card-content's padding
+         above is 0), so it needs to match all four of the card's own
+         corners, not just some. */
+      .history-section-items ha-list-item-button { --ha-list-item-focus-radius: var(--ha-card-border-radius, 12px); }
       /* Same fix for the Updates tab's own grouped cards, where several
          rows can share one card: only the edges that actually touch the
          card boundary get rounded (a lone row in its own group gets all
          four, same as History above). */
-      .update-groups-outer ha-list-item-button:only-child::part(base) { border-radius: var(--ha-card-border-radius, 12px); }
-      .update-groups-outer ha-list-item-button:first-child:not(:only-child)::part(base) {
-        border-radius: var(--ha-card-border-radius, 12px) var(--ha-card-border-radius, 12px) 0 0;
+      .update-groups-outer ha-list-item-button:only-child { --ha-list-item-focus-radius: var(--ha-card-border-radius, 12px); }
+      .update-groups-outer ha-list-item-button:first-child:not(:only-child) {
+        --ha-list-item-focus-radius: var(--ha-card-border-radius, 12px) var(--ha-card-border-radius, 12px) 0 0;
       }
-      .update-groups-outer ha-list-item-button:last-child:not(:only-child)::part(base) {
-        border-radius: 0 0 var(--ha-card-border-radius, 12px) var(--ha-card-border-radius, 12px);
+      .update-groups-outer ha-list-item-button:last-child:not(:only-child) {
+        --ha-list-item-focus-radius: 0 0 var(--ha-card-border-radius, 12px) var(--ha-card-border-radius, 12px);
       }
       /* No top margin: the gap above a section (including the very first
          one) already comes from the page's own top padding, or from the
@@ -9263,8 +9269,9 @@ class UpdateManagerPanel extends HTMLElement {
          feeling noticeably weaker by comparison. Direct user feedback. */
       .dialog-history-card ha-list-item-button { font-size: var(--ha-font-size-m, 14px); }
       /* Same ripple/card-corner mismatch fix as .history-section-items
-         above: one row fills its own entire card here too. */
-      .dialog-history-card ha-list-item-button::part(base) { border-radius: var(--ha-card-border-radius, 12px); }
+         above (not ::part(base), see that rule's own comment for why): one
+         row fills its own entire card here too. */
+      .dialog-history-card ha-list-item-button { --ha-list-item-focus-radius: var(--ha-card-border-radius, 12px); }
       /* font-size reset, same reasoning as ha-list-item-button above: the
          community/vote section embedded per entry (2026-07-25) is an
          action, not passive changelog text, and should read the same size
