@@ -197,9 +197,7 @@ action:
               # say) re-sent every other still-failed entity's own
               # notification right along with it, even though nothing about
               # that one had actually changed since it was last shown.
-              # Diffed by key, not just resent wholesale.
-              before_keys: >-
-                {{ before | map(attribute='entity_id') | list | zip(before | map(attribute='to_version') | list, before | map(attribute='reason') | list) | map('join', '|') | list }}
+              # Diffed per entry below instead of resent wholesale.
               after: "{{ trigger.to_state.attributes.entities | default([]) }}"
               after_ids: "{{ after | map(attribute='entity_id') | list }}"
           - repeat:
@@ -213,7 +211,12 @@ action:
           - repeat:
               for_each: "{{ after }}"
               sequence:
-                - if: "{{ (repeat.item.entity_id ~ '|' ~ repeat.item.to_version ~ '|' ~ repeat.item.reason) in before_keys }}"
+                - if: >-
+                    {{ before
+                       | selectattr('entity_id', 'eq', repeat.item.entity_id)
+                       | selectattr('to_version', 'eq', repeat.item.to_version)
+                       | selectattr('reason', 'eq', repeat.item.reason)
+                       | list | count > 0 }}
                   then: []
                   else:
                     - action: "{{ notify_target }}"
@@ -250,17 +253,13 @@ action:
               before: "{{ trigger.from_state.attributes.entities | default([]) }}"
               before_ids: "{{ before | map(attribute='entity_id') | list }}"
               # entity_id + installed_version + latest_version, found live
-              # 2026-11-09 (confirmed by direct user feedback, screenshots
-              # showing a burst right after one, unrelated manual install
-              # finished): the repeat below used to loop over `after` as a
+              # 2026-11-09: the repeat below used to loop over `after` as a
               # whole, so *any* change to this sensor -- another, unrelated
               # queued sibling finishing, say -- re-sent every other still-
               # ready-but-manual entity's own notification right along with
               # it, even though nothing about that one had actually changed
-              # since it was last shown. Diffed by key, not just resent
-              # wholesale.
-              before_keys: >-
-                {{ before | map(attribute='entity_id') | list | zip(before | map(attribute='installed_version') | list, before | map(attribute='latest_version') | list) | map('join', '|') | list }}
+              # since it was last shown. Diffed per entry below instead of
+              # resent wholesale.
               after: "{{ trigger.to_state.attributes.entities | default([]) }}"
               after_ids: "{{ after | map(attribute='entity_id') | list }}"
           - repeat:
@@ -274,7 +273,12 @@ action:
           - repeat:
               for_each: "{{ after }}"
               sequence:
-                - if: "{{ (repeat.item.entity_id ~ '|' ~ repeat.item.installed_version ~ '|' ~ repeat.item.latest_version) in before_keys }}"
+                - if: >-
+                    {{ before
+                       | selectattr('entity_id', 'eq', repeat.item.entity_id)
+                       | selectattr('installed_version', 'eq', repeat.item.installed_version)
+                       | selectattr('latest_version', 'eq', repeat.item.latest_version)
+                       | list | count > 0 }}
                   then: []
                   else:
                     - action: "{{ notify_target }}"
