@@ -905,6 +905,27 @@ class RolloutManager:
             if blocking_rank is not None and blocking_rank < my_rank:
                 continue
             del self._tier_blocked[entity_id]
+            # Same race as _async_advance's own (see that method's own
+            # comment): once removed from self._tier_blocked, nothing
+            # protects this entry again until _async_request_past_tier_gate
+            # below marks it -- and the await self._async_save() right here
+            # is a real gap before that even runs. Only pre-marked for the
+            # common case this can actually predict safely, synchronously,
+            # before any of that: no Zigbee-network queue at all for it yet
+            # (self._group_key_for is a pure, no-I/O lookup -- same call
+            # _async_request_past_tier_gate itself makes right after this),
+            # which is exactly the condition under which that method is
+            # guaranteed to resolve to "dispatch" a few lines down. Left
+            # alone otherwise (already front of an existing network queue
+            # with a stale/mismatched to_version, a genuinely rare edge
+            # case -- see that method's own 2026-08-10 comment): pre-
+            # marking there risks recording the wrong to_version's context
+            # against this entity_id, which was_auto_installed's own
+            # to_version check would then quietly refuse to match once the
+            # *real* in-flight install actually completes.
+            group_key = self._group_key_for(entity_id)
+            if not self._queues.get(group_key):
+                self._mark_entry_dispatching(entry)
             # Persisted right away, not batched until this whole loop ends
             # (as it used to be, found by code review 2026-08-10, to avoid
             # one Store write per entry when several clear in the same
