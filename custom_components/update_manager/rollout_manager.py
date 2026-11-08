@@ -1739,6 +1739,28 @@ class RolloutManager:
                 return True
         return False
 
+    def is_in_flight(self, entity_id: str) -> bool:
+        """True for an entity this module itself is currently the one
+        dispatching (or waiting out a grace period/recheck for) -- the
+        front of a Zigbee rollout queue, or a standalone immediate dispatch
+        that hasn't resolved yet either way. self._in_flight is populated
+        the same way regardless of entry.is_auto (see
+        _async_request_past_tier_gate's and _async_dispatch's own
+        front_since assignment), unlike install_manager.py's own
+        self._recently_executed, which only ever covers an auto-install
+        dispatch -- see this method's own call site in install_manager.py's
+        _async_evaluate_one for why a manually-dispatched (Update All)
+        queue entry needs this broader check too, not just that
+        narrower one. Direct user feedback, 2026-11-08: a manually-
+        dispatched Zigbee queue's own next entry, promoted to front the
+        moment its predecessor finished, had nothing at all protecting it
+        once is_queued() above stopped counting it as queued -- is_auto was
+        False, so install_manager.py's own _recently_executed guard never
+        applied either, and it got a fresh, spurious auto-install announce
+        cycle layered on top of the manual install already running for
+        it."""
+        return entity_id in self._in_flight
+
     def tier_blocked_entity_ids(self) -> list[str]:
         """Read by websocket_api.py's own _handle_updates, alongside
         rollout_groups_snapshot above -- the panel's own "Installing"

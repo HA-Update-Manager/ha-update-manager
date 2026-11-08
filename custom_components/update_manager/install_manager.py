@@ -675,6 +675,19 @@ class InstallManager:
             # behind its sibling in the queue.
             return
 
+        if self._rollout_manager.is_in_flight(entity_id):
+            # Direct user feedback, 2026-11-08: a manually-dispatched
+            # (Update All) Zigbee queue entry promoted to front the moment
+            # its predecessor finished has is_auto=False, so it was never in
+            # self._recently_executed above either -- is_queued() just
+            # stopped protecting it (no longer waiting behind anyone), and
+            # nothing else did, so it read as a brand-new, never-announced
+            # update and got a fresh, spurious auto-install announce cycle
+            # stacked on top of the manual install already running for it.
+            # is_in_flight() covers this the same way regardless of
+            # is_auto -- see its own docstring in rollout_manager.py.
+            return
+
         cached = self._coordinator.cache.get(entity_id)
         current_to_version = cached["latest_version"] if cached else None
 
