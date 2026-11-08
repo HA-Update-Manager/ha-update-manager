@@ -70,10 +70,11 @@ from .core_blog_notes import (
     post_source_path,
     slugify_heading,
 )
-from .device_identity import async_spook_blueprint_info, resolve_full_identity
+from .device_identity import async_spook_blueprint_info, resolve_device_manufacturer_model, resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
+from .zigbee import device_for_entity, zigbee2mqtt_device_url
 from .install_manager import auto_install_rules_from_options, failure_reason_for
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
 from .semver import min_ha_version_required, strip_version_prefix
@@ -666,6 +667,27 @@ async def _handle_spook_blueprint_source(hass: HomeAssistant, connection: websoc
             "list_url": info.list_url if info else None,
             "count": info.count if info else None,
             "blueprint_domain": info.blueprint_domain if info else None,
+        },
+    )
+
+
+@callback
+@websocket_api.require_admin
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/device_identity",
+        vol.Required("entity_id"): str,
+    }
+)
+def _handle_device_identity(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    device = device_for_entity(hass, msg["entity_id"])
+    manufacturer_model = resolve_device_manufacturer_model(hass, device) if device else None
+    connection.send_result(
+        msg["id"],
+        {
+            "manufacturer": manufacturer_model[0] if manufacturer_model else None,
+            "model": manufacturer_model[1] if manufacturer_model else None,
+            "zigbee2mqtt_url": zigbee2mqtt_device_url(hass, device) if device else None,
         },
     )
 
@@ -1459,6 +1481,7 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _handle_github_release_notes)
     websocket_api.async_register_command(hass, _handle_core_announcement)
     websocket_api.async_register_command(hass, _handle_spook_blueprint_source)
+    websocket_api.async_register_command(hass, _handle_device_identity)
     websocket_api.async_register_command(hass, _handle_install_log)
     websocket_api.async_register_command(hass, _handle_cancel_pending_install)
     websocket_api.async_register_command(hass, _handle_force_ready)

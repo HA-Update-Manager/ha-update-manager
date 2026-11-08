@@ -2182,6 +2182,85 @@ function _resolveSpookBlueprintInfo(hass, entityId, onResolved) {
   return undefined;
 }
 
+// Same cache-plus-callback shape as _resolveSpookBlueprintInfo above.
+// hass.entities[entityId].device_id is a free, synchronous pre-filter
+// (no device at all means no manufacturer/model to ever find, see
+// device_identity.py's own resolve_device_manufacturer_model) --
+// settles straight to null for the overwhelming majority of entities
+// without ever calling the backend, same reasoning as
+// _looksLikeSpookEntity there.
+const _deviceIdentityCache = new Map();
+const _deviceIdentityPending = new Map();
+function _resolveDeviceIdentity(hass, entityId, onResolved) {
+  if (_deviceIdentityCache.has(entityId)) return _deviceIdentityCache.get(entityId);
+  const deviceId = hass.entities && hass.entities[entityId] && hass.entities[entityId].device_id;
+  if (!deviceId) {
+    _deviceIdentityCache.set(entityId, null);
+    return null;
+  }
+  if (_deviceIdentityPending.has(entityId)) {
+    if (onResolved) _deviceIdentityPending.get(entityId).push(onResolved);
+    return undefined;
+  }
+  _deviceIdentityPending.set(entityId, onResolved ? [onResolved] : []);
+  hass
+    .callWS({ type: "update_manager/device_identity", entity_id: entityId })
+    .then((result) => {
+      // A real response confirming no manufacturer/model at all (not
+      // Zigbee, or Zigbee without real vendor data) is a stable fact,
+      // cached permanently same as a genuine match.
+      const info = result && result.manufacturer && result.model ? result : null;
+      _deviceIdentityCache.set(entityId, info);
+      const waiting = _deviceIdentityPending.get(entityId) || [];
+      _deviceIdentityPending.delete(entityId);
+      if (info) waiting.forEach((cb) => cb(info));
+    })
+    .catch(() => {
+      // Not cached, same reasoning as _resolveSpookBlueprintInfo's own
+      // catch above -- a failed call retries on the next dialog open
+      // instead of sticking forever.
+      _deviceIdentityPending.delete(entityId);
+    });
+  return undefined;
+}
+
+// The dialog header's own manufacturer/model line, between the name and
+// the status badge (_buildDialogHeaderShell's own identityEl) -- only
+// for a genuine, vendor-issued Zigbee device (identity, from
+// _resolveDeviceIdentity, is already null for anything else). Never
+// repeats what the name already says: a name like "Sonoff BASICR3"
+// already states manufacturer and model itself, so showing "Sonoff
+// BASICR3" again right underneath would just be noise. When there's
+// nothing left to say but a Zigbee2MQTT link still applies, that link
+// itself becomes the line instead of disappearing outright, labeled
+// "Zigbee2MQTT" rather than repeating the device's own already-shown
+// manufacturer/model. Null only when there's genuinely nothing to show
+// at all (name already says it, and no Zigbee2MQTT link either).
+function _buildDeviceIdentityLine(friendlyName, identity) {
+  if (!identity) return null;
+  const { manufacturer, model, zigbee2mqtt_url: z2mUrl } = identity;
+  const haystack = (friendlyName || "").toLowerCase();
+  const alreadyNamed = haystack.includes(manufacturer.toLowerCase()) || haystack.includes(model.toLowerCase());
+  let text;
+  if (!alreadyNamed) {
+    text = `${manufacturer} ${model}`;
+  } else if (z2mUrl) {
+    text = "Zigbee2MQTT";
+  } else {
+    return null;
+  }
+  const el = document.createElement(z2mUrl ? "a" : "div");
+  el.className = "dialog-header-identity";
+  if (z2mUrl) {
+    el.href = z2mUrl;
+    el.target = "_blank";
+    el.rel = "noopener";
+    el.classList.add("dialog-header-identity-link");
+  }
+  el.textContent = text;
+  return el;
+}
+
 // Applies both decorations in one place -- shared by every release-notes
 // rendering path via insertReleaseNotesSection below, so notes are
 // decorated exactly once regardless of which of the three sources (HA's
@@ -5558,7 +5637,10 @@ class UpdateManagerPanel extends HTMLElement {
   // stateBadgeEl/statusBadgeEl fully configured (logo/classList, or
   // textContent/type/click-listener) before calling this, since that part
   // genuinely differs between the two.
-  _buildDialogHeaderShell(body, stateBadgeEl, nameText, statusBadgeEl) {
+  // identityEl (optional, only the real-entity branch below ever builds
+  // one): sits between the name and the status badge, see
+  // _buildDeviceIdentityLine's own top comment for what it shows and why.
+  _buildDialogHeaderShell(body, stateBadgeEl, nameText, statusBadgeEl, identityEl = null) {
     const header = document.createElement("div");
     header.className = "dialog-header";
     header.appendChild(stateBadgeEl);
@@ -5568,6 +5650,7 @@ class UpdateManagerPanel extends HTMLElement {
     nameEl.className = "dialog-header-name";
     nameEl.textContent = nameText;
     info.appendChild(nameEl);
+    if (identityEl) info.appendChild(identityEl);
     info.appendChild(statusBadgeEl);
     header.appendChild(info);
     body.appendChild(header);
@@ -5742,6 +5825,13 @@ class UpdateManagerPanel extends HTMLElement {
         repoLinks.automationsIcon = "mdi:palette-swatch";
       }
     }
+    // Same reopen-on-resolve reasoning as spookInfo above: the dialog
+    // header is already fully built by the time this would otherwise
+    // resolve, nothing in it to patch a brand-new line into afterwards.
+    const deviceIdentity = _resolveDeviceIdentity(this._hass, entityId, () => {
+      if (isDialogStale()) return;
+      this._openDetailDialog(entityId, historyEntry, communityOverride);
+    });
     let marketplaceInfo = null;
     // Both assigned later, once the menu/release-notes section below is
     // built, and read by the resolve callback right below, which only
@@ -6028,7 +6118,8 @@ class UpdateManagerPanel extends HTMLElement {
       // state.attributes.friendly_name, already the device's own real name
       // by the time it gets here (see entityState's own comment), not a
       // second, redundant friendlyEntityName(this._hass, entityId) call.
-      this._buildDialogHeaderShell(body, stateBadge, (state.attributes && state.attributes.friendly_name) || entityId, stateValue);
+      const headerName = (state.attributes && state.attributes.friendly_name) || entityId;
+      this._buildDialogHeaderShell(body, stateBadge, headerName, stateValue, _buildDeviceIdentityLine(headerName, deviceIdentity));
     } else {
       // A purely historical entry for an entity that no longer exists at
       // all: opening History for a long-removed entity used to have no
@@ -9314,6 +9405,15 @@ class UpdateManagerPanel extends HTMLElement {
          own compact name/status stack), its own exposed custom property,
          not a shadow-DOM override fight. */
       .dialog-header-status { --ha-badge-size: 28px; }
+      /* A genuine Zigbee device's own manufacturer/model (or, when that's
+         already said by the name itself, a plain "Zigbee2MQTT" link
+         instead, see _buildDeviceIdentityLine's own top comment) -- small
+         secondary-text either way, not competing with the real title
+         above it. The clickable variant only ever differs by color/
+         underline, same link convention ha-markdown's own real anchors
+         already use elsewhere in this panel, not a one-off treatment. */
+      .dialog-header-identity { color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px); }
+      .dialog-header-identity-link { color: var(--primary-color); text-decoration: underline; cursor: pointer; }
       /* The update-detail dialog's own timeline (_buildTimeline), replacing
          the old readyAlert/statusAlert/heldBackAlert stack -- .step/.step-
          start/.step-icon/.step-line/.step-content and the rules below are

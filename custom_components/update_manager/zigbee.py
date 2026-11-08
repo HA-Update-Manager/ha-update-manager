@@ -16,6 +16,8 @@ two literal, non-configurable fields are.
 """
 from __future__ import annotations
 
+import re
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -38,6 +40,34 @@ def is_zigbee2mqtt_device(hass: HomeAssistant, device: dr.DeviceEntry) -> bool:
         return False
     bridge = dr.async_get(hass).async_get(device.via_device_id)
     return bool(bridge and bridge.manufacturer == "Zigbee2MQTT" and bridge.model == "Bridge")
+
+
+# Replicates zigbee2mqtt.io's own docgen/utils.ts normalizeModel() exactly
+# (verified against its real source, Koenkk/zigbee2mqtt.io): "/", "|", a
+# space, or ":" each become "_", nothing else is touched. That function's
+# own result is the real device-page filename (and so the public URL
+# slug) under https://www.zigbee2mqtt.io/devices/.
+_Z2M_MODEL_NORMALIZE_RE = re.compile(r"[/| |:]")
+
+
+def zigbee2mqtt_device_url(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None:
+    """The real zigbee2mqtt.io device page for device, or None if it isn't a
+    Zigbee2MQTT device at all, or Zigbee2MQTT's own MQTT discovery never
+    set a model_id for it (older Zigbee2MQTT releases, or a model
+    zigbee-herdsman-converters doesn't have a real definition for).
+    model_id, not model: Zigbee2MQTT publishes the real model
+    (zigbee-herdsman-converters' own definition id, e.g. "ZG-308Z") as
+    model_id, and the human-readable description (e.g. "Water valve") as
+    model -- confirmed against Zigbee2MQTT's own real source,
+    lib/extension/homeassistant.ts's getDevicePayload, and against Home
+    Assistant's own MQTT integration (entity.py's
+    device_info_from_specifications) actually carrying model_id through to
+    device_registry's own distinct model_id field, not silently dropping
+    it the way model alone would be ambiguous for this."""
+    if not is_zigbee2mqtt_device(hass, device) or not device.model_id:
+        return None
+    slug = _Z2M_MODEL_NORMALIZE_RE.sub("_", device.model_id)
+    return f"https://www.zigbee2mqtt.io/devices/{slug}.html"
 
 
 def zigbee_network_id(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None:
