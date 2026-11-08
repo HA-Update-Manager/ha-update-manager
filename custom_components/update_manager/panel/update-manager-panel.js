@@ -1080,13 +1080,17 @@ function joinUsernames(tr, usernames) {
 function installMethodText(tr, entry) {
   if (!entry.auto_installed) {
     // install_method (added 2026-08-18): absent on any entry logged before
-    // this existed, which stays "Manual" exactly as it always has --
-    // "External" only for a real, confirmed-live distinction (a resolvable
-    // context.user_id vs none at all, see __init__.py's own _on_install),
-    // never guessed for older entries with no data to base it on.
-    return entry.install_method === "external"
-      ? tr.dialog_history_method_external
-      : tr.dialog_history_method_manual;
+    // this existed, which stays "Manual" exactly as it always has.
+    // "external" only ever means no update.install call was observed for
+    // this at all -- not a confirmed fact about *where* it happened (a
+    // device genuinely self-updating outside Home Assistant, and a real
+    // action taken through Home Assistant that just doesn't go through
+    // that service call, like reimporting a blueprint, look identical
+    // here). Direct user feedback, 2026-11-09, after exactly that second
+    // case showed up labeled "External": null (skipped by
+    // buildKeyValueRows below, same as every other not-actually-known
+    // fact on this card) instead of asserting a method that isn't known.
+    return entry.install_method === "external" ? null : tr.dialog_history_method_manual;
   }
   if (entry.auto_install_reason === "trusted_voter") {
     return tr.dialog_history_method_trusted(joinUsernames(tr, entry.trusted_voter_usernames || []));

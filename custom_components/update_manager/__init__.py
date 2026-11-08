@@ -321,14 +321,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         # this: a genuine human-triggered install always carries a
         # resolvable context.user_id, propagated synchronously from the
         # update.install service call all the way to this exact state,
-        # confirmed against core.py's own source too, not guessed. An
-        # entity that updated itself outside Home Assistant entirely (a
-        # UniFi switch's own auto-update, a Home Assistant Voice PE and a
-        # Zigbee device both silently reporting an already-newer version)
-        # never went through that service call at all, so user_id is
-        # always empty there, same "Via Update"/no attribution shown in
-        # the Logbook itself for exactly these three real cases. Only
-        # checked once "auto" (our own dispatch) is already ruled out:
+        # confirmed against core.py's own source too, not guessed. "external"
+        # itself only ever means that -- no observed update.install call to
+        # attribute this to -- not a confirmed fact about where the install
+        # actually happened (2026-11-09: a real case, reimporting a blueprint
+        # through Home Assistant's own blueprint UI, looks identical here to
+        # an entity genuinely self-updating outside Home Assistant entirely,
+        # like a UniFi switch's own auto-update; neither ever goes through
+        # that service call, so user_id is always empty for both). The UI
+        # (panel/update-manager-panel.js's own installMethodText, the notify
+        # Blueprint's own "Update installed" message) only ever shows this as
+        # the absence of a known method, never a specific claim about one.
+        # Only checked once "auto" (our own dispatch) is already ruled out:
         # install_manager.py's own service calls have no user_id either
         # (backend code, not a logged-in session), which would otherwise
         # misread as "external" too.
@@ -371,13 +375,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         # moment with no guaranteed relationship to when the install
         # actually happened (possibly across a restart). Neither
         # was_manually_requested nor new_state.context.user_id can be
-        # trusted there either, so this falls back to the older, safe
-        # "manual" default instead of guessing "external" from an
-        # untrustworthy signal.
+        # trusted there either, so this is as unconfirmed as install_method
+        # ever gets -- "external" exactly, now that that value means "not
+        # confirmed", not "confirmed to have happened somewhere else"
+        # (2026-11-09, see this function's own comment on "manual" vs
+        # "external" below). Used to default to "manual" instead, back when
+        # "external" still carried that stronger, wrong implication.
         if context is not None:
             install_method = "auto"
         elif retroactive:
-            install_method = "manual"
+            install_method = "external"
         else:
             requested, _ = rollout_manager.was_manually_requested(entity_id, new_version)
             install_method = "manual" if requested or new_state.context.user_id else "external"
