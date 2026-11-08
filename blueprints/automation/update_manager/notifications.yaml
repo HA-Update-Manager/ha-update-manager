@@ -48,7 +48,7 @@ max: 30
 
 trigger:
   - trigger: state
-    entity_id: sensor.update_manager_pending_installs
+    entity_id: sensor.update_manager_scheduled_installs
     id: pending_changed
   - trigger: event
     event_type: update_manager_installed
@@ -78,7 +78,7 @@ variables:
 
 action:
   - choose:
-      # Scheduled auto-install: reads sensor.update_manager_pending_installs, the same live list
+      # Scheduled auto-install: reads sensor.update_manager_scheduled_installs, the same live list
       # install_manager.py's own "Scheduled updates" persistent notification is built from, so this
       # bundles/clears exactly as reliably as that one does (including a cancelled install dropping
       # out, which the update_manager_announced event alone has no way to signal). Passive: this is an
