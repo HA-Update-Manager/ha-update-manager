@@ -4167,9 +4167,29 @@ class UpdateManagerPanel extends HTMLElement {
       if (this._isEffectivelyInstalling(entityId)) return 0;
       return 2;
     };
+    // Secondary key, within the same priority tier only: a rollout queue's
+    // own members sorted by their real queue position, so each one prints
+    // directly below the entity its own "Waiting for X" badge names, not
+    // scattered through the list in whatever arbitrary order entityIds
+    // itself happens to carry (see this method's own comment above).
+    // null for anything with no rollout group at all (tier-blocked, or
+    // genuinely nothing to pace against) -- left in its existing relative
+    // order, same stable-sort guarantee the undifferentiated tier already
+    // relied on before this.
+    const rolloutSortKey = (entityId) => {
+      const status = this._rolloutStatusFor(entityId);
+      return status && status.groupKey != null ? `${status.groupKey}\u0000${String(status.position).padStart(6, "0")}` : null;
+    };
     entityIds
       .slice()
-      .sort((a, b) => priority(a) - priority(b))
+      .sort((a, b) => {
+        const byPriority = priority(a) - priority(b);
+        if (byPriority !== 0) return byPriority;
+        const ka = rolloutSortKey(a);
+        const kb = rolloutSortKey(b);
+        if (ka == null || kb == null) return 0;
+        return ka < kb ? -1 : ka > kb ? 1 : 0;
+      })
       .forEach((entityId) => {
         const u = this._updates.find((x) => x.entity_id === entityId);
         // "installed → latest", matching the main Updates list's own rows
@@ -4293,7 +4313,18 @@ class UpdateManagerPanel extends HTMLElement {
     for (const group of this._rolloutGroups) {
       group.entities.forEach((entry, i) => {
         const waitingForEntityId = i > 0 ? group.entities[i - 1].entity_id : null;
-        this._rolloutStatusByEntityId.set(entry.entity_id, { status: entry.status, waitingForEntityId });
+        // groupKey/position: read by _buildInstallingCard's own sort, so a
+        // group's members always print in actual queue order, one above
+        // the next -- direct user feedback, 2026-11-08: entityIds' own
+        // order (see that method's own comment) is essentially arbitrary,
+        // so a "Waiting for X" badge routinely named an entity nowhere
+        // near it in the printed list, several rows away or even below it.
+        this._rolloutStatusByEntityId.set(entry.entity_id, {
+          status: entry.status,
+          waitingForEntityId,
+          groupKey: group.key,
+          position: i,
+        });
       });
     }
   }
