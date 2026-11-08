@@ -70,7 +70,7 @@ from .core_blog_notes import (
     post_source_path,
     slugify_heading,
 )
-from .device_identity import resolve_full_identity
+from .device_identity import async_spook_blueprint_source_url, resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
@@ -647,6 +647,19 @@ async def _handle_core_announcement(hass: HomeAssistant, connection: websocket_a
         connection.send_result(msg["id"], {"url": None, "intro": None})
         return
     connection.send_result(msg["id"], result)
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/spook_blueprint_source",
+        vol.Required("entity_id"): str,
+    }
+)
+async def _handle_spook_blueprint_source(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    source_url = await async_spook_blueprint_source_url(hass, msg["entity_id"])
+    connection.send_result(msg["id"], {"source_url": source_url})
 
 
 @callback
@@ -1437,6 +1450,7 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _handle_refresh_community_verdicts)
     websocket_api.async_register_command(hass, _handle_github_release_notes)
     websocket_api.async_register_command(hass, _handle_core_announcement)
+    websocket_api.async_register_command(hass, _handle_spook_blueprint_source)
     websocket_api.async_register_command(hass, _handle_install_log)
     websocket_api.async_register_command(hass, _handle_cancel_pending_install)
     websocket_api.async_register_command(hass, _handle_force_ready)

@@ -2115,6 +2115,60 @@ function _resolveMarketplaceInfo(hass, owner, repo, onResolved) {
   return undefined;
 }
 
+// Spook's own blueprint-update entities (see https://spook.boo/blueprint/)
+// never carry their real source outside their own dialog -- release_url
+// stays empty (confirmed live, 2026-11-08) -- so this panel's own normal
+// repoLinks (which only ever derives from release_url, see that
+// function's own top comment) finds nothing at all for one of these, and
+// the header menu doesn't even render in the first place (configuration/
+// repository/issues all come up empty). Every Spook-created entity's own
+// entity_picture falls back to Spook's own brand icon unless something
+// else overrides it -- a free, synchronous hint already sitting on the
+// entity's own state, worth checking before ever asking the backend.
+const _SPOOK_BRAND_ICON_RE = /\/brands\/integration\/spook\//;
+function _looksLikeSpookEntity(hass, entityId) {
+  const state = hass.states && hass.states[entityId];
+  const picture = state && state.attributes && state.attributes.entity_picture;
+  return Boolean(picture && _SPOOK_BRAND_ICON_RE.test(picture));
+}
+
+// Same cache-plus-callback shape as _resolveMarketplaceInfo above, keyed
+// by entity_id instead of owner/repo. Only the backend can actually
+// confirm *and* resolve this (see device_identity.py's own
+// async_spook_blueprint_source_url) -- entity_registry's own unique_id
+// isn't exposed to the frontend at all, and the blueprint file itself
+// lives on disk, neither reachable from here. Settles straight to null,
+// synchronously, without ever calling the backend, for the overwhelming
+// majority of entities that don't even pass _looksLikeSpookEntity above.
+const _spookBlueprintSourceCache = new Map();
+const _spookBlueprintSourcePending = new Map();
+function _resolveSpookBlueprintSource(hass, entityId, onResolved) {
+  if (_spookBlueprintSourceCache.has(entityId)) return _spookBlueprintSourceCache.get(entityId);
+  if (!_looksLikeSpookEntity(hass, entityId)) {
+    _spookBlueprintSourceCache.set(entityId, null);
+    return null;
+  }
+  if (_spookBlueprintSourcePending.has(entityId)) {
+    if (onResolved) _spookBlueprintSourcePending.get(entityId).push(onResolved);
+    return undefined;
+  }
+  _spookBlueprintSourcePending.set(entityId, onResolved ? [onResolved] : []);
+  hass
+    .callWS({ type: "update_manager/spook_blueprint_source", entity_id: entityId })
+    .then((result) => {
+      const sourceUrl = (result && result.source_url) || null;
+      _spookBlueprintSourceCache.set(entityId, sourceUrl);
+      const waiting = _spookBlueprintSourcePending.get(entityId) || [];
+      _spookBlueprintSourcePending.delete(entityId);
+      if (sourceUrl) waiting.forEach((cb) => cb(sourceUrl));
+    })
+    .catch(() => {
+      _spookBlueprintSourceCache.set(entityId, null);
+      _spookBlueprintSourcePending.delete(entityId);
+    });
+  return undefined;
+}
+
 // Applies both decorations in one place -- shared by every release-notes
 // rendering path via insertReleaseNotesSection below, so notes are
 // decorated exactly once regardless of which of the three sources (HA's
@@ -5619,6 +5673,24 @@ class UpdateManagerPanel extends HTMLElement {
     // already relied on before this was hoisted up to share with it.
     const releaseUrlForRepo = u ? u.release_url : entries[0] && entries[0].release_url;
     const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForRepo);
+    // Overrides repository (its real source, not the empty release_url
+    // this entity never has, see _resolveSpookBlueprintSource's own top
+    // comment) and adds about, a fixed link to Spook's own explanation of
+    // this entity type -- neither configuration/repository/issues above
+    // found anything for one of these, so the menu wouldn't otherwise
+    // render at all. No menu existing yet for this entity means there's
+    // nothing to patch in place once this resolves (unlike marketplaceInfo
+    // below, which only ever touches an already-open menu) -- reopening
+    // is the simplest way to show it up without a second, parallel
+    // "build the menu" path just for this one case.
+    const spookSource = _resolveSpookBlueprintSource(this._hass, entityId, () => {
+      if (isDialogStale()) return;
+      this._openDetailDialog(entityId, historyEntry, communityOverride);
+    });
+    if (spookSource) {
+      repoLinks.repository = spookSource;
+      repoLinks.about = "https://spook.boo/blueprint/#updates";
+    }
     let marketplaceInfo = null;
     // Both assigned later, once the menu/release-notes section below is
     // built, and read by the resolve callback right below, which only
@@ -6316,7 +6388,7 @@ class UpdateManagerPanel extends HTMLElement {
     // Supervisor/OS, which have no repository at all, or a brand-new
     // entity with no History yet and no current pending update either.
     {
-      if (repoLinks.configuration || repoLinks.repository || repoLinks.issues) {
+      if (repoLinks.configuration || repoLinks.repository || repoLinks.about || repoLinks.issues) {
         // A real ha-icon-button trigger with an explicit placement, not
         // the toolbar's own plain-button pattern (_syncOverflowMenu's own
         // menuBtn above), fixing an earlier bug where opening this
@@ -6358,6 +6430,7 @@ class UpdateManagerPanel extends HTMLElement {
           addMenuLink("configuration", marketplace ? "mdi:store" : "mdi:cog", marketplace ? tr.dialog_menu_marketplace : tr.dialog_menu_visit);
         }
         if (repoLinks.repository) addMenuLink("repository", "mdi:github", tr.dialog_menu_repository);
+        if (repoLinks.about) addMenuLink("about", "mdi:information-outline", tr.dialog_menu_about);
         if (repoLinks.issues) {
           // The open-issue count, when Marketplace's own real repository
           // info has already resolved it (marketplaceInfo, see this

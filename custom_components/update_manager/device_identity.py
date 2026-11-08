@@ -25,6 +25,7 @@ this module there. Same reasoning zigbee.py already uses for hardcoding
 """
 from __future__ import annotations
 
+from homeassistant.components.blueprint import DOMAIN as _BLUEPRINT_DOMAIN
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -67,6 +68,60 @@ def is_hacs_entity(hass: HomeAssistant, entity_id: str) -> bool:
     some."""
     entry = er.async_get(hass).async_get(entity_id)
     return entry is not None and entry.platform in (_HACS_DOMAIN, _MARKETPLACE_DOMAIN)
+
+
+# Spook's own integration domain (verified against frenck/spook's real
+# source, custom_components/spook/const.py: DOMAIN = "spook"). Hardcoded,
+# same reasoning as _HACS_DOMAIN/_HASSIO_DOMAIN above: Spook isn't a
+# dependency of this integration and isn't guaranteed to be installed.
+_SPOOK_DOMAIN = "spook"
+
+# Spook's own unique_id prefixes for its blueprint-update entities
+# (custom_components/spook/ectoplasms/blueprint/update.py's own
+# _unique_id(): f"blueprint_{blueprint_domain}_{blueprint_path}", only ever
+# "automation" or "script" for blueprint_domain). entry.platform alone
+# isn't enough to tell this apart from any of Spook's own other update
+# entities (its own integration self-update, for one) -- this prefix is
+# what's actually specific to the blueprint feature.
+_SPOOK_BLUEPRINT_UNIQUE_ID_PREFIXES = {
+    "automation": "blueprint_automation_",
+    "script": "blueprint_script_",
+}
+
+
+async def async_spook_blueprint_source_url(hass: HomeAssistant, entity_id: str) -> str | None:
+    """The real source_url Spook's own blueprint-update feature (see
+    https://spook.boo/blueprint/) tracks entity_id against, or None if
+    entity_id isn't one of Spook's own blueprint-update entities at all.
+    Spook deliberately never puts this in the entity's own state (its own
+    release_url stays empty, confirmed live 2026-11-08) -- this re-derives
+    it the same way Spook's own update entity itself does, straight from
+    the blueprint file on disk, via the automation/script component's own
+    already-loaded DomainBlueprints instance (not a second, hand-rolled
+    YAML parser here -- that would also need to handle blueprints' own
+    `!input` tag, which this gets for free this way)."""
+    entry = er.async_get(hass).async_get(entity_id)
+    if entry is None or entry.platform != _SPOOK_DOMAIN or entry.unique_id is None:
+        return None
+    blueprint_path = None
+    blueprint_domain = None
+    for candidate_domain, prefix in _SPOOK_BLUEPRINT_UNIQUE_ID_PREFIXES.items():
+        if entry.unique_id.startswith(prefix):
+            blueprint_domain = candidate_domain
+            blueprint_path = entry.unique_id[len(prefix) :]
+            break
+    if blueprint_path is None:
+        return None
+    domain_blueprints = hass.data.get(_BLUEPRINT_DOMAIN, {}).get(blueprint_domain)
+    if domain_blueprints is None:
+        return None
+    try:
+        blueprint = await domain_blueprints.async_get_blueprint(blueprint_path)
+    except Exception:  # noqa: BLE001 - best-effort UI hint, never worth failing the dialog over
+        return None
+    source_url = blueprint.metadata.get("source_url")
+    return source_url if isinstance(source_url, str) else None
+
 
 # Real, literal identifier values hassio's own entity.py uses for its
 # non-add-on devices (Core/Supervisor/OS/host/mount), never a real add-on
