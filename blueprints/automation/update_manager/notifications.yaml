@@ -179,7 +179,7 @@ action:
       # as the pending branch above. Having the real reason tag available now (not just the entity_id/
       # to_version the update_manager_install_failed event itself carries) means this can finally show
       # the same "needs you to open Marketplace" detail the built-in notification does, not just the
-      # generic text. Not passive: a failure deserves attention, same as needs-manual-action below.
+      # generic text.
       - conditions:
           - condition: trigger
             id: failed_changed
@@ -235,9 +235,11 @@ action:
                           tag: "update_manager_failed_{{ repeat.item.entity_id }}"
                           channel: "Update Manager"
                           notification_icon: "mdi:update"
+                          importance: low
+                          push:
+                            interruption-level: passive
 
-      # Needs a manual install: the one notification type that actually needs you, so this one keeps
-      # the normal (not passive) importance, and ships with an Install button right on it.
+      # Needs a manual install: ships with an Install button right on it.
       - conditions:
           - condition: trigger
             id: needs_manual_action
@@ -292,6 +294,9 @@ action:
                           clickAction: /update-manager/updates
                           channel: "Update Manager"
                           notification_icon: "mdi:update"
+                          importance: low
+                          push:
+                            interruption-level: passive
                           actions:
                             - action: "UM_INSTALL_{{ repeat.item.entity_id }}"
                               title: "Install now"
