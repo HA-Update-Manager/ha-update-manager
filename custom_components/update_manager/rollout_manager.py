@@ -1129,6 +1129,21 @@ class RolloutManager:
             del self._queues[group_key]
             await self._async_save()
             return
+        # Marked *before* the save below, not left to _async_dispatch's own
+        # call to this -- found live, 2026-11-08: popping the finished
+        # entry here already makes is_queued() stop protecting the new
+        # front entry (it's no longer "waiting behind someone" per that
+        # function's own definition), and install_manager.py's own
+        # _recently_executed guard is the only other thing that protects
+        # it. await self._async_save() right below is a real yield point
+        # (Store I/O), long enough for install_manager.py's own coordinator-
+        # triggered tick to run in between and find this entity in neither
+        # self._pending (already cleared when its own announce_wait first
+        # elapsed) nor is_queued() nor _recently_executed -- indistinguishable
+        # from a brand-new, never-announced update, so it got a fresh
+        # announce (and EVENT_ANNOUNCED) every single time a sibling ahead
+        # of it in the queue finished installing.
+        self._mark_entry_dispatching(entries[0])
         # info, not warning -- direct user feedback, 2026-08-12: this is the
         # queue working exactly as designed (one finished, the next one's
         # own turn came), not something that needs attention. Warning made
@@ -1261,6 +1276,29 @@ class RolloutManager:
             notification_id=_STALLED_NOTIFICATION_ID,
         )
 
+    def _mark_entry_dispatching(self, entry: _QueuedEntry) -> None:
+        """Pure in-memory bookkeeping (self._mark_recently_executed is
+        never persisted), so this is always safe to call as early as
+        possible, before any `await` -- see _async_advance's own comment
+        for why that matters. Idempotent: callable more than once for the
+        same entry with no harmful effect, just reassigning the same dict
+        entry."""
+        if entry.is_auto and self._mark_recently_executed is not None:
+            # entry.context is only ever None for an is_auto=True entry
+            # that was queued (and persisted) before this session's
+            # trusted-voter feature added the field at all -- found by
+            # review: an unconditional `and entry.context is not None` here
+            # would silently skip mark_recently_executed for exactly that
+            # entry, misattributing a genuinely automatic install as manual
+            # once its turn in the queue finally comes after upgrading.
+            # Falling back to a plain "rules" context (no trusted-voter
+            # detail, since none was ever recorded for it) keeps the
+            # is_auto=True marker meaningful either way.
+            context = entry.context or AutoInstallContext(
+                to_version=entry.to_version, reason="rules", trusted_voter_usernames=[], announced_at=None
+            )
+            self._mark_recently_executed(entry.entity_id, context)
+
     async def _async_dispatch(self, entry: _QueuedEntry) -> None:
         # Already installed by some other route while this request sat
         # waiting its turn here. Confirmed live, 2026-09-30: the main way
@@ -1290,21 +1328,14 @@ class RolloutManager:
         if state is not None and state.attributes.get("installed_version") == entry.to_version:
             return
         self._in_flight_entry(entry.entity_id).front_since = dt_util.utcnow()
-        if entry.is_auto and self._mark_recently_executed is not None:
-            # entry.context is only ever None for an is_auto=True entry
-            # that was queued (and persisted) before this session's
-            # trusted-voter feature added the field at all -- found by
-            # review: an unconditional `and entry.context is not None` here
-            # would silently skip mark_recently_executed for exactly that
-            # entry, misattributing a genuinely automatic install as manual
-            # once its turn in the queue finally comes after upgrading.
-            # Falling back to a plain "rules" context (no trusted-voter
-            # detail, since none was ever recorded for it) keeps the
-            # is_auto=True marker meaningful either way.
-            context = entry.context or AutoInstallContext(
-                to_version=entry.to_version, reason="rules", trusted_voter_usernames=[], announced_at=None
-            )
-            self._mark_recently_executed(entry.entity_id, context)
+        # Already marked by _async_advance/_async_retry_tier_blocked's own
+        # earlier call to this same method if this entry got here through
+        # either of those (see _async_advance's own comment for why it
+        # can't wait until here) -- calling it again is a harmless no-op in
+        # that case, just reassigning the same dict entry. Still needed
+        # here outright for async_start's own restart-recovery path, the
+        # one remaining caller that never marks ahead of this.
+        self._mark_entry_dispatching(entry)
         try:
             if self._dispatch_install is not None:
                 await self._dispatch_install(entry.service_data, entry.ha_context)
