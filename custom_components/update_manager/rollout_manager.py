@@ -587,6 +587,29 @@ class RolloutManager:
 
     def async_start(self) -> None:
         self._unsub_install_listener = self._coordinator.async_add_install_listener(self._on_install_completed)
+        # Every persisted queue's own front marked in-flight *synchronously*,
+        # right here, before anything else runs at all -- found live,
+        # 2026-11-08: self._in_flight is never persisted (see its own
+        # comment, unlike self._queues), so right after a restart it starts
+        # empty regardless of what was genuinely installing before.
+        # install_manager.py's own async_start() (called just before this
+        # one, see __init__.py) already schedules its own first evaluation
+        # tick the same way _async_recover_after_restart below is scheduled
+        # -- an independent task, not awaited -- and reliably wins that
+        # race, since it's scheduled first. An entity genuinely still the
+        # front of its own queue had nothing protecting it at that point
+        # (is_queued() never did, and not being auto-install's own doing
+        # never populated install_manager.py's own self._recently_executed
+        # either) and got a fresh, spurious re-announce the instant HA
+        # restarted. Scheduling _async_recover_after_restart first instead
+        # wouldn't reliably close this: it still has real `await`s of its
+        # own before actually re-marking anything, the same kind of gap this
+        # project's own recent rollout_manager.py fixes already closed
+        # elsewhere -- only something synchronous, before either task gets
+        # a chance to run at all, closes it for certain.
+        for entries in self._queues.values():
+            if entries:
+                self._in_flight_entry(entries[0].entity_id).front_since = dt_util.utcnow()
         # Restart recovery: for every persisted queue, check whether its
         # front entry actually finished (or is still genuinely mid-install):
         # neither can just be assumed after a restart, since no task or
