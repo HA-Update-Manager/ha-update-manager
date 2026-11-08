@@ -54,18 +54,22 @@ const CORE_UPDATE_ENTITY_ID = "update.home_assistant_core_update";
 // importing that package would need a build step, same reasoning as
 // avoiding Lit everywhere else in this project.
 // home-assistant-js-websocket's own Connection.sendMessagePromise (what
-// hass.callWS calls into) rejects with the bare number 3 (its own
-// ERR_CONNECTION_LOST constant, lib/errors.ts) instead of an Error object
-// when the connection itself drops while a command is still in flight --
-// its own real docs call this out as the one special-case rejection shape
-// reachable from an in-progress command (the other numbered error codes
-// there are all about the initial auth/connect handshake, never seen from
-// a live callWS failure). Found live, 2026-08-09:
-// _loadAll's own catch fell through to String(err) for this, surfacing as
-// the literal, meaningless "Couldn't load Update Manager: 3" -- see
-// LOAD_ERROR_CONNECTION_LOST below for how that's now told apart from a
-// real error message.
+// hass.callWS calls into) rejects with its own ERR_CONNECTION_LOST
+// constant (lib/errors.ts) when the connection itself drops while a
+// command is still in flight. Verified directly against that library's
+// real source, 2026-11-09: every actual rejection path wraps it via its
+// own connectionLost() helper (messages.error(ERR_CONNECTION_LOST,
+// "Connection lost")), never the bare number alone -- so the shape that
+// actually reaches here is {type: "result", success: false, error: {code:
+// 3, message: "Connection lost"}}, confirmed live too (a real "Couldn't
+// load Update Manager" screenshot showing exactly that JSON). Checked the
+// same way home-assistant-js-websocket's own isConnectionLost() does: the
+// bare number or an object whose .error.code matches, not just one shape.
 const WS_ERR_CONNECTION_LOST = 3;
+
+function isConnectionLostError(err) {
+  return err === WS_ERR_CONNECTION_LOST || (err && err.error && err.error.code === WS_ERR_CONNECTION_LOST);
+}
 // A distinct sentinel object, not a plain string -- _loadAll's own catch
 // can't look up the actual translated text yet (this._tr may still be
 // null at that point, before _translationsReady resolves; see get _tr's
@@ -2737,7 +2741,7 @@ class UpdateManagerPanel extends HTMLElement {
       }
       this._loadError = null;
     } catch (err) {
-      this._loadError = err === WS_ERR_CONNECTION_LOST ? LOAD_ERROR_CONNECTION_LOST : describeLoadError(err);
+      this._loadError = isConnectionLostError(err) ? LOAD_ERROR_CONNECTION_LOST : describeLoadError(err);
     }
     // Snapshot of every update.* entity_id hass currently considers
     // *available* (state !== "unavailable"/"unknown"), mapped to a short
@@ -3926,11 +3930,16 @@ class UpdateManagerPanel extends HTMLElement {
       // here uses. this._tr guaranteed non-null here: _renderContent's own
       // caller already waits on _translationsReady before ever reaching
       // this point (see its own guard near the top of this method).
+      const connectionLost = this._loadError === LOAD_ERROR_CONNECTION_LOST;
       const errorAlert = document.createElement("ha-alert");
-      errorAlert.alertType = "error";
-      errorAlert.title = this._tr.load_error_title;
-      errorAlert.textContent =
-        this._loadError === LOAD_ERROR_CONNECTION_LOST ? this._tr.load_error_connection_lost : this._loadError;
+      // A dropped connection is expected and self-resolving (HA
+      // restarting, a brief network blip), not a real load failure -- a
+      // red "Couldn't load Update Manager" title over it reads as more
+      // broken than it is. Shown as a plain warning with just the
+      // "reload once it's back" text instead, no alarming title.
+      errorAlert.alertType = connectionLost ? "warning" : "error";
+      if (!connectionLost) errorAlert.title = this._tr.load_error_title;
+      errorAlert.textContent = connectionLost ? this._tr.load_error_connection_lost : this._loadError;
       this._contentEl.appendChild(errorAlert);
       return;
     }
