@@ -123,6 +123,10 @@ class SpookBlueprintInfo(NamedTuple):
     source_url: str | None
     list_url: str | None
     count: int
+    # "automation" or "script" -- the panel needs this to label its own
+    # menu item correctly (Automations vs Scripts), not just to build
+    # list_url/count above.
+    blueprint_domain: str
 
 
 async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> SpookBlueprintInfo | None:
@@ -171,7 +175,7 @@ async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> Spo
         if blueprint is not None:
             candidate = blueprint.metadata.get("source_url")
             source_url = candidate if isinstance(candidate, str) else None
-    return SpookBlueprintInfo(source_url=source_url, list_url=list_url, count=count)
+    return SpookBlueprintInfo(source_url=source_url, list_url=list_url, count=count, blueprint_domain=blueprint_domain)
 
 
 # Real, literal identifier values hassio's own entity.py uses for its

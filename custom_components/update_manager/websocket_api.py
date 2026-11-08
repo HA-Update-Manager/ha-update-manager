@@ -665,6 +665,7 @@ async def _handle_spook_blueprint_source(hass: HomeAssistant, connection: websoc
             "source_url": info.source_url if info else None,
             "list_url": info.list_url if info else None,
             "count": info.count if info else None,
+            "blueprint_domain": info.blueprint_domain if info else None,
         },
     )
 

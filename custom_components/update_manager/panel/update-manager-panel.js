@@ -5700,11 +5700,21 @@ class UpdateManagerPanel extends HTMLElement {
       // above) so this still lands on roughly just this one, not an
       // unrelated full list.
       const blueprintName = entityState(this._hass, entityId) && entityState(this._hass, entityId).attributes.friendly_name;
-      repoLinks.automations =
-        spookInfo.count > 0
-          ? spookInfo.list_url
-          : `/config/blueprint/dashboard?search=${encodeURIComponent(blueprintName || "")}&sort=name`;
-      repoLinks.automationsCount = spookInfo.count;
+      // Two genuinely different destinations depending on count, so this
+      // gets its own label and icon either way rather than reusing one
+      // generic "Automations"/robot icon for both -- landing on the
+      // Blueprints page itself (see above) read as wrong under that same
+      // label.
+      if (spookInfo.count > 0) {
+        repoLinks.automations = spookInfo.list_url;
+        const isScript = spookInfo.blueprint_domain === "script";
+        repoLinks.automationsLabel = isScript ? tr.dialog_menu_scripts_count(spookInfo.count) : tr.dialog_menu_automations_count(spookInfo.count);
+        repoLinks.automationsIcon = isScript ? "mdi:script-text-outline" : "mdi:robot-outline";
+      } else {
+        repoLinks.automations = `/config/blueprint/dashboard?search=${encodeURIComponent(blueprintName || "")}&sort=name`;
+        repoLinks.automationsLabel = tr.dialog_menu_blueprints;
+        repoLinks.automationsIcon = "mdi:puzzle-outline";
+      }
     }
     let marketplaceInfo = null;
     // Both assigned later, once the menu/release-notes section below is
@@ -6446,13 +6456,13 @@ class UpdateManagerPanel extends HTMLElement {
         }
         if (repoLinks.repository) addMenuLink("repository", "mdi:github", tr.dialog_menu_repository);
         if (repoLinks.about) addMenuLink("about", "mdi:information-outline", tr.dialog_menu_about);
-        // automationsCount is already known for certain whenever this
+        // automationsLabel is already known for certain whenever this
         // renders at all (unlike issues' own marketplaceInfo below, which
         // can still be mid-flight the first time its own menu item
         // exists): repoLinks.automations only ever comes from spookInfo
         // above, resolved as one single object, count included, well
         // before the menu-building code even runs.
-        if (repoLinks.automations) addMenuLink("automations", "mdi:robot-outline", tr.dialog_menu_automations_count(repoLinks.automationsCount));
+        if (repoLinks.automations) addMenuLink("automations", repoLinks.automationsIcon, repoLinks.automationsLabel);
         if (repoLinks.issues) {
           // The open-issue count, when Marketplace's own real repository
           // info has already resolved it (marketplaceInfo, see this

@@ -328,7 +328,19 @@ export const TRANSLATIONS = {
     // _resolveSpookBlueprintInfo's own top comment) -- always has a real
     // count by the time this shows at all, no plain, countless fallback
     // needed the way dialog_menu_issue_tracker_count below has one.
+    // dialog_menu_scripts_count is the same thing for a script Blueprint,
+    // not an automation one -- a genuinely different count, so its own
+    // label rather than reusing the automations one for both.
     dialog_menu_automations_count: (n) => `Automations (${n})`,
+    dialog_menu_scripts_count: (n) => `Scripts (${n})`,
+    // Count is 0 above: no real list to land on, so this instead points
+    // at the Blueprints page itself (search-prefilled), a genuinely
+    // different destination that needs its own label, not "Automations
+    // (0)"/"Scripts (0)" pointing somewhere that isn't automations or
+    // scripts at all. Same plain-page-name style as dialog_menu_repository/
+    // dialog_menu_about above, not a verb like the earlier "Find
+    // blueprint" draft read as.
+    dialog_menu_blueprints: "Blueprints",
     dialog_menu_issue_tracker: "Issues",
     // Marketplace's own real open-issue count, resolved async
     // (_resolveMarketplaceInfo). Only shown once that's actually known; see
@@ -694,6 +706,8 @@ export const TRANSLATIONS = {
     dialog_menu_repository: "Repository",
     dialog_menu_about: "Over",
     dialog_menu_automations_count: (n) => `Automatiseringen (${n})`,
+    dialog_menu_scripts_count: (n) => `Scripts (${n})`,
+    dialog_menu_blueprints: "Blueprints",
     dialog_menu_issue_tracker: "Issues",
     dialog_menu_issue_tracker_count: (n) => `Issues (${n})`,
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
