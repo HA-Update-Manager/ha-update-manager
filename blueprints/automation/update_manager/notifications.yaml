@@ -189,8 +189,17 @@ action:
           - "{{ trigger.from_state is not none }}"
         sequence:
           - variables:
-              before_ids: >-
-                {{ trigger.from_state.attributes.entities | default([]) | map(attribute='entity_id') | list }}
+              before: "{{ trigger.from_state.attributes.entities | default([]) }}"
+              before_ids: "{{ before | map(attribute='entity_id') | list }}"
+              # entity_id + to_version + reason, found live 2026-11-09: the
+              # repeat below used to loop over `after` as a whole, so *any*
+              # change to this sensor (one entity's own failure resolving,
+              # say) re-sent every other still-failed entity's own
+              # notification right along with it, even though nothing about
+              # that one had actually changed since it was last shown.
+              # Diffed by key, not just resent wholesale.
+              before_keys: >-
+                {{ before | map(attribute='entity_id') | list | zip(before | map(attribute='to_version') | list, before | map(attribute='reason') | list) | map('join', '|') | list }}
               after: "{{ trigger.to_state.attributes.entities | default([]) }}"
               after_ids: "{{ after | map(attribute='entity_id') | list }}"
           - repeat:
@@ -204,23 +213,26 @@ action:
           - repeat:
               for_each: "{{ after }}"
               sequence:
-                - action: "{{ notify_target }}"
-                  data:
-                    title: "Update failed"
-                    message: >-
-                      {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
-                      {% if repeat.item.reason == "warning_not_accepted" -%}
-                      needs you to open Marketplace once and accept its first-run warning.
-                      {%- else -%}
-                      couldn't be updated to version {{ repeat.item.to_version }}. Check the Home
-                      Assistant logs, or install it manually.
-                      {%- endif %}
-                    data:
-                      url: /update-manager/updates
-                      clickAction: /update-manager/updates
-                      tag: "update_manager_failed_{{ repeat.item.entity_id }}"
-                      channel: "Update Manager"
-                      notification_icon: "mdi:update"
+                - if: "{{ (repeat.item.entity_id ~ '|' ~ repeat.item.to_version ~ '|' ~ repeat.item.reason) in before_keys }}"
+                  then: []
+                  else:
+                    - action: "{{ notify_target }}"
+                      data:
+                        title: "Update failed"
+                        message: >-
+                          {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
+                          {% if repeat.item.reason == "warning_not_accepted" -%}
+                          needs you to open Marketplace once and accept its first-run warning.
+                          {%- else -%}
+                          couldn't be updated to version {{ repeat.item.to_version }}. Check the Home
+                          Assistant logs, or install it manually.
+                          {%- endif %}
+                        data:
+                          url: /update-manager/updates
+                          clickAction: /update-manager/updates
+                          tag: "update_manager_failed_{{ repeat.item.entity_id }}"
+                          channel: "Update Manager"
+                          notification_icon: "mdi:update"
 
       # Needs a manual install: the one notification type that actually needs you, so this one keeps
       # the normal (not passive) importance, and ships with an Install button right on it.
@@ -235,8 +247,20 @@ action:
           - "{{ trigger.from_state is not none }}"
         sequence:
           - variables:
-              before_ids: >-
-                {{ trigger.from_state.attributes.entities | default([]) | map(attribute='entity_id') | list }}
+              before: "{{ trigger.from_state.attributes.entities | default([]) }}"
+              before_ids: "{{ before | map(attribute='entity_id') | list }}"
+              # entity_id + installed_version + latest_version, found live
+              # 2026-11-09 (confirmed by direct user feedback, screenshots
+              # showing a burst right after one, unrelated manual install
+              # finished): the repeat below used to loop over `after` as a
+              # whole, so *any* change to this sensor -- another, unrelated
+              # queued sibling finishing, say -- re-sent every other still-
+              # ready-but-manual entity's own notification right along with
+              # it, even though nothing about that one had actually changed
+              # since it was last shown. Diffed by key, not just resent
+              # wholesale.
+              before_keys: >-
+                {{ before | map(attribute='entity_id') | list | zip(before | map(attribute='installed_version') | list, before | map(attribute='latest_version') | list) | map('join', '|') | list }}
               after: "{{ trigger.to_state.attributes.entities | default([]) }}"
               after_ids: "{{ after | map(attribute='entity_id') | list }}"
           - repeat:
@@ -250,22 +274,25 @@ action:
           - repeat:
               for_each: "{{ after }}"
               sequence:
-                - action: "{{ notify_target }}"
-                  data:
-                    title: "Ready, but won't auto-install"
-                    message: >-
-                      {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}:
-                      {{ repeat.item.installed_version }} → {{ repeat.item.latest_version }}
-                    data:
-                      tag: "update_manager_manual_{{ repeat.item.entity_id }}"
-                      url: /update-manager/updates
-                      clickAction: /update-manager/updates
-                      channel: "Update Manager"
-                      notification_icon: "mdi:update"
-                      actions:
-                        - action: "UM_INSTALL_{{ repeat.item.entity_id }}"
-                          title: "Install now"
-                          authenticationRequired: true
+                - if: "{{ (repeat.item.entity_id ~ '|' ~ repeat.item.installed_version ~ '|' ~ repeat.item.latest_version) in before_keys }}"
+                  then: []
+                  else:
+                    - action: "{{ notify_target }}"
+                      data:
+                        title: "Ready, but won't auto-install"
+                        message: >-
+                          {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}:
+                          {{ repeat.item.installed_version }} → {{ repeat.item.latest_version }}
+                        data:
+                          tag: "update_manager_manual_{{ repeat.item.entity_id }}"
+                          url: /update-manager/updates
+                          clickAction: /update-manager/updates
+                          channel: "Update Manager"
+                          notification_icon: "mdi:update"
+                          actions:
+                            - action: "UM_INSTALL_{{ repeat.item.entity_id }}"
+                              title: "Install now"
+                              authenticationRequired: true
 
       # Handles the Install button above. The entity_id lives inside the action id itself
       # (UM_INSTALL_update.xxx), not a separate data field: the Companion App only echoes other data
