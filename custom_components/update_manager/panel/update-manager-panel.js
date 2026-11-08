@@ -5709,11 +5709,17 @@ class UpdateManagerPanel extends HTMLElement {
         repoLinks.automations = spookInfo.list_url;
         const isScript = spookInfo.blueprint_domain === "script";
         repoLinks.automationsLabel = isScript ? tr.dialog_menu_scripts_count(spookInfo.count) : tr.dialog_menu_automations_count(spookInfo.count);
-        repoLinks.automationsIcon = isScript ? "mdi:script-text-outline" : "mdi:robot-outline";
+        // Same icons HA's own config-sections.ts uses for these two real
+        // tabs (mdiRobot/mdiScriptText), confirmed against its real
+        // source -- not a close-enough guess.
+        repoLinks.automationsIcon = isScript ? "mdi:script-text" : "mdi:robot";
       } else {
         repoLinks.automations = `/config/blueprint/dashboard?search=${encodeURIComponent(blueprintName || "")}&sort=name`;
         repoLinks.automationsLabel = tr.dialog_menu_blueprints;
-        repoLinks.automationsIcon = "mdi:puzzle-outline";
+        // Same icon HA's own config-sections.ts uses for the real
+        // Blueprints tab (mdiPaletteSwatch), confirmed against its real
+        // source.
+        repoLinks.automationsIcon = "mdi:palette-swatch";
       }
     }
     let marketplaceInfo = null;
