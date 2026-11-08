@@ -87,6 +87,17 @@ action:
           - condition: trigger
             id: pending_changed
           - "{{ notify_scheduled }}"
+          # Direct user feedback, 2026-11-08: every entity already pending
+          # before an HA restart got re-notified the instant it started
+          # back up. This automation (like every automation) only starts
+          # comparing trigger.from_state/to_state once it reloads, so the
+          # very first time this sensor's own state is set after that has
+          # no genuine "before" to diff against (trigger.from_state is
+          # none) -- before_ids below reads as empty regardless of what was
+          # already shown before the restart, and everything still pending
+          # looks brand new. Skipped outright rather than notified on a
+          # from_state this automation never actually saw happen.
+          - "{{ trigger.from_state is not none }}"
         sequence:
           - variables:
               before_ids: >-
@@ -174,6 +185,8 @@ action:
           - condition: trigger
             id: failed_changed
           - "{{ notify_install_failed }}"
+          # Same restart-burst reasoning as the pending branch above.
+          - "{{ trigger.from_state is not none }}"
         sequence:
           - variables:
               before_ids: >-
@@ -215,6 +228,11 @@ action:
           - condition: trigger
             id: needs_manual_action
           - "{{ notify_manual_action }}"
+          # Same restart-burst reasoning as the pending branch above --
+          # confirmed live, 2026-11-08: every entity already "ready, but
+          # won't auto-install" before a restart got re-notified for it,
+          # all at once, the instant HA started back up.
+          - "{{ trigger.from_state is not none }}"
         sequence:
           - variables:
               before_ids: >-
