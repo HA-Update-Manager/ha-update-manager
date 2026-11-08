@@ -2157,6 +2157,12 @@ function _resolveSpookBlueprintInfo(hass, entityId, onResolved) {
   hass
     .callWS({ type: "update_manager/spook_blueprint_source", entity_id: entityId })
     .then((result) => {
+      // A real, successful response confirming this specific entity isn't
+      // a blueprint-tracked one after all (Spook's own brand icon, but
+      // not this feature -- its own integration self-update entity, say)
+      // is a stable fact about the entity itself, same as
+      // _looksLikeSpookEntity's own permanent cache above. Cached
+      // permanently.
       const info = result && result.list_url ? result : null;
       _spookBlueprintInfoCache.set(entityId, info);
       const waiting = _spookBlueprintInfoPending.get(entityId) || [];
@@ -2164,7 +2170,13 @@ function _resolveSpookBlueprintInfo(hass, entityId, onResolved) {
       if (info) waiting.forEach((cb) => cb(info));
     })
     .catch(() => {
-      _spookBlueprintInfoCache.set(entityId, null);
+      // Confirmed live, 2026-11-08: the call itself failing (the backend
+      // command not deployed/restarted yet, a momentary disconnect) used
+      // to cache this exact same permanent null -- correct the moment it
+      // happens, every later dialog open for this entity, this session,
+      // still saw the stale failure and never tried again even once the
+      // backend genuinely came up. Not cached at all here: only ever
+      // clears the pending queue, so the very next open retries fresh.
       _spookBlueprintInfoPending.delete(entityId);
     });
   return undefined;
