@@ -251,6 +251,13 @@ class InstallManager:
         # announced). Not persisted: only meaningful for the brief window
         # between dispatching and the entity's own state catching up.
         self._recently_executed: dict[str, AutoInstallContext] = {}
+        # entity_id -> (to_version, announced_at) of the last real announce,
+        # kept even after self._pending[entity_id] itself gets cleared --
+        # decide_action's own RE_ANNOUNCE_COOLDOWN guard against a flapping
+        # entity re-triggering "announce" (and a fresh EVENT_ANNOUNCED) every
+        # time eligibility briefly recovers. Not persisted, same "meaningful
+        # only for a live process" reasoning as self._recently_executed above.
+        self._recently_announced: dict[str, tuple[str, datetime]] = {}
         # entity_id -> (to_version, reason tag or None) that just failed to
         # install, purely to rebuild _refresh_failed_notification's own
         # single notification from the current, complete picture -- not
@@ -802,6 +809,7 @@ class InstallManager:
             # cached["auto_install_whitelisted"] a second time keeps this in
             # sync with whichever of the two actually decided eligibility.
             instant=reason == "whitelist",
+            last_announced=self._recently_announced.get(entity_id),
         )
 
         if action == "announce":
@@ -828,6 +836,7 @@ class InstallManager:
         None guard."""
         announcement = start_announcement(entity_id, to_version, now, self._rules.announce_wait)
         self._pending[entity_id] = announcement
+        self._recently_announced[entity_id] = (to_version, now)
         self._dirty = True
         self._refresh_pending_notification()
 

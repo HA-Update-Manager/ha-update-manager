@@ -364,6 +364,40 @@ class TestDecideAction:
         )
         assert action == "announce"
 
+    def test_recently_announced_same_version_within_cooldown_does_nothing(self):
+        # existing=None here simulates a flapping entity: something wiped
+        # the real PendingAnnouncement (e.g. a "remove" from a momentary
+        # eligibility drop) a moment ago, but the same version was already
+        # announced seconds before that -- must not fire a fresh announce.
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=None, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT,
+            last_announced=("2.0.0", NOW - timedelta(seconds=5)),
+        )
+        assert action == "none"
+
+    def test_recently_announced_same_version_past_cooldown_announces_again(self):
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=None, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=WAIT,
+            last_announced=("2.0.0", NOW - announcer.RE_ANNOUNCE_COOLDOWN),
+        )
+        assert action == "announce"
+
+    def test_recently_announced_a_different_version_announces_immediately(self):
+        # A genuinely newer version showing up right after the last
+        # announcement isn't the flapping case this guards against -- no
+        # reason to make it wait out the cooldown too.
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=None, cancelled_to_version=None, current_to_version="2.1.0",
+            now=NOW, announce_wait=WAIT,
+            last_announced=("2.0.0", NOW - timedelta(seconds=5)),
+        )
+        assert action == "announce"
+
     def test_instant_executes_directly_without_ever_announcing(self):
         # The whitelist case (see effective_auto_install_state's own
         # auto_install_whitelisted) -- no countdown, straight to "execute"

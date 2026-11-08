@@ -25,6 +25,15 @@ if TYPE_CHECKING:
 AnnouncementAction = Literal["none", "announce", "execute", "remove"]
 AutoInstallReason = Literal["rules", "trusted_voter", "whitelist"]
 
+# A flapping entity (its own integration rapidly tearing down/recreating it,
+# or any other transient reason `existing` below gets wiped) could otherwise
+# get a fresh "announce" -- and a fresh EVENT_ANNOUNCED -- every single time
+# eligibility recovers. Confirmed live, 2026-11-08: an entity's eligibility
+# flickered fast enough to fire dozens of announces within under a minute,
+# with no corresponding integration reload in the log to explain it. Internal
+# safety margin, not a user-facing setting like announce_wait.
+RE_ANNOUNCE_COOLDOWN = timedelta(minutes=2)
+
 
 class AutoInstallRules(NamedTuple):
     small_auto_install: bool
@@ -223,6 +232,7 @@ def decide_action(
     now: datetime,
     announce_wait: timedelta,
     instant: bool = False,
+    last_announced: tuple[str, datetime] | None = None,
 ) -> AnnouncementAction:
     """What should happen right now to this entity's pending-install
     announcement?
@@ -274,6 +284,14 @@ def decide_action(
     turning off for a real reason (the size's own rule, exclusion, or the
     entity losing INSTALL support) still removes the announcement as before
     -- that is a genuine, lasting change in disposition, not a pause.
+
+    `last_announced` ((to_version, announced_at) of the most recent real
+    announcement for this entity, kept by the caller even after `existing`
+    itself gets cleared) guards against re-announcing the exact same version
+    within RE_ANNOUNCE_COOLDOWN of the last time -- see that constant's own
+    comment for why this exists. Only ever suppresses a fresh "announce";
+    once `existing` is set (the normal case), the countdown/execute logic
+    above already governs and this is never consulted.
     """
     if not master_enabled:
         return "none"
@@ -308,6 +326,13 @@ def decide_action(
 
     if instant:
         return "execute"
+
+    if (
+        last_announced is not None
+        and last_announced[0] == current_to_version
+        and now - last_announced[1] < RE_ANNOUNCE_COOLDOWN
+    ):
+        return "none"
 
     return "announce"
 
