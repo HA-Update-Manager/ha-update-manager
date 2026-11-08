@@ -25,7 +25,12 @@ this module there. Same reasoning zigbee.py already uses for hardcoding
 """
 from __future__ import annotations
 
+from typing import NamedTuple
+from urllib.parse import quote
+
+from homeassistant.components.automation import automations_with_blueprint
 from homeassistant.components.blueprint import DOMAIN as _BLUEPRINT_DOMAIN
+from homeassistant.components.script import scripts_with_blueprint
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -88,18 +93,60 @@ _SPOOK_BLUEPRINT_UNIQUE_ID_PREFIXES = {
     "script": "blueprint_script_",
 }
 
+# Both dashboards share one query-param module between them (confirmed
+# against home-assistant/frontend's real source, stable tag 20261028.5:
+# src/common/url/automations-query-params.ts and scripts-query-params.ts
+# are identical in shape, both reading/writing a "blueprint" key the same
+# way), so the same ?blueprint=<path> filtering this module's own
+# blueprint_path already matches works for either domain, just under a
+# different dashboard path.
+_SPOOK_BLUEPRINT_DASHBOARD_PATH = {
+    "automation": "/config/automation/dashboard",
+    "script": "/config/script/dashboard",
+}
 
-async def async_spook_blueprint_source_url(hass: HomeAssistant, entity_id: str) -> str | None:
-    """The real source_url Spook's own blueprint-update feature (see
-    https://spook.boo/blueprint/) tracks entity_id against, or None if
-    entity_id isn't one of Spook's own blueprint-update entities at all.
-    Spook deliberately never puts this in the entity's own state (its own
-    release_url stays empty, confirmed live 2026-11-08) -- this re-derives
-    it the same way Spook's own update entity itself does, straight from
-    the blueprint file on disk, via the automation/script component's own
-    already-loaded DomainBlueprints instance (not a second, hand-rolled
-    YAML parser here -- that would also need to handle blueprints' own
-    `!input` tag, which this gets for free this way)."""
+# automations_with_blueprint/scripts_with_blueprint (verified against
+# home-assistant/core's real source, stable tag 2026.10.0): plain,
+# synchronous @callback helpers, each returning the entity_ids of every
+# automation/script currently using a given blueprint path -- exactly the
+# same fact the dashboard's own ?blueprint= filter (see
+# _SPOOK_BLUEPRINT_DASHBOARD_PATH above) shows as a list, just as a count
+# here. No extra I/O: both just walk that domain's already-loaded
+# entities in memory.
+_SPOOK_BLUEPRINT_COUNTERS = {
+    "automation": automations_with_blueprint,
+    "script": scripts_with_blueprint,
+}
+
+
+class SpookBlueprintInfo(NamedTuple):
+    source_url: str | None
+    list_url: str | None
+    count: int
+
+
+async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> SpookBlueprintInfo | None:
+    """What Spook's own blueprint-update feature (see
+    https://spook.boo/blueprint/) knows about entity_id, or None if it
+    isn't one of Spook's own blueprint-update entities at all.
+
+    source_url: the blueprint's real source address. Spook deliberately
+    never puts this in the entity's own state (its own release_url stays
+    empty, confirmed live 2026-11-08) -- this re-derives it the same way
+    Spook's own update entity itself does, straight from the blueprint
+    file on disk, via the automation/script component's own already-loaded
+    DomainBlueprints instance (not a second, hand-rolled YAML parser here
+    -- that would also need to handle blueprints' own `!input` tag, which
+    this gets for free this way).
+
+    list_url: the automations/scripts dashboard, pre-filtered to whatever
+    currently uses this exact blueprint (automations_with_blueprint/
+    scripts_with_blueprint's own frontend counterpart) -- needs nothing
+    beyond blueprint_path itself, already known before source_url's own
+    file read even starts, so this is set even if that read fails.
+
+    count: len() of that same automations_with_blueprint/
+    scripts_with_blueprint call, not a second, separate lookup."""
     entry = er.async_get(hass).async_get(entity_id)
     if entry is None or entry.platform != _SPOOK_DOMAIN or entry.unique_id is None:
         return None
@@ -112,15 +159,19 @@ async def async_spook_blueprint_source_url(hass: HomeAssistant, entity_id: str) 
             break
     if blueprint_path is None:
         return None
+    list_url = f"{_SPOOK_BLUEPRINT_DASHBOARD_PATH[blueprint_domain]}?blueprint={quote(blueprint_path)}"
+    count = len(_SPOOK_BLUEPRINT_COUNTERS[blueprint_domain](hass, blueprint_path))
+    source_url = None
     domain_blueprints = hass.data.get(_BLUEPRINT_DOMAIN, {}).get(blueprint_domain)
-    if domain_blueprints is None:
-        return None
-    try:
-        blueprint = await domain_blueprints.async_get_blueprint(blueprint_path)
-    except Exception:  # noqa: BLE001 - best-effort UI hint, never worth failing the dialog over
-        return None
-    source_url = blueprint.metadata.get("source_url")
-    return source_url if isinstance(source_url, str) else None
+    if domain_blueprints is not None:
+        try:
+            blueprint = await domain_blueprints.async_get_blueprint(blueprint_path)
+        except Exception:  # noqa: BLE001 - best-effort UI hint, never worth failing the dialog over
+            blueprint = None
+        if blueprint is not None:
+            candidate = blueprint.metadata.get("source_url")
+            source_url = candidate if isinstance(candidate, str) else None
+    return SpookBlueprintInfo(source_url=source_url, list_url=list_url, count=count)
 
 
 # Real, literal identifier values hassio's own entity.py uses for its

@@ -2135,36 +2135,37 @@ function _looksLikeSpookEntity(hass, entityId) {
 // Same cache-plus-callback shape as _resolveMarketplaceInfo above, keyed
 // by entity_id instead of owner/repo. Only the backend can actually
 // confirm *and* resolve this (see device_identity.py's own
-// async_spook_blueprint_source_url) -- entity_registry's own unique_id
-// isn't exposed to the frontend at all, and the blueprint file itself
-// lives on disk, neither reachable from here. Settles straight to null,
-// synchronously, without ever calling the backend, for the overwhelming
-// majority of entities that don't even pass _looksLikeSpookEntity above.
-const _spookBlueprintSourceCache = new Map();
-const _spookBlueprintSourcePending = new Map();
-function _resolveSpookBlueprintSource(hass, entityId, onResolved) {
-  if (_spookBlueprintSourceCache.has(entityId)) return _spookBlueprintSourceCache.get(entityId);
+// async_spook_blueprint_info) -- entity_registry's own unique_id isn't
+// exposed to the frontend at all, and both the blueprint file on disk and
+// automations_with_blueprint/scripts_with_blueprint's own live count are
+// only reachable server-side. Settles straight to null, synchronously,
+// without ever calling the backend, for the overwhelming majority of
+// entities that don't even pass _looksLikeSpookEntity above.
+const _spookBlueprintInfoCache = new Map();
+const _spookBlueprintInfoPending = new Map();
+function _resolveSpookBlueprintInfo(hass, entityId, onResolved) {
+  if (_spookBlueprintInfoCache.has(entityId)) return _spookBlueprintInfoCache.get(entityId);
   if (!_looksLikeSpookEntity(hass, entityId)) {
-    _spookBlueprintSourceCache.set(entityId, null);
+    _spookBlueprintInfoCache.set(entityId, null);
     return null;
   }
-  if (_spookBlueprintSourcePending.has(entityId)) {
-    if (onResolved) _spookBlueprintSourcePending.get(entityId).push(onResolved);
+  if (_spookBlueprintInfoPending.has(entityId)) {
+    if (onResolved) _spookBlueprintInfoPending.get(entityId).push(onResolved);
     return undefined;
   }
-  _spookBlueprintSourcePending.set(entityId, onResolved ? [onResolved] : []);
+  _spookBlueprintInfoPending.set(entityId, onResolved ? [onResolved] : []);
   hass
     .callWS({ type: "update_manager/spook_blueprint_source", entity_id: entityId })
     .then((result) => {
-      const sourceUrl = (result && result.source_url) || null;
-      _spookBlueprintSourceCache.set(entityId, sourceUrl);
-      const waiting = _spookBlueprintSourcePending.get(entityId) || [];
-      _spookBlueprintSourcePending.delete(entityId);
-      if (sourceUrl) waiting.forEach((cb) => cb(sourceUrl));
+      const info = result && result.list_url ? result : null;
+      _spookBlueprintInfoCache.set(entityId, info);
+      const waiting = _spookBlueprintInfoPending.get(entityId) || [];
+      _spookBlueprintInfoPending.delete(entityId);
+      if (info) waiting.forEach((cb) => cb(info));
     })
     .catch(() => {
-      _spookBlueprintSourceCache.set(entityId, null);
-      _spookBlueprintSourcePending.delete(entityId);
+      _spookBlueprintInfoCache.set(entityId, null);
+      _spookBlueprintInfoPending.delete(entityId);
     });
   return undefined;
 }
@@ -5674,22 +5675,36 @@ class UpdateManagerPanel extends HTMLElement {
     const releaseUrlForRepo = u ? u.release_url : entries[0] && entries[0].release_url;
     const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForRepo);
     // Overrides repository (its real source, not the empty release_url
-    // this entity never has, see _resolveSpookBlueprintSource's own top
-    // comment) and adds about, a fixed link to Spook's own explanation of
-    // this entity type -- neither configuration/repository/issues above
-    // found anything for one of these, so the menu wouldn't otherwise
-    // render at all. No menu existing yet for this entity means there's
-    // nothing to patch in place once this resolves (unlike marketplaceInfo
-    // below, which only ever touches an already-open menu) -- reopening
-    // is the simplest way to show it up without a second, parallel
-    // "build the menu" path just for this one case.
-    const spookSource = _resolveSpookBlueprintSource(this._hass, entityId, () => {
+    // this entity never has, see _resolveSpookBlueprintInfo's own top
+    // comment), adds about (a fixed link to Spook's own explanation of
+    // this entity type), and automations (the dashboard, filtered to
+    // whatever currently uses it, with a live count) -- neither
+    // configuration/repository/issues above found anything for one of
+    // these, so the menu wouldn't otherwise render at all. No menu
+    // existing yet for this entity means there's nothing to patch in
+    // place once this resolves (unlike marketplaceInfo below, which only
+    // ever touches an already-open menu) -- reopening is the simplest way
+    // to show it up without a second, parallel "build the menu" path just
+    // for this one case.
+    const spookInfo = _resolveSpookBlueprintInfo(this._hass, entityId, () => {
       if (isDialogStale()) return;
       this._openDetailDialog(entityId, historyEntry, communityOverride);
     });
-    if (spookSource) {
-      repoLinks.repository = spookSource;
+    if (spookInfo) {
+      if (spookInfo.source_url) repoLinks.repository = spookInfo.source_url;
       repoLinks.about = "https://spook.boo/blueprint/#updates";
+      // A filtered dashboard with nothing to show isn't useful -- the
+      // native Blueprints page instead, search-prefilled with this
+      // blueprint's own name (confirmed live, the same friendly_name
+      // Spook itself sets, see this entity's own entity_picture comment
+      // above) so this still lands on roughly just this one, not an
+      // unrelated full list.
+      const blueprintName = entityState(this._hass, entityId) && entityState(this._hass, entityId).attributes.friendly_name;
+      repoLinks.automations =
+        spookInfo.count > 0
+          ? spookInfo.list_url
+          : `/config/blueprint/dashboard?search=${encodeURIComponent(blueprintName || "")}&sort=name`;
+      repoLinks.automationsCount = spookInfo.count;
     }
     let marketplaceInfo = null;
     // Both assigned later, once the menu/release-notes section below is
@@ -6431,6 +6446,13 @@ class UpdateManagerPanel extends HTMLElement {
         }
         if (repoLinks.repository) addMenuLink("repository", "mdi:github", tr.dialog_menu_repository);
         if (repoLinks.about) addMenuLink("about", "mdi:information-outline", tr.dialog_menu_about);
+        // automationsCount is already known for certain whenever this
+        // renders at all (unlike issues' own marketplaceInfo below, which
+        // can still be mid-flight the first time its own menu item
+        // exists): repoLinks.automations only ever comes from spookInfo
+        // above, resolved as one single object, count included, well
+        // before the menu-building code even runs.
+        if (repoLinks.automations) addMenuLink("automations", "mdi:robot-outline", tr.dialog_menu_automations_count(repoLinks.automationsCount));
         if (repoLinks.issues) {
           // The open-issue count, when Marketplace's own real repository
           // info has already resolved it (marketplaceInfo, see this
@@ -6455,6 +6477,11 @@ class UpdateManagerPanel extends HTMLElement {
           if (value === "configuration" && repoLinks.configuration) {
             if (repoLinks.configuration.inApp) this._navigate(repoLinks.configuration.href);
             else window.open(repoLinks.configuration.href, "_blank", "noopener");
+          } else if (value === "automations" && repoLinks.automations) {
+            // An in-app HA path (/config/automation|script/dashboard?...),
+            // not an external URL -- same treatment as configuration's own
+            // inApp branch above, see _repoMenuLinks's own top comment.
+            this._navigate(repoLinks.automations);
           } else if (repoLinks[value]) {
             window.open(repoLinks[value], "_blank", "noopener");
           }

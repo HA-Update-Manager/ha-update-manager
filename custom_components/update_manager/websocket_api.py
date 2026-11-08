@@ -70,7 +70,7 @@ from .core_blog_notes import (
     post_source_path,
     slugify_heading,
 )
-from .device_identity import async_spook_blueprint_source_url, resolve_full_identity
+from .device_identity import async_spook_blueprint_info, resolve_full_identity
 from .github_release_notes import find_release_by_version, parse_release_url, select_release_range
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
@@ -658,8 +658,15 @@ async def _handle_core_announcement(hass: HomeAssistant, connection: websocket_a
     }
 )
 async def _handle_spook_blueprint_source(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
-    source_url = await async_spook_blueprint_source_url(hass, msg["entity_id"])
-    connection.send_result(msg["id"], {"source_url": source_url})
+    info = await async_spook_blueprint_info(hass, msg["entity_id"])
+    connection.send_result(
+        msg["id"],
+        {
+            "source_url": info.source_url if info else None,
+            "list_url": info.list_url if info else None,
+            "count": info.count if info else None,
+        },
+    )
 
 
 @callback

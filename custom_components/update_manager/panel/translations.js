@@ -324,6 +324,11 @@ export const TRANSLATIONS = {
     dialog_menu_visit: "Visit",
     dialog_menu_repository: "Repository",
     dialog_menu_about: "About",
+    // Spook's own blueprint-update entities only (see
+    // _resolveSpookBlueprintInfo's own top comment) -- always has a real
+    // count by the time this shows at all, no plain, countless fallback
+    // needed the way dialog_menu_issue_tracker_count below has one.
+    dialog_menu_automations_count: (n) => `Automations (${n})`,
     dialog_menu_issue_tracker: "Issues",
     // Marketplace's own real open-issue count, resolved async
     // (_resolveMarketplaceInfo). Only shown once that's actually known; see
@@ -688,6 +693,7 @@ export const TRANSLATIONS = {
     dialog_menu_visit: "Bezoeken",
     dialog_menu_repository: "Repository",
     dialog_menu_about: "Over",
+    dialog_menu_automations_count: (n) => `Automatiseringen (${n})`,
     dialog_menu_issue_tracker: "Issues",
     dialog_menu_issue_tracker_count: (n) => `Issues (${n})`,
     paused_banner: "Update Manager staat gepauzeerd. Niets hieronder wordt automatisch geüpdatet, aangekondigd of verborgen.",
