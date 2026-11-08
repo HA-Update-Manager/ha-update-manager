@@ -5674,14 +5674,23 @@ class UpdateManagerPanel extends HTMLElement {
     // already relied on before this was hoisted up to share with it.
     const releaseUrlForRepo = u ? u.release_url : entries[0] && entries[0].release_url;
     const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForRepo);
-    // Overrides repository (its real source, not the empty release_url
-    // this entity never has, see _resolveSpookBlueprintInfo's own top
-    // comment), adds about (a fixed link to Spook's own explanation of
-    // this entity type), and automations (the dashboard, filtered to
-    // whatever currently uses it, with a live count) -- neither
-    // configuration/repository/issues above found anything for one of
-    // these, so the menu wouldn't otherwise render at all. No menu
-    // existing yet for this entity means there's nothing to patch in
+    // about's own destination is fixed and never depends on the backend
+    // call below, so it's set the moment the cheap, synchronous
+    // _looksLikeSpookEntity check alone says yes -- the menu then always
+    // renders with at least this one item for a genuine Spook blueprint
+    // entity, even before (or if) the backend call below ever resolves.
+    // Previously waited on spookInfo too, same as repository/automations
+    // still do: confirmed live, 2026-11-08, that left the whole menu
+    // (About included) simply missing whenever that call failed (the
+    // backend not yet deployed/restarted, say), worse than showing one
+    // useful item with nothing to patch in yet.
+    if (_looksLikeSpookEntity(this._hass, entityId)) repoLinks.about = "https://spook.boo/blueprint/#updates";
+    // repository/automations genuinely do need the backend (the real
+    // source address/live count), so these still only show up once that
+    // resolves -- neither configuration/repository/issues above found
+    // anything for one of these either, so the menu wouldn't otherwise
+    // render at all without about's own synchronous fallback above. No
+    // menu existing yet for this entity means there's nothing to patch in
     // place once this resolves (unlike marketplaceInfo below, which only
     // ever touches an already-open menu) -- reopening is the simplest way
     // to show it up without a second, parallel "build the menu" path just
@@ -5692,7 +5701,6 @@ class UpdateManagerPanel extends HTMLElement {
     });
     if (spookInfo) {
       if (spookInfo.source_url) repoLinks.repository = spookInfo.source_url;
-      repoLinks.about = "https://spook.boo/blueprint/#updates";
       // A filtered dashboard with nothing to show isn't useful -- the
       // native Blueprints page instead, search-prefilled with this
       // blueprint's own name (confirmed live, the same friendly_name
