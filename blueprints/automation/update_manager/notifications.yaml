@@ -165,7 +165,7 @@ action:
                     {%- elif trigger.event.data.install_method == "manual" -%}
                     (installed manually).
                     {%- else -%}
-                    (installed outside Home Assistant).
+                    (installed outside Update Manager).
                     {%- endif %}
                   data:
                     url: /update-manager/history
