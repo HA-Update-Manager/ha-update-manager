@@ -1136,11 +1136,16 @@ class RolloutManager:
             if entries and entries[0].to_version == new_version:
                 self.hass.async_create_task(self._async_advance(group_key))
 
-    async def _async_advance(self, group_key: str) -> None:
+    async def _async_advance(self, group_key: str, *, dispatch: bool = True) -> None:
         """The front entry of this group just finished (or, per
         _async_advance_past_stalled_front below, gave up on its own without
         ever actually finishing), drop it, and if anything's still waiting
-        behind it, dispatch that one now."""
+        behind it, dispatch that one now. `dispatch=False` is only for
+        _async_pop_finished_fronts's own loop below, which needs to keep
+        popping consecutively already-finished fronts without dispatching
+        each one in turn -- it would otherwise call update.install on an
+        entry about to be popped again right after, a real, if normally
+        harmless, redundant call."""
         entries = self._queues.get(group_key)
         if not entries:
             return
@@ -1177,7 +1182,36 @@ class RolloutManager:
             entries[0].entity_id,
         )
         await self._async_save()
-        await self._async_dispatch(entries[0])
+        if dispatch:
+            await self._async_dispatch(entries[0])
+
+    async def _async_pop_finished_fronts(self, group_key: str) -> _QueuedEntry | None:
+        """Pops every front entry of this group that's already, confirmably
+        finished (installed_version already matches to_version) in a row,
+        without dispatching anything in between -- a long HA restart, or
+        several Zigbee devices completing between one periodic recheck and
+        the next, can each leave more than one front like this at once, not
+        just the very first one. Found live, 2026-11-08: both
+        _async_recover_one and _async_recheck_queue_fronts used to check and
+        pop only once, so only the first already-finished entry in a row
+        ever actually caught up -- anything behind the *second* one stayed
+        showing a stale "Waiting for X" for an X that had already finished,
+        for as many more restart-recovery passes or 30-second recheck ticks
+        as there were already-finished entries still ahead of it. Returns
+        the group's new, not-confirmably-finished front for the caller's own
+        existing dispatch-or-skip decision (_async_recover_one always
+        re-dispatches it, _async_recheck_queue_fronts re-checks in_progress
+        first), or None once the whole group emptied out this way."""
+        while True:
+            entries = self._queues.get(group_key)
+            if not entries:
+                return None
+            front = entries[0]
+            state = self.hass.states.get(front.entity_id)
+            installed = state.attributes.get("installed_version") if state else None
+            if installed != front.to_version:
+                return front
+            await self._async_advance(group_key, dispatch=False)
 
     def _group_key_with_front(self, entity_id: str) -> str | None:
         for group_key, entries in self._queues.items():
@@ -1455,8 +1489,19 @@ class RolloutManager:
                 # listener) specifically for the case this function's own
                 # docstring describes: nothing else ever asked to install
                 # this network again, so nothing else was listening either.
-                await self._async_advance(group_key)
-                continue
+                # _async_pop_finished_fronts, not a single _async_advance:
+                # more than one front in a row can have quietly finished
+                # between recheck ticks, see that method's own docstring.
+                front = await self._async_pop_finished_fronts(group_key)
+                if front is None:
+                    continue
+                # The new front may already be a normal, currently-
+                # installing one (not another stale leftover) -- re-check
+                # before falling through to the stalled-front path below,
+                # same in_progress skip as the one at the top of this loop.
+                state = self.hass.states.get(front.entity_id)
+                if state is not None and state.attributes.get("in_progress"):
+                    continue
             # Not confirmed complete -- unavailable, no longer pending, or
             # genuinely stalled while still pending are all handled the
             # same way from here, via the same grace-respecting,
@@ -1628,29 +1673,25 @@ class RolloutManager:
         callback survives one, and the install-listener event that would
         normally tell us either already fired while nothing was listening,
         or never got the chance to. Check the entity's real, current state
-        against what it was queued for instead of guessing."""
-        entries = self._queues.get(group_key)
-        if not entries:
+        against what it was queued for instead of guessing. More than one
+        front in a row can have actually finished during the same downtime
+        (several Zigbee devices completing while HA was down, or a restart
+        that itself took a while) -- see _async_pop_finished_fronts's own
+        docstring for why a single check here isn't enough to catch that."""
+        front = await self._async_pop_finished_fronts(group_key)
+        if front is None:
             return
-        front = entries[0]
-        state = self.hass.states.get(front.entity_id)
-        installed = state.attributes.get("installed_version") if state else None
-        if installed == front.to_version:
-            # Actually finished while HA was down (or in the gap between
-            # dispatch and this restart), advance now instead of waiting
-            # for an event that already happened.
-            await self._async_advance(group_key)
-        else:
-            # The previous restart interrupted the in-flight install
-            # itself. Re-dispatch rather than leaving the group stuck
-            # waiting forever for a completion that will never come:
-            # calling update.install again is expected to be a safe no-op
-            # in the (rarer) case it turns out the install did finish
-            # right at the restart boundary, same "calling it again is
-            # harmless" reasoning staging_skip.py already relies on for
-            # update.skip/clear_skipped, though worth a real live check
-            # during testing, not just assumed.
-            await self._async_dispatch(front)
+        # The previous restart interrupted the in-flight install itself (or
+        # nothing was dispatched for it at all after catching up past
+        # already-finished entries above). Re-dispatch rather than leaving
+        # the group stuck waiting forever for a completion that will never
+        # come: calling update.install again is expected to be a safe no-op
+        # in the (rarer) case it turns out the install did finish right at
+        # the restart boundary, same "calling it again is harmless"
+        # reasoning staging_skip.py already relies on for update.skip/
+        # clear_skipped, though worth a real live check during testing, not
+        # just assumed.
+        await self._async_dispatch(front)
 
     def rollout_groups_snapshot(self) -> list[dict[str, Any]]:
         """Read by websocket_api.py's own _handle_updates to show the
