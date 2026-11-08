@@ -168,6 +168,7 @@ action:
                   data:
                     url: /update-manager/history
                     clickAction: /update-manager/history
+                    tag: "update_manager_installed_{{ trigger.event.data.entity_id }}"
                     channel: "Update Manager"
                     notification_icon: "mdi:update"
                     importance: low
