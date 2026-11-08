@@ -32,6 +32,7 @@ from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
 from .device import device_info
 from .install_manager import InstallManager, auto_install_rules_from_options
+from .rollout_manager import RolloutManager
 from .runtime_data import UpdateManagerConfigEntry
 from .update_status import STATUSES, categorize_updates, icon_for_status
 
@@ -45,10 +46,11 @@ async def async_setup_entry(
 ) -> None:
     coordinator = config_entry.runtime_data.coordinator
     install_manager = config_entry.runtime_data.install_manager
+    rollout_manager = config_entry.runtime_data.rollout_manager
     async_add_entities(
         [UpdateManagerStatusSensor(config_entry, coordinator, status) for status in STATUSES]
         + [
-            UpdateManagerNeedsManualActionSensor(config_entry, coordinator),
+            UpdateManagerNeedsManualActionSensor(config_entry, coordinator, rollout_manager),
             UpdateManagerPendingInstallsSensor(config_entry, install_manager),
             UpdateManagerFailedInstallsSensor(config_entry, install_manager),
         ]
@@ -123,9 +125,12 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "needs_manual_action"
 
-    def __init__(self, entry: UpdateManagerConfigEntry, coordinator: UpdateManagerCoordinator) -> None:
+    def __init__(
+        self, entry: UpdateManagerConfigEntry, coordinator: UpdateManagerCoordinator, rollout_manager: RolloutManager
+    ) -> None:
         self._entry = entry
         self._coordinator = coordinator
+        self._rollout_manager = rollout_manager
         self._attr_unique_id = f"{DOMAIN}_needs_manual_action"
         self._attr_device_info = device_info(entry)
         self._refresh_from_coordinator()
@@ -133,6 +138,11 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self.async_on_remove(self._coordinator.async_add_listener(self._handle_coordinator_update))
+        # A queued/in-flight entity's own status/auto_install_enabled never
+        # changes just because it entered or left the queue, so the
+        # coordinator's own listener above never re-fires for that alone --
+        # this needs its own, direct subscription to notice it.
+        self.async_on_remove(self._rollout_manager.async_add_change_listener(self._handle_coordinator_update))
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -160,7 +170,18 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
         bucket = [
             u
             for u in ready
-            if needs_manual_action(
+            # Already in motion (queued behind a sibling, or genuinely the
+            # one being dispatched right now) -- same "is_queued or
+            # is_in_flight" pair install_manager.py's own three-guard
+            # pattern already checks before ever re-evaluating an entity.
+            # A manually-dispatched (Update All) Zigbee queue entry has
+            # auto_install_enabled=False (it was never eligible by the usual
+            # rules, that's why it was dispatched manually in the first
+            # place), so needs_manual_action below read it as still needing
+            # a click the entire time it sat in the queue, confirmed live
+            # 2026-11-08, when there was genuinely nothing left to do.
+            if not (self._rollout_manager.is_queued(u.get("entity_id")) or self._rollout_manager.is_in_flight(u.get("entity_id")))
+            and needs_manual_action(
                 status=u.get("status"),
                 version_size=u.get("version_size"),
                 auto_install_excluded=bool(u.get("auto_install_excluded")),
