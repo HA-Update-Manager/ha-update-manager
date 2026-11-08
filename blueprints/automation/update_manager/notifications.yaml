@@ -117,7 +117,7 @@ action:
               sequence:
                 - action: "{{ notify_target }}"
                   data:
-                    title: "Scheduled update"
+                    title: "Update Manager: Scheduled update"
                     message: >-
                       {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
                       to version {{ repeat.item.to_version }} in
@@ -156,17 +156,15 @@ action:
             then:
               - action: "{{ notify_target }}"
                 data:
-                  title: "Update installed"
+                  title: "Update Manager: Update installed"
                   message: >-
                     {{ device_name }} updated from {{ trigger.event.data.from_version }} to
                     {{ trigger.event.data.to_version }}
-                    {% if trigger.event.data.auto_installed -%}
-                    (auto-installed, {{ reason }}).
-                    {%- elif trigger.event.data.install_method == "manual" -%}
-                    (installed manually).
-                    {%- else -%}
-                    (installed outside Update Manager).
-                    {%- endif %}
+                    {%- if trigger.event.data.auto_installed %}
+                    (auto-installed, {{ reason }})
+                    {%- elif trigger.event.data.install_method == "manual" %}
+                    (installed manually)
+                    {%- endif %}.
                   data:
                     url: /update-manager/history
                     clickAction: /update-manager/history
@@ -221,7 +219,7 @@ action:
                   else:
                     - action: "{{ notify_target }}"
                       data:
-                        title: "Update failed"
+                        title: "Update Manager: Update failed"
                         message: >-
                           {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
                           {% if repeat.item.reason == "warning_not_accepted" -%}
@@ -283,7 +281,7 @@ action:
                   else:
                     - action: "{{ notify_target }}"
                       data:
-                        title: "Ready, but won't auto-install"
+                        title: "Update Manager: Ready, but won't auto-install"
                         message: >-
                           {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}:
                           {{ repeat.item.installed_version }} → {{ repeat.item.latest_version }}
