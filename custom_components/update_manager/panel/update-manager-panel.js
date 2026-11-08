@@ -6480,15 +6480,18 @@ class UpdateManagerPanel extends HTMLElement {
           const { marketplace } = repoLinks.configuration;
           addMenuLink("configuration", marketplace ? "mdi:store" : "mdi:cog", marketplace ? tr.dialog_menu_marketplace : tr.dialog_menu_visit);
         }
-        if (repoLinks.repository) addMenuLink("repository", "mdi:github", tr.dialog_menu_repository);
-        if (repoLinks.about) addMenuLink("about", "mdi:information-outline", tr.dialog_menu_about);
         // automationsLabel is already known for certain whenever this
         // renders at all (unlike issues' own marketplaceInfo below, which
         // can still be mid-flight the first time its own menu item
         // exists): repoLinks.automations only ever comes from spookInfo
         // above, resolved as one single object, count included, well
-        // before the menu-building code even runs.
+        // before the menu-building code even runs. First, ahead of
+        // repository/about: the one in-app link among these three (every
+        // other item here opens an external page), and the one most
+        // people actually want first for a Spook blueprint entity.
         if (repoLinks.automations) addMenuLink("automations", repoLinks.automationsIcon, repoLinks.automationsLabel);
+        if (repoLinks.repository) addMenuLink("repository", "mdi:github", tr.dialog_menu_repository);
+        if (repoLinks.about) addMenuLink("about", "mdi:information-outline", tr.dialog_menu_about);
         if (repoLinks.issues) {
           // The open-issue count, when Marketplace's own real repository
           // info has already resolved it (marketplaceInfo, see this
