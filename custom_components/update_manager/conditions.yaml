@@ -1,0 +1,7 @@
+.condition_target: &condition_target
+  target:
+    entity:
+      domain: update
+
+held_back_by_community: *condition_target
+postponed: *condition_target

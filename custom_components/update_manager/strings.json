@@ -123,5 +123,15 @@
             "name": "Install failed",
             "description": "Triggers when an install attempt fails."
         }
+    },
+    "conditions": {
+        "held_back_by_community": {
+            "name": "Held back by community",
+            "description": "True when this update is currently held back by a problematic community verdict."
+        },
+        "postponed": {
+            "name": "Postponed",
+            "description": "True when this update's pending auto-install is waiting for a newer Home Assistant Core version."
+        }
     }
 }
