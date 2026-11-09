@@ -85,6 +85,12 @@ STORAGE_KEY = f"{DOMAIN}_pending_installs"
 _CHECK_INTERVAL = timedelta(minutes=5)
 _PENDING_NOTIFICATION_ID = f"{DOMAIN}_pending_installs"
 _PANEL_UPDATES_URL = "/update-manager/updates"
+# How far apart consecutive EVENT_ANNOUNCED fires within the same tick are
+# spaced -- see self._announce_fire_count's own comment for why. 1.5s
+# keeps a default `mode: queued` automation (max 10) comfortably inside
+# its own max-runs window for a realistic batch size, without making a
+# genuinely large batch's own total announce window noticeably long.
+_ANNOUNCE_FIRE_STAGGER_SECONDS = 1.5
 
 # hass.config.language-driven, same convention the panel's own TRANSLATIONS
 # already uses (see update-manager-panel.js) -- found live there: a user with
@@ -258,6 +264,20 @@ class InstallManager:
         # time eligibility briefly recovers. Not persisted, same "meaningful
         # only for a live process" reasoning as self._recently_executed above.
         self._recently_announced: dict[str, tuple[str, datetime]] = {}
+        # How many EVENT_ANNOUNCED fires this tick has already staggered --
+        # reset once per _async_tick, right before its own gather (see that
+        # method's own comment), then read-and-incremented by
+        # _async_announce to space consecutive fires out in time. Found
+        # live, 2026-11-02: a `mode: queued` automation reacting to this
+        # event (the default for this project's own notifications
+        # Blueprint) hit its own default max-runs-of-10 within seconds for
+        # a batch bigger than that, silently dropping the rest -- HA's own
+        # queued-mode script.py never re-queues a rejected run, see
+        # _ANNOUNCE_FIRE_STAGGER_SECONDS below for the actual spacing.
+        # Safe to read-then-increment with no lock of its own: every
+        # access happens on this single-threaded event loop with no await
+        # between the read and the write.
+        self._announce_fire_count = 0
         # entity_id -> (to_version, reason tag or None) that just failed to
         # install, purely to rebuild _refresh_failed_notification's own
         # single notification from the current, complete picture -- not
@@ -608,6 +628,9 @@ class InstallManager:
             # 2026-11-02.
             entity_ids = set(self._coordinator.cache) | set(self._pending) | set(self._postponed)
             self._dirty = False
+            # Reset once per tick, under the same lock -- see
+            # self._announce_fire_count's own comment.
+            self._announce_fire_count = 0
             await asyncio.gather(*(self._async_evaluate_one(entity_id, now) for entity_id in entity_ids))
             if self._dirty:
                 await self._async_save()
@@ -880,6 +903,14 @@ class InstallManager:
         # actually runs, e.g. to run its own analysis and decide whether
         # to cancel it via cancel_scheduled_install.
         cached = self._coordinator.cache.get(entity_id)
+        # Staggered, not fired the instant the state above is set -- see
+        # self._announce_fire_count's own comment. Only the event itself
+        # is delayed; the pending state/notification just above already
+        # reflect this announcement immediately, same as before.
+        stagger_delay = self._announce_fire_count * _ANNOUNCE_FIRE_STAGGER_SECONDS
+        self._announce_fire_count += 1
+        if stagger_delay:
+            await asyncio.sleep(stagger_delay)
         self.hass.bus.async_fire(
             EVENT_ANNOUNCED,
             {
