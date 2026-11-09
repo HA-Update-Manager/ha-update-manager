@@ -127,13 +127,21 @@ rules:
       not a network device of its own.
   docs-data-update: done
   docs-examples:
-    status: todo
+    status: done
     comment: >-
-      Removed 2026-07-29 for conciseness: a switch.turn_off/state-trigger
-      example for the master pause switch and summary sensor. Easy to add
-      back if ever wanted, both entities are plain, automatable HA entities
-      with nothing special about them. The Wiki's "Automating Update Manager"
-      page does already cover the update_manager_announced event example.
+      This rule's own real text (contributors.home-assistant.io, verified
+      2026-11-09) is written for a core integration's own page on
+      home-assistant.io, which a HACS-distributed custom integration like
+      this one never has at all -- "a handful" of YAML automation examples
+      somewhere discoverable, not necessarily that one specific place. The Wiki's
+      "Automating Update Manager" page (linked from the README) already
+      gives four: scheduled auto-install, something gets installed, an
+      install fails, and something needs a manual install -- the reasonable
+      equivalent for a project with no home-assistant.io page of its own.
+      A switch.turn_off/state-trigger example for the master pause switch
+      and summary sensor was removed from the README itself 2026-07-29 for
+      conciseness; easy to add back if ever wanted, both entities are plain,
+      automatable HA entities with nothing special about them.
   docs-known-limitations:
     status: done
     comment: Moved from the README to the Wiki's own "Known limitations" page, 2026-11-04.
