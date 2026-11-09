@@ -999,11 +999,14 @@ function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fro
   const heading = document.createElement("h3");
   heading.className = "release-notes-heading";
   const headingText = document.createElement("span");
-  // toVersion often already carries its own leading "v" (e.g. a GitHub
-  // release tagged "v0.8.0"). dialog_release_notes_heading_version adds one
-  // unconditionally, so a version that already has one must be stripped
-  // first, or the heading reads "Release notes vv0.8.0".
-  const versionText = toVersion != null ? String(toVersion).replace(/^v/i, "") : toVersion;
+  // Shown exactly as given, no "v" added or stripped -- found live,
+  // 2026-11-09: a leading "v" assumed every version was a GitHub-tag-style
+  // semver (prepending one unconditionally after stripping an existing
+  // one, to avoid "vv0.8.0"), but Spook's own blueprint-update entities
+  // use a bare content-fingerprint version instead (e.g. "08b93043"),
+  // which that same unconditional prefix turned into the nonsensical
+  // "v08b93043".
+  const versionText = toVersion != null ? String(toVersion) : toVersion;
   headingText.textContent = versionText ? tr.dialog_release_notes_heading_version(versionText) : tr.dialog_release_notes_heading;
   heading.appendChild(headingText);
   _applyReleaseNotesDownloads(heading, downloads);

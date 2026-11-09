@@ -315,7 +315,7 @@ export const TRANSLATIONS = {
     // toVersion spelled out, once known. See insertReleaseNotesSection's own
     // comment; the download-count suffix is built separately, right next
     // to this text, not part of this string.
-    dialog_release_notes_heading_version: (v) => `Release notes v${v}`,
+    dialog_release_notes_heading_version: (v) => `Release notes ${v}`,
     dialog_upstream_release_notes: (repo) => `${repo}'s own release notes:`,
     dialog_community_heading: "Community",
     list_and: "and",
@@ -696,7 +696,7 @@ export const TRANSLATIONS = {
     dialog_history_backup_yes: "Gemaakt voor het installeren",
     dialog_history_backup_no: "Niet ondersteund door deze entiteit",
     dialog_release_notes_heading: "Release notes",
-    dialog_release_notes_heading_version: (v) => `Release notes v${v}`,
+    dialog_release_notes_heading_version: (v) => `Release notes ${v}`,
     dialog_upstream_release_notes: (repo) => `Eigen release notes van ${repo}:`,
     dialog_community_heading: "Community",
     list_and: "en",
