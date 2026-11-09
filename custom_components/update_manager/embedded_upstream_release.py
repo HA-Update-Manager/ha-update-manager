@@ -98,3 +98,34 @@ def find_embedded_upstream_release(
     if len(seen) != 1:
         return None
     return next(iter(seen.values()))
+
+
+def find_self_reference_repo(notes: str | None, from_version: str | None) -> tuple[str, str] | None:
+    """This entity's own (owner, repo), found from a self-reference link
+    embedded in its own release notes (a "Changes since
+    [X](.../releases/tag/X)" link tagged with from_version) -- the exact
+    same self-reference find_embedded_upstream_release above already
+    recognizes and excludes, reused here as a genuine, positive result
+    instead. Only a fallback for when release_url itself doesn't resolve
+    an owner/repo at all: a Supervisor add-on's own update entity never
+    sets release_url (confirmed against
+    homeassistant/components/hassio/update.py's own
+    SupervisorAddonUpdateEntity), so #1234/@username references in its own
+    release notes never became clickable links even though a working
+    markdown link to that exact repo already sits right there in the same
+    text. A real release_url is always preferred over this when one
+    exists -- see services.py's own call site.
+
+    Mirrored, not shared, in update-manager-panel.js's own
+    _findSelfReferenceRepo -- keep both in sync by hand."""
+    if not notes or not from_version:
+        return None
+    normalized_from_version = _strip_v_prefix(from_version).lower()
+    for match in _LINK_RE.finditer(notes):
+        release_match = _RELEASE_RE.match(match.group(0))
+        if not release_match or not release_match.group(3):
+            continue
+        owner, repo, tag = release_match.group(1), release_match.group(2), release_match.group(3)
+        if _strip_v_prefix(tag).lower() == normalized_from_version:
+            return owner, repo
+    return None

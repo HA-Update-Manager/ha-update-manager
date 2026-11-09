@@ -104,3 +104,30 @@ class TestFindEmbeddedUpstreamRelease:
         )
         found = embedded_upstream_release.find_embedded_upstream_release(notes, None, None, None)
         assert found is None
+
+
+class TestFindSelfReferenceRepo:
+    def test_returns_none_for_no_notes_or_no_from_version(self):
+        assert embedded_upstream_release.find_self_reference_repo(None, "2.9.12") is None
+        assert embedded_upstream_release.find_self_reference_repo("", "2.9.12") is None
+        assert embedded_upstream_release.find_self_reference_repo("some notes", None) is None
+
+    def test_music_assistant_style_self_reference(self):
+        """Same real example find_embedded_upstream_release's own
+        exclusion test above is built from -- this is the positive
+        counterpart, resolving the entity's own repo from that same
+        self-reference link instead of just excluding it."""
+        notes = "_Changes since [2.9.12](https://github.com/music-assistant/server/releases/tag/2.9.12)_"
+        assert embedded_upstream_release.find_self_reference_repo(notes, "2.9.12") == ("music-assistant", "server")
+
+    def test_v_prefix_ignored_when_comparing_tag_to_from_version(self):
+        notes = "_Changes since [v2.9.12](https://github.com/music-assistant/server/releases/tag/v2.9.12)_"
+        assert embedded_upstream_release.find_self_reference_repo(notes, "2.9.12") == ("music-assistant", "server")
+
+    def test_no_match_when_tag_differs_from_from_version(self):
+        notes = "Updated Zigbee2MQTT to version [2.13.0](https://github.com/Koenkk/zigbee2mqtt/releases/tag/2.13.0)"
+        assert embedded_upstream_release.find_self_reference_repo(notes, "2.9.12") is None
+
+    def test_no_match_for_bare_releases_link_with_no_tag(self):
+        notes = "changelog : https://github.com/mealie-recipes/mealie/releases"
+        assert embedded_upstream_release.find_self_reference_repo(notes, "2.9.12") is None

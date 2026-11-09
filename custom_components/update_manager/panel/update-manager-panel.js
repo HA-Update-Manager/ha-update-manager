@@ -1013,7 +1013,7 @@ function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fro
   container.insertBefore(heading, before);
   if (notes) {
     const markdown = document.createElement("ha-markdown");
-    markdown.content = _decorateReleaseNotes(_trimChangelogToVersion(notes, fromVersion, toVersion), releaseUrl);
+    markdown.content = _decorateReleaseNotes(_trimChangelogToVersion(notes, fromVersion, toVersion), releaseUrl, fromVersion);
     container.insertBefore(markdown, before);
   }
   const linkRow = buildReleaseUrlLinkRow(tr, linkUrl || releaseUrl);
@@ -2275,11 +2275,47 @@ function _buildDeviceIdentityLine(friendlyName, identity) {
 // already-linkified `[#1234](url)` output matches the bare #1234 inside
 // the brackets again, since `[` isn't a word character either, producing a
 // broken nested link).
-function _decorateReleaseNotes(notes, releaseUrl) {
+// fromVersion (optional, only ever used as a fallback when releaseUrl
+// itself doesn't resolve): a Supervisor add-on's own update entity never
+// sets release_url at all (confirmed against
+// homeassistant/components/hassio/update.py's own
+// SupervisorAddonUpdateEntity), so #1234/@username references in its own
+// release notes never became clickable links, even though working
+// markdown links to the exact same repo already sit right there in the
+// same text. _findSelfReferenceRepo below finds that same repo from a
+// self-reference link embedded in the notes themselves (a real, existing
+// fact about this entity, not a guess) -- the same self-reference
+// _findEmbeddedUpstreamRelease already recognizes and excludes, reused
+// here as a positive result instead, not duplicated. Direct user
+// feedback, 2026-08-12, confirmed live against Music Assistant Server's
+// own real release notes.
+function _decorateReleaseNotes(notes, releaseUrl, fromVersion) {
   if (!notes) return notes;
-  const parsed = _parseGithubReleaseUrl(releaseUrl);
+  const parsed = _parseGithubReleaseUrl(releaseUrl) || _findSelfReferenceRepo(notes, fromVersion);
   const linkified = parsed ? _linkifyGithubReferences(notes, parsed.owner, parsed.repo) : notes;
   return _replaceGithubEmojiShortcodes(linkified);
+}
+
+// See _decorateReleaseNotes's own top comment for why this exists. Reuses
+// the exact same self-reference shape _findEmbeddedUpstreamRelease
+// already recognizes (a release-tag link whose own tag matches
+// fromVersion) as a genuine, positive match instead of something to
+// exclude while searching for a different, external project. Mirrored,
+// not shared, in release_notes_decoration.py's own find_self_reference_repo,
+// used by the get_release_notes service -- keep both in sync by hand.
+function _findSelfReferenceRepo(notes, fromVersion) {
+  if (!notes || !fromVersion) return null;
+  const normalizedFromVersion = fromVersion.replace(/^v/i, "").toLowerCase();
+  const linkRe = /https?:\/\/[^\s)]+/g;
+  const releaseRe = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/(?:tag\/)?([^/]+)/;
+  let match;
+  while ((match = linkRe.exec(notes)) !== null) {
+    const releaseMatch = releaseRe.exec(match[0]);
+    if (!releaseMatch) continue;
+    const [, owner, repo, tag] = releaseMatch;
+    if (tag.replace(/^v/i, "").toLowerCase() === normalizedFromVersion) return { owner, repo };
+  }
+  return null;
 }
 
 // Finds the one external (not this entity's own repo) GitHub release

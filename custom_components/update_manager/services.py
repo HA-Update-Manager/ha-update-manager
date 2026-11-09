@@ -52,7 +52,7 @@ from homeassistant.helpers import config_validation as cv
 from .changelog_trim import trim_changelog_to_version
 from .const import ATTR_TO_VERSION, DOMAIN, SERVICE_CANCEL_SCHEDULED_INSTALL, SERVICE_GET_RELEASE_NOTES
 from .coordinator import home_assistant_component_for_entity
-from .embedded_upstream_release import find_embedded_upstream_release
+from .embedded_upstream_release import find_embedded_upstream_release, find_self_reference_repo
 from .github_release_notes import parse_release_url
 from .release_notes_decoration import decorate_release_notes
 from .runtime_data import UpdateManagerData
@@ -229,7 +229,14 @@ def async_setup_services(hass: HomeAssistant) -> None:
         # function's own docstring.
         notes = trim_changelog_to_version(notes, from_version, to_version)
         notes = await _async_with_upstream_addendum(notes, own_owner, own_repo, from_version, to_version, access_token)
-        notes = decorate_release_notes(notes, own_owner, own_repo)
+        # find_self_reference_repo only as a fallback, own_owner/own_repo
+        # above (from release_url) always preferred when they resolve --
+        # see that function's own docstring for why (a Supervisor add-on's
+        # own update entity never sets release_url at all).
+        decorate_owner, decorate_repo = (own_owner, own_repo) if own_owner and own_repo else (
+            find_self_reference_repo(notes, from_version) or (None, None)
+        )
+        notes = decorate_release_notes(notes, decorate_owner, decorate_repo)
 
         # For Home Assistant Core specifically, the real blog announcement
         # link takes over from the plain GitHub releases tag link, same as
