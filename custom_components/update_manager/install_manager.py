@@ -235,7 +235,7 @@ class InstallManager:
         # once per changed entity -- see _async_tick's own comment.
         self._dirty = False
         self._unsub_timer = None
-        self._unsub_coordinator_listener = None
+        self._unsub_coordinator_listener: Callable[[], None] | None = None
         # Fired whenever self._pending/self._failed change, i.e. right
         # alongside _refresh_pending_notification/_refresh_failed_notification
         # (see pending_entities/failed_entities below for the two sensors
@@ -754,9 +754,15 @@ class InstallManager:
         if cached and current_to_version:
             owner_repo_tag = parse_release_url(cached.get("release_url"))
             if owner_repo_tag is not None:
-                required_version = await self._async_min_ha_version(*owner_repo_tag)
-                if required_version is not None and not ha_core_version_satisfies(HA_CORE_VERSION, required_version):
-                    self._postponed[entity_id] = (current_to_version, required_version)
+                # Not reusing required_version from the reactive branch
+                # above: that one's a known-str tuple field, this one's a
+                # fresh, possibly-unresolved lookup -- different shapes for
+                # mypy, not just a naming collision.
+                proactive_required_version = await self._async_min_ha_version(*owner_repo_tag)
+                if proactive_required_version is not None and not ha_core_version_satisfies(
+                    HA_CORE_VERSION, proactive_required_version
+                ):
+                    self._postponed[entity_id] = (current_to_version, proactive_required_version)
                     self._dirty = True
                     if entity_id in self._pending:
                         del self._pending[entity_id]
@@ -825,9 +831,17 @@ class InstallManager:
             last_announced=self._recently_announced.get(entity_id),
         )
 
+        # current_to_version is guaranteed non-None in both branches below:
+        # decide_action only ever returns "announce"/"execute" once
+        # is_ready was True, and is_ready only comes back True when cached
+        # was truthy above (the else branch hardcodes it False) -- which is
+        # exactly the one case current_to_version is a real string instead
+        # of None.
         if action == "announce":
+            assert current_to_version is not None
             await self._async_announce(entity_id, current_to_version, now)
         elif action == "execute":
+            assert current_to_version is not None
             # reason is guaranteed non-None here: decide_action only ever
             # returns "execute" when auto_install_enabled was True, and
             # effective_auto_install_state never returns a True middle

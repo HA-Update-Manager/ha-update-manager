@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import timedelta
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import voluptuous as vol
@@ -76,6 +76,7 @@ from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
 from .zigbee import device_for_entity, zigbee2mqtt_device_url
 from .install_manager import auto_install_rules_from_options, failure_reason_for
+from .my_votes import Verdict
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
 from .semver import min_ha_version_required, strip_version_prefix
 from .vote_issue_body import REASON_CATEGORIES
@@ -1245,7 +1246,24 @@ async def _async_resolve_my_verdict(hass: HomeAssistant, data: UpdateManagerData
     username = data.github_auth_manager.linked_username
     if not username:
         return None
-    my_verdict = await async_fetch_my_vote(hass, identity, username)
+    # async_fetch_my_vote reads a raw string straight off community-votes'
+    # own real data, typed as plain str (not Verdict) since nothing
+    # guarantees it's actually one of the two known values -- narrowed
+    # here instead of trusting it blindly, same "don't believe external
+    # data without checking" reasoning this project already applies
+    # elsewhere.
+    fetched_verdict = await async_fetch_my_vote(hass, identity, username)
+    # An if-statement, not a ternary: mypy's own narrowing for an "in" check
+    # against a tuple of literals only reliably applies inside a real
+    # branch, not a conditional expression's own two sides.
+    if fetched_verdict in ("healthy", "problematic"):
+        # The cast is safe exactly because of the check just above --
+        # mypy's own "in" narrowing against a tuple of literals doesn't
+        # narrow a plain str all the way to the matching Literal type on
+        # its own, only rules out None.
+        my_verdict = cast(Verdict, fetched_verdict)
+    else:
+        my_verdict = None
     if my_verdict is not None:
         await data.my_votes_manager.async_remember(identity.jump_key, my_verdict)
     return my_verdict

@@ -204,8 +204,12 @@ rules:
       straight through Home Assistant's own async aiohttp client.
   inject-websession: done
   strict-typing:
-    status: todo
+    status: done
     comment: >-
-      Type hints are used pervasively (from __future__ import annotations, typed
-      signatures throughout) but there's no py.typed marker or enforced mypy
-      config yet.
+      py.typed marker added, plus a root mypy.ini (python_version matching
+      HA's own real requirement, ignore_missing_imports since homeassistant
+      itself can't be installed locally, see test-coverage above for the
+      same limitation). 36 real findings fixed 2026-11-09 (mostly genuine
+      Optional-handling gaps mypy caught for real, a couple of real
+      follow-through bugs from the same evening's own earlier work), `mypy
+      custom_components/update_manager/` now a clean run.

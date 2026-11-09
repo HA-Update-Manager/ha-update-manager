@@ -9,6 +9,7 @@ imports from websocket_api, so defining it there would be circular.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -49,7 +50,12 @@ class UpdateManagerData:
     integration_version: str
 
 
-UpdateManagerConfigEntry = ConfigEntry[UpdateManagerData]
+# Explicit TypeAlias, not a bare assignment -- without it, homeassistant
+# not being locally installable (see quality_scale.yaml's own
+# test-coverage comment) means ConfigEntry itself resolves to Any, and
+# mypy won't otherwise treat a subscript of an unresolved base as a real
+# type alias usable in annotations elsewhere.
+UpdateManagerConfigEntry: TypeAlias = ConfigEntry[UpdateManagerData]
 
 
 def get_entry(hass: HomeAssistant) -> UpdateManagerConfigEntry | None:

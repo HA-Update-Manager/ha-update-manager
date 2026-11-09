@@ -209,6 +209,12 @@ def async_setup_services(hass: HomeAssistant) -> None:
         owner: str | None = None
         repo: str | None = None
         corrected_url: str | None = None
+        # Explicitly declared here too, same reasoning as owner/repo/
+        # corrected_url above: without it, mypy infers notes' own type
+        # from wherever it's first assigned below (the if-branch's own
+        # narrowed str), not the wider str | None both branches, and the
+        # rest of this function, actually need.
+        notes: str | None = None
         main_notes = await _async_main_notes(entity_id)
         if main_notes:
             notes = main_notes

@@ -14,7 +14,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import CoreState, Event, HomeAssistant, State, callback
@@ -38,7 +38,7 @@ from .const import (
 from .entity_rename import relabel_key
 from .hacs_identity import corrected_release_url
 from .postponement_schedule import DayRule, EMPTY_SCHEDULE, PostponementSchedule, next_allowed_ready
-from .semver import classify_version_size
+from .semver import Size, classify_version_size
 from .staging import StagingRules, StagingResult, evaluate_staging, wait_for_size
 
 _LOGGER = logging.getLogger(__name__)
@@ -306,9 +306,13 @@ def schedule_from_options(options: dict) -> PostponementSchedule:
             time=dt_util.parse_time(raw_time) if raw_time else None,
         )
 
-    return PostponementSchedule(
-        days=tuple(_day(enabled_key, time_key) for enabled_key, time_key in WEEKDAY_READY_OPTION_KEYS)
-    )
+    # WEEKDAY_READY_OPTION_KEYS is a real, fixed 7-entry constant
+    # (Monday..Sunday, see its own comment in const.py), just not declared
+    # as a fixed-length tuple type there -- the cast preserves
+    # PostponementSchedule.days' own stronger, self-documenting length-7
+    # type instead of weakening it to match.
+    days = tuple(_day(enabled_key, time_key) for enabled_key, time_key in WEEKDAY_READY_OPTION_KEYS)
+    return PostponementSchedule(days=cast("tuple[DayRule, DayRule, DayRule, DayRule, DayRule, DayRule, DayRule]", days))
 
 
 async def _async_available_since(hass: HomeAssistant, entity_id: str, current_latest_version: str) -> datetime:
@@ -1314,7 +1318,7 @@ class UpdateManagerCoordinator:
         return record is not None and record.get("version") == latest
 
     def _staging_result(
-        self, entity_id: str, latest: str, size: str, available_since: datetime, now: datetime, rules: StagingRules
+        self, entity_id: str, latest: str, size: Size, available_since: datetime, now: datetime, rules: StagingRules
     ) -> StagingResult:
         """The panel's own "Ready now" button (see self._force_ready's own
         comment) overrides the normal wait-days verdict for this one
@@ -1327,7 +1331,7 @@ class UpdateManagerCoordinator:
         return evaluate_staging(size, available_since, now, rules)
 
     def _staged_result(
-        self, entity_id: str, latest: str, size: str, available_since: datetime, now: datetime, rules: StagingRules
+        self, entity_id: str, latest: str, size: Size, available_since: datetime, now: datetime, rules: StagingRules
     ) -> StagingResult:
         """_staging_result's own wait-based verdict, with the postponement
         schedule (issue #4) composed on top of it -- shared by
@@ -1361,7 +1365,15 @@ class UpdateManagerCoordinator:
             # override existing specifically to skip past that too, not
             # just past the wait-days math.
             return result
-        wait_deadline = available_since + wait_for_size(rules, size)
+        # Provably non-None here: evaluate_staging (inside
+        # _staging_result above) only ever produces "ready"/"waiting" --
+        # the two statuses the early return at this method's own top
+        # already filtered down to -- when its own, identically-sourced
+        # wait_for_size(rules, size) call came back non-None (a None wait
+        # means "blocked" instead, see evaluate_staging's own body).
+        wait = wait_for_size(rules, size)
+        assert wait is not None
+        wait_deadline = available_since + wait
         return self._apply_schedule_gate(result, wait_deadline, now)
 
     def _apply_schedule_gate(self, result: StagingResult, wait_deadline: datetime, now: datetime) -> StagingResult:
@@ -1421,7 +1433,7 @@ class UpdateManagerCoordinator:
         return StagingResult("waiting", target - now)
 
     def _resolve_ready_since(
-        self, entity_id: str, latest: str, size: str, available_since: datetime, rules: StagingRules, status: str
+        self, entity_id: str, latest: str, size: Size, available_since: datetime, rules: StagingRules, status: str
     ) -> str | None:
         """The real instant this entity/version pair actually stopped
         "waiting" -- shown on the panel's own "Ready to update" timeline

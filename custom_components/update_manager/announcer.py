@@ -228,7 +228,12 @@ def decide_action(
     installable: bool,
     existing: PendingAnnouncement | None,
     cancelled_to_version: str | None,
-    current_to_version: str,
+    # str | None, not plain str: a caller's own cache lookup can come back
+    # empty (an entity postponed for a too-old HA Core version, then
+    # dropped from the cache entirely, see install_manager.py's own
+    # _async_evaluate_one), and this is only ever compared against for
+    # equality below, never dereferenced as a real version string.
+    current_to_version: str | None,
     now: datetime,
     announce_wait: timedelta,
     instant: bool = False,

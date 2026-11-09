@@ -79,6 +79,10 @@ def find_embedded_upstream_release(
             seen.setdefault(url, None)
             continue
         m = release_match or blob_match
+        # Provably true (the early continue above already ruled out both
+        # being None), just not something mypy's own flow analysis follows
+        # across that earlier compound condition.
+        assert m is not None
         owner, repo = m.group(1), m.group(2)
         tag = m.group(3) if release_match else None
         if own_owner and own_repo and owner.lower() == own_owner.lower() and repo.lower() == own_repo.lower():

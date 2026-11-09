@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
@@ -91,8 +92,8 @@ class StagingSkipManager:
         # entity look unexplained rather than a known limitation.
         self._auto_update_warned: set[str] = set()
         self._enabled = False
-        self._unsub_listener = None
-        self._unsub_rollout_listener = None
+        self._unsub_listener: Callable[[], None] | None = None
+        self._unsub_rollout_listener: Callable[[], None] | None = None
         # Serializes every pass that reads/writes self._skipped against
         # every other one. Found live (2026-07-17, after a restart left
         # almost everything "Skipped" instead of "Postponed"): _on_recompute

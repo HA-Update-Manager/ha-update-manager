@@ -7,7 +7,13 @@ from homeassistant import config_entries
 from .const import DOMAIN
 
 
-class UpdateManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+# Real, correct HA Core API (ConfigFlow's own metaclass genuinely accepts
+# domain=), only flagged because homeassistant itself can't be installed
+# locally (see quality_scale.yaml's own test-coverage/
+# config-flow-test-coverage comments for the same environment limitation),
+# so --ignore-missing-imports resolves ConfigFlow to Any and mypy falls
+# back to checking the call against bare object instead.
+class UpdateManagerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
     VERSION = 1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> config_entries.FlowResult:

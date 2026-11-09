@@ -947,7 +947,13 @@ class RolloutManager:
             # to_version check would then quietly refuse to match once the
             # *real* in-flight install actually completes.
             group_key = self._group_key_for(entity_id)
-            if not self._queues.get(group_key):
+            # group_key is None for a non-Zigbee tier-blocked entity (Core/
+            # Supervisor/OS/host firmware) -- that's already "no queue for
+            # it", functionally identical to self._queues.get(group_key)
+            # itself (a dict.get on a key that's genuinely never present
+            # simply misses, same result), just made explicit here for
+            # mypy's own benefit too.
+            if not group_key or not self._queues.get(group_key):
                 self._mark_entry_dispatching(entry)
             # Persisted right away, not batched until this whole loop ends
             # (as it used to be, found by code review 2026-08-10, to avoid
@@ -1515,9 +1521,15 @@ class RolloutManager:
                 # _async_pop_finished_fronts, not a single _async_advance:
                 # more than one front in a row can have quietly finished
                 # between recheck ticks, see that method's own docstring.
-                front = await self._async_pop_finished_fronts(group_key)
-                if front is None:
+                # A new, separate variable here, not reassigning front
+                # itself: this one's genuinely Optional
+                # (_async_pop_finished_fronts' own return type, re-narrowed
+                # by the is-None check right below), a different shape
+                # than front's own plain, always-present type above.
+                new_front = await self._async_pop_finished_fronts(group_key)
+                if new_front is None:
                     continue
+                front = new_front
                 # The new front may already be a normal, currently-
                 # installing one (not another stale leftover) -- re-check
                 # before falling through to the stalled-front path below,

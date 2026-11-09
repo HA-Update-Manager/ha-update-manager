@@ -122,10 +122,14 @@ _SPOOK_BLUEPRINT_COUNTERS = {
 class SpookBlueprintInfo(NamedTuple):
     source_url: str | None
     list_url: str | None
-    count: int
+    # Not named count: tuple's own built-in .count(value) method already
+    # claims that name, which mypy correctly flags as a real type
+    # conflict (a NamedTuple field named count would need to be the
+    # method's own Callable type, not a plain int).
+    usage_count: int
     # "automation" or "script" -- the panel needs this to label its own
     # menu item correctly (Automations vs Scripts), not just to build
-    # list_url/count above.
+    # list_url/usage_count above.
     blueprint_domain: str
 
 
@@ -149,7 +153,7 @@ async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> Spo
     beyond blueprint_path itself, already known before source_url's own
     file read even starts, so this is set even if that read fails.
 
-    count: len() of that same automations_with_blueprint/
+    usage_count: len() of that same automations_with_blueprint/
     scripts_with_blueprint call, not a second, separate lookup."""
     entry = er.async_get(hass).async_get(entity_id)
     if entry is None or entry.platform != _SPOOK_DOMAIN or entry.unique_id is None:
@@ -163,8 +167,12 @@ async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> Spo
             break
     if blueprint_path is None:
         return None
+    # Always set together, in the same loop iteration above -- just not
+    # something mypy's own flow analysis follows from one loop back out
+    # to here.
+    assert blueprint_domain is not None
     list_url = f"{_SPOOK_BLUEPRINT_DASHBOARD_PATH[blueprint_domain]}?blueprint={quote(blueprint_path)}"
-    count = len(_SPOOK_BLUEPRINT_COUNTERS[blueprint_domain](hass, blueprint_path))
+    usage_count = len(_SPOOK_BLUEPRINT_COUNTERS[blueprint_domain](hass, blueprint_path))
     source_url = None
     domain_blueprints = hass.data.get(_BLUEPRINT_DOMAIN, {}).get(blueprint_domain)
     if domain_blueprints is not None:
@@ -175,7 +183,9 @@ async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> Spo
         if blueprint is not None:
             candidate = blueprint.metadata.get("source_url")
             source_url = candidate if isinstance(candidate, str) else None
-    return SpookBlueprintInfo(source_url=source_url, list_url=list_url, count=count, blueprint_domain=blueprint_domain)
+    return SpookBlueprintInfo(
+        source_url=source_url, list_url=list_url, usage_count=usage_count, blueprint_domain=blueprint_domain
+    )
 
 
 # Real, literal identifier values hassio's own entity.py uses for its

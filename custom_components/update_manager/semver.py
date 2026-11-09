@@ -296,15 +296,20 @@ def classify_version_size(previous: str, current: str) -> Size:
     if prev_is_commit or curr_is_commit:
         return "large"
 
-    prev = _parse_major_minor_patch_hotfix(previous)
-    curr = _parse_major_minor_patch_hotfix(current)
-    if prev is None or curr is None:
+    # Not reusing prev/curr from the calendar branch above: mypy infers a
+    # variable's type from wherever it's first assigned in the function,
+    # and that branch's own _parse_calendar always returns a real,
+    # non-optional ParsedVersion, a different shape than
+    # _parse_major_minor_patch_hotfix's own Optional return here.
+    prev_hotfix = _parse_major_minor_patch_hotfix(previous)
+    curr_hotfix = _parse_major_minor_patch_hotfix(current)
+    if prev_hotfix is None or curr_hotfix is None:
         return "large"
-    if curr <= prev:
+    if curr_hotfix <= prev_hotfix:
         return "large"
-    if curr.major != prev.major:
+    if curr_hotfix.major != prev_hotfix.major:
         return "large"
-    if curr.minor != prev.minor:
+    if curr_hotfix.minor != prev_hotfix.minor:
         return "medium"
     return "small"
 

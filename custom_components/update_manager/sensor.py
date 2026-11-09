@@ -180,10 +180,15 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
             # place), so needs_manual_action below read it as still needing
             # a click the entire time it sat in the queue, confirmed live
             # 2026-11-08, when there was genuinely nothing left to do.
-            if not (self._rollout_manager.is_queued(u.get("entity_id")) or self._rollout_manager.is_in_flight(u.get("entity_id")))
+            # Direct indexing, not .get(): entity_id/status/version_size
+            # are always set on every coordinator.cache entry (see that
+            # module's own cache-shape comment), never actually missing --
+            # .get()'s own Optional return type was the only reason mypy
+            # flagged these three as possibly None.
+            if not (self._rollout_manager.is_queued(u["entity_id"]) or self._rollout_manager.is_in_flight(u["entity_id"]))
             and needs_manual_action(
-                status=u.get("status"),
-                version_size=u.get("version_size"),
+                status=u["status"],
+                version_size=u["version_size"],
                 auto_install_excluded=bool(u.get("auto_install_excluded")),
                 trusted_vote=u.get("trusted_vote"),
                 community_problematic_count=(u.get("community_verdict") or {}).get("problematic_count", 0),

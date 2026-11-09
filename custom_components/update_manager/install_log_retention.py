@@ -64,7 +64,11 @@ def entries_to_keep_full_notes(
     seen_per_entity: dict[str, int] = {}
     for i in range(len(entries) - 1, -1, -1):
         entry = entries[i]
-        entity_id = entry.get("entity_id")
+        # Always a real string in practice (install_log.py's own entries
+        # always carry one) -- the "" fallback is only here to satisfy
+        # seen_per_entity's own str-keyed type, entries never actually
+        # lack this field.
+        entity_id = entry.get("entity_id") or ""
         seen = seen_per_entity.get(entity_id, 0)
         if seen < policy.per_entity_floor:
             keep.add(i)
