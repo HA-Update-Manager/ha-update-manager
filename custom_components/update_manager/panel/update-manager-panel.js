@@ -488,15 +488,21 @@ function compareUpdates(a, b, settings) {
 // and _openDetailDialog's own heldBackByCommunity, so the two can't drift
 // apart the way they already once did (the Updates-tab list row's own "will
 // auto-install at X" pill disagreeing with that same entity's dialog).
-function communityBlocksAutoInstall(u) {
-  // Mirrors effective_auto_install_state's own order: the whitelist
-  // override (added 2026-10-10, answers issue #10) outranks a trusted
-  // vote, same as it does server-side -- checked first, not just folded
-  // into autoInstallEnabledFor below, since this function is also used
-  // standalone by _openDetailDialog's own heldBackByCommunity.
-  if (u.auto_install_whitelisted) return false;
-  if (u.trusted_vote === "healthy") return false;
-  return ((u.community_verdict && u.community_verdict.problematic_count) || 0) > 0;
+// Mirrors announcer.py's own community_blocks_auto_install exactly (same
+// whitelist > trusted-healthy > problematic-count precedence) -- most
+// callers read coordinator.py's own held_back_by_community field
+// directly instead of calling this at all now (found by code review,
+// 2026-07-29, duplicating that same precedence a second time client-side
+// -- see that Python function's own docstring for the two real bugs it
+// already produced). Still needed here, parameterized rather than
+// reading a plain `u`, for _openDetailDialog's own optimistic
+// heldBackByCommunity right after a vote, before that backend field has
+// had a chance to catch up -- the override it reflects only ever exists
+// client-side.
+function communityBlocksAutoInstall(trustedVote, problematicCount, whitelisted) {
+  if (whitelisted) return false;
+  if (trustedVote === "healthy") return false;
+  return (problematicCount || 0) > 0;
 }
 
 // Will this update ever auto-install itself, as currently configured?
@@ -511,11 +517,12 @@ function autoInstallEnabledFor(u, settings) {
   // showing a "will update automatically" projection while paused would be
   // actively misleading, since nothing will actually happen.
   if (!settings || settings.enabled === false || !u.installable || u.auto_install_excluded || u.native_auto_update) return false;
-  // Whitelisted bypasses the size toggle entirely too, same as server-side
-  // -- checked before communityBlocksAutoInstall below, though that
-  // function itself already also special-cases this same field.
+  // Whitelisted bypasses the size toggle entirely too, same as server-side.
   if (u.auto_install_whitelisted) return true;
-  if (communityBlocksAutoInstall(u)) return false;
+  // No override in play here (unlike _openDetailDialog's own
+  // heldBackByCommunity below), so the backend's own already-computed
+  // field, not a recomputation of it.
+  if (u.held_back_by_community) return false;
   return !!settings[`${u.version_size}_auto_install`];
 }
 
@@ -6012,14 +6019,15 @@ class UpdateManagerPanel extends HTMLElement {
     const communityIdentifiable = communityOverride ? !!communityOverride.identifiable : false;
     const heldBackByCommunity =
       showPendingUpdate &&
-      effectiveTrustedVote !== "healthy" &&
-      communityProblematicCount > 0 &&
+      // effectiveTrustedVote/communityProblematicCount, not u's own plain
+      // fields: this needs to reflect a vote just cast in this same
+      // dialog session immediately, before coordinator.py's own
+      // held_back_by_community field has had a chance to catch up with a
+      // real refresh -- the one place this project's own client-side code
+      // still needs communityBlocksAutoInstall itself, every other caller
+      // reads that field directly instead.
+      communityBlocksAutoInstall(effectiveTrustedVote, communityProblematicCount, u.auto_install_whitelisted) &&
       !u.auto_install_excluded &&
-      // Same whitelist override as communityBlocksAutoInstall's own,
-      // added 2026-10-10 -- this condition is hand-rolled rather than
-      // calling that shared function (pre-existing, not introduced here),
-      // so it needs this added by hand too.
-      !u.auto_install_whitelisted &&
       u.status !== "skipped";
     // isQueuedInRollout/isTierWaiting checked first: u.status itself is
     // still "ready" for a queued/tier-blocked entity (the real staging

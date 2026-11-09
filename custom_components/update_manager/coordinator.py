@@ -23,6 +23,7 @@ from homeassistant.helpers.event import EventStateChangedData, async_track_point
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .announcer import community_blocks_auto_install
 from .community_verdict import CommunityVerdictManager
 from .const import (
     CONF_EXCLUDED_ENTITIES,
@@ -1669,6 +1670,18 @@ class UpdateManagerCoordinator:
             # explain a block on the still-pending update itself.
             "trusted_vote": trusted_vote,
             "trusted_voters_matched": trusted_voters_matched,
+            # Computed once here, server-side, from the same inputs the
+            # panel already has -- replaces its own former client-side
+            # copy of this exact precedence (communityBlocksAutoInstall,
+            # found duplicating announcer.py's own effective_auto_install_state
+            # by code review, 2026-07-29). See
+            # announcer.community_blocks_auto_install's own docstring for
+            # the two real bugs that duplication already produced once.
+            "held_back_by_community": community_blocks_auto_install(
+                trusted_vote,
+                (community_verdict or {}).get("problematic_count", 0),
+                _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
+            ),
         }
 
     async def _async_refresh_community_verdict(
@@ -1711,6 +1724,16 @@ class UpdateManagerCoordinator:
             cached["community_verdict"] = verdict
             cached["trusted_vote"] = trusted_vote
             cached["trusted_voters_matched"] = trusted_voters_matched
+            # Kept in sync with the fields above, not just set once at the
+            # initial cache build -- this exact async refresh is what makes
+            # community_verdict/trusted_vote go stale in the first place,
+            # held_back_by_community would silently follow if left alone
+            # here.
+            cached["held_back_by_community"] = community_blocks_auto_install(
+                trusted_vote,
+                (verdict or {}).get("problematic_count", 0),
+                _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
+            )
 
     async def async_force_refresh_community_verdicts(self) -> None:
         """Bypasses CommunityVerdictManager's own hour-long freshness window
@@ -1812,4 +1835,14 @@ class UpdateManagerCoordinator:
             # key still present so every cache entry has the same shape,
             # see _async_cache_active's own comment.
             "community_verdict": previous.get("community_verdict") if previous else None,
+            # trusted_vote itself isn't tracked as its own top-level field
+            # here (this entry has no live community-verdict refresh of
+            # its own to keep it current), only ever carried over from
+            # previous the same way community_verdict just above already
+            # is, purely to feed this one computation.
+            "held_back_by_community": community_blocks_auto_install(
+                previous.get("trusted_vote") if previous else None,
+                ((previous.get("community_verdict") if previous else None) or {}).get("problematic_count", 0),
+                _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
+            ),
         }
