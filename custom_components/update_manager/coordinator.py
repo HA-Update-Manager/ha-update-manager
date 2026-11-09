@@ -670,21 +670,21 @@ class UpdateManagerCoordinator:
         honest "we don't know", not a guess, since HA genuinely wasn't
         running to observe when this update actually became available.
 
-        Known limitation, found by code review, 2026-07-27: for the same
-        restart reason, __init__.py's own _on_install always logs this as a
-        manual install, never an auto-install, even if install_manager.py's
-        own InstallManager actually dispatched it right before the restart
-        -- was_auto_installed() reads InstallManager._recently_executed, an
-        in-memory-only dict that can't survive a restart any more than this
-        coordinator's own un-persisted cache can. Today this is only ever
-        *actually* wrong for a non-Core/Supervisor/OS entity that's both
-        auto-install-eligible in this integration's own rules and happens
-        to need a restart before its own installed_version updates
-        (Core/Supervisor/OS themselves are hard-excluded from auto-install
-        entirely, so "manual" is always correct for them regardless) --
-        narrow enough, and persisting dispatch records across a restart
-        invasive enough, that this is left as a documented gap rather than
-        fixed here.
+        Previously a known limitation (found by code review, 2026-07-27):
+        for the same restart reason, __init__.py's own _on_install used to
+        always log this as a manual install, never an auto-install, even
+        if install_manager.py's own InstallManager actually dispatched it
+        right before the restart -- was_auto_installed() reads
+        InstallManager._recently_executed, an in-memory-only dict that
+        can't survive a restart any more than this coordinator's own
+        un-persisted cache can. Resolved 2026-11-09 not by persisting
+        dispatch records across a restart (the real fix that gap's own
+        note called for, genuinely invasive), but by the same "don't
+        assert what isn't known" principle applied to install_method
+        generally that same day: retroactive now routes straight to
+        "external" below, the same bucket that already means "not
+        confirmed", shown as nothing at all rather than the wrong, too-
+        confident "manual" it used to default to.
 
         Returns whether this call actually evaluated the transition
         (fired the install listeners, or found no disagreement worth
