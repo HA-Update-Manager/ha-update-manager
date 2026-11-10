@@ -666,7 +666,16 @@ async def _handle_spook_blueprint_source(hass: HomeAssistant, connection: websoc
         {
             "source_url": info.source_url if info else None,
             "list_url": info.list_url if info else None,
-            "count": info.count if info else None,
+            # Not info.count: SpookBlueprintInfo deliberately doesn't use
+            # that name for its own count field (NamedTuple's own built-in
+            # .count(value) method already claims it, see that class's own
+            # docstring) -- info.count here silently returned that bound
+            # method object instead of a number, which can't be JSON-
+            # serialized, so this whole command failed every single time.
+            # Found live, 2026-11-10: a History dialog's own menu stayed
+            # stuck on "About" only, no Repository/Automations items, for
+            # exactly this reason.
+            "count": info.usage_count if info else None,
             "blueprint_domain": info.blueprint_domain if info else None,
         },
     )

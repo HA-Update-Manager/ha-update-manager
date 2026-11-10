@@ -2111,17 +2111,29 @@ function _resolveMarketplaceInfo(hass, owner, repo, onResolved) {
     _marketplaceInfoPending.delete(key);
     if (value) waiting.forEach((cb) => cb(value));
   };
-  _fetchMarketplaceRepoList(hass).then((list) => {
-    const match = (list || []).find((r) => r.full_name && r.full_name.toLowerCase() === key);
-    if (!match) {
-      settle(null);
-      return;
-    }
-    hass
-      .callWS({ type: "marketplace/repository/info", repository_id: match.id })
-      .then((info) => settle({ downloads: info.downloads, issues: info.issues }))
-      .catch(() => settle(null));
-  });
+  // A transient failure (network hiccup, backend momentarily unavailable)
+  // -- not cached at all, same reasoning as _resolveSpookBlueprintInfo's
+  // own catch block below: caching this would wrongly treat a one-off
+  // failure as a stable "this repo has no info", permanently hiding it
+  // for the rest of the session even once the backend recovers. Found by
+  // review, 2026-11-10: the 2026-11-08 fix for this exact pattern only
+  // landed on _resolveSpookBlueprintInfo, not here.
+  const settleTransientFailure = () => {
+    _marketplaceInfoPending.delete(key);
+  };
+  _fetchMarketplaceRepoList(hass)
+    .then((list) => {
+      const match = (list || []).find((r) => r.full_name && r.full_name.toLowerCase() === key);
+      if (!match) {
+        settle(null);
+        return;
+      }
+      hass
+        .callWS({ type: "marketplace/repository/info", repository_id: match.id })
+        .then((info) => settle({ downloads: info.downloads, issues: info.issues }))
+        .catch(settleTransientFailure);
+    })
+    .catch(settleTransientFailure);
   return undefined;
 }
 
@@ -2156,7 +2168,14 @@ const _spookBlueprintInfoPending = new Map();
 function _resolveSpookBlueprintInfo(hass, entityId, onResolved) {
   if (_spookBlueprintInfoCache.has(entityId)) return _spookBlueprintInfoCache.get(entityId);
   if (!_looksLikeSpookEntity(hass, entityId)) {
-    _spookBlueprintInfoCache.set(entityId, null);
+    // Not cached: unlike a real, confirmed backend answer (cached below),
+    // this is a cheap, synchronous read of the entity's own live state --
+    // found live, 2026-11-10, History-dialog screenshot taken 1 minute
+    // after a real install: hass.states[entityId] can be transiently
+    // stale/absent right around an install's own reload, so a single
+    // false reading here isn't a stable fact worth permanently poisoning
+    // this entity_id with "not Spook" for the rest of the session. Every
+    // later call just re-checks this same cheap read instead.
     return null;
   }
   if (_spookBlueprintInfoPending.has(entityId)) {
