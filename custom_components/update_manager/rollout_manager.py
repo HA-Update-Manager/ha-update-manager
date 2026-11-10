@@ -465,7 +465,7 @@ class RolloutManager:
         # which version was being installed at request time, only who
         # requested it.
         # Third element: when this was recorded (isoformat), added
-        # alongside persistence below (2026-11-10) -- without this, a
+        # alongside persistence below (2026-11-10). Without this, a
         # record whose matching completion is never actually observed
         # (an install that silently stalls, say) would now sit here
         # forever across every future restart instead of being wiped by
@@ -737,7 +737,7 @@ class RolloutManager:
         about, or is None (see self._recently_manual's own comment for why
         one can look like that), and that isn't older than
         _MANUAL_RECORD_MAX_AGE (now that this survives a restart, see that
-        constant's own comment for why that matters) -- a call this module
+        constant's own comment for why that matters), a call this module
         didn't itself dispatch never told it which version was actually
         being installed, so that kind of record matches any version asked
         about."""

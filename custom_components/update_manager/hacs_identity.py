@@ -145,7 +145,7 @@ class ResolvedIdentity(NamedTuple):
     owner_repo: str | None = None
     manufacturer_model: str | None = None
     app_slug: str | None = None
-    # "owner/repo/path/to/file.yaml" -- blueprint category only. Kept as one
+    # "owner/repo/path/to/file.yaml": blueprint category only. Kept as one
     # joined string, not separate owner/repo/path fields, since nothing else
     # here needs owner/repo on its own for this category (unlike hacs, where
     # owner_repo alone is also used to build vote_issue_body.py's "Owner/
@@ -291,7 +291,7 @@ def resolve_identity(
         owner, repo, path = blueprint_identity
         # Spook's own content-fingerprint versions (see
         # device_identity.py's async_spook_blueprint_info) are already bare
-        # hex, never "v"-prefixed -- strip_version_prefix is a no-op for
+        # hex, never "v"-prefixed. strip_version_prefix is a no-op for
         # them, applied anyway for the same reason every other category
         # applies it: consistency, not because this category specifically
         # needs it.

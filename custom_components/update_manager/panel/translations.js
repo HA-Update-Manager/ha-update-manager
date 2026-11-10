@@ -325,11 +325,11 @@ export const TRANSLATIONS = {
     dialog_menu_repository: "Repository",
     dialog_menu_about: "About",
     // Spook's own blueprint-update entities only (see
-    // _resolveSpookBlueprintInfo's own top comment) -- always has a real
+    // _resolveSpookBlueprintInfo's own top comment), always has a real
     // count by the time this shows at all, no plain, countless fallback
     // needed the way dialog_menu_issue_tracker_count below has one.
     // dialog_menu_scripts_count is the same thing for a script Blueprint,
-    // not an automation one -- a genuinely different count, so its own
+    // not an automation one, a genuinely different count, so its own
     // label rather than reusing the automations one for both.
     dialog_menu_automations_count: (n) => `Automations (${n})`,
     dialog_menu_scripts_count: (n) => `Scripts (${n})`,

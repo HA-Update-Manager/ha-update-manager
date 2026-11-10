@@ -115,7 +115,7 @@ class TestBuildIssueBody:
     def test_blueprint_vote_fills_owner_repo_with_full_path(self):
         # blueprint_identity (not owner_repo) is the field set for this
         # category, but both share the same "### Owner/repo" rendered
-        # field -- see vote_issue_body.py's own comment for why.
+        # field, see vote_issue_body.py's own comment for why.
         identity = hacs_identity.ResolvedIdentity(
             "blueprint",
             "5f4f24ec",

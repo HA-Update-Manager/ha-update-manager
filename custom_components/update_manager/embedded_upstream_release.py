@@ -107,7 +107,7 @@ def find_embedded_upstream_release(
 def find_self_reference_repo(notes: str | None, from_version: str | None) -> tuple[str, str] | None:
     """This entity's own (owner, repo), found from a self-reference link
     embedded in its own release notes (a "Changes since
-    [X](.../releases/tag/X)" link tagged with from_version) -- the exact
+    [X](.../releases/tag/X)" link tagged with from_version), the exact
     same self-reference find_embedded_upstream_release above already
     recognizes and excludes, reused here as a genuine, positive result
     instead. Only a fallback for when release_url itself doesn't resolve
@@ -118,10 +118,10 @@ def find_self_reference_repo(notes: str | None, from_version: str | None) -> tup
     release notes never became clickable links even though a working
     markdown link to that exact repo already sits right there in the same
     text. A real release_url is always preferred over this when one
-    exists -- see services.py's own call site.
+    exists. See services.py's own call site.
 
     Mirrored, not shared, in update-manager-panel.js's own
-    _findSelfReferenceRepo -- keep both in sync by hand."""
+    _findSelfReferenceRepo. Keep both in sync by hand."""
     if not notes or not from_version:
         return None
     normalized_from_version = _strip_v_prefix(from_version).lower()

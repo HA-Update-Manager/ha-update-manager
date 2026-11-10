@@ -114,7 +114,7 @@ class TestFindSelfReferenceRepo:
 
     def test_music_assistant_style_self_reference(self):
         """Same real example find_embedded_upstream_release's own
-        exclusion test above is built from -- this is the positive
+        exclusion test above is built from. This is the positive
         counterpart, resolving the entity's own repo from that same
         self-reference link instead of just excluding it."""
         notes = "_Changes since [2.9.12](https://github.com/music-assistant/server/releases/tag/2.9.12)_"

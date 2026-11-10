@@ -489,15 +489,15 @@ function compareUpdates(a, b, settings) {
 // apart the way they already once did (the Updates-tab list row's own "will
 // auto-install at X" pill disagreeing with that same entity's dialog).
 // Mirrors announcer.py's own community_blocks_auto_install exactly (same
-// whitelist > trusted-healthy > problematic-count precedence) -- most
+// whitelist > trusted-healthy > problematic-count precedence), most
 // callers read coordinator.py's own held_back_by_community field
 // directly instead of calling this at all now (found by code review,
-// 2026-07-29, duplicating that same precedence a second time client-side
-// -- see that Python function's own docstring for the two real bugs it
+// 2026-07-29, duplicating that same precedence a second time client-side,
+// see that Python function's own docstring for the two real bugs it
 // already produced). Still needed here, parameterized rather than
 // reading a plain `u`, for _openDetailDialog's own optimistic
 // heldBackByCommunity right after a vote, before that backend field has
-// had a chance to catch up -- the override it reflects only ever exists
+// had a chance to catch up. The override it reflects only ever exists
 // client-side.
 function communityBlocksAutoInstall(trustedVote, problematicCount, whitelisted) {
   if (whitelisted) return false;
@@ -1006,7 +1006,7 @@ function insertReleaseNotesSection(container, before, tr, notes, releaseUrl, fro
   const heading = document.createElement("h3");
   heading.className = "release-notes-heading";
   const headingText = document.createElement("span");
-  // Shown exactly as given, no "v" added or stripped -- found live,
+  // Shown exactly as given, no "v" added or stripped. Found live,
   // 2026-11-09: a leading "v" assumed every version was a GitHub-tag-style
   // semver (prepending one unconditionally after stripping an existing
   // one, to avoid "vv0.8.0"), but Spook's own blueprint-update entities
@@ -2111,8 +2111,8 @@ function _resolveMarketplaceInfo(hass, owner, repo, onResolved) {
     _marketplaceInfoPending.delete(key);
     if (value) waiting.forEach((cb) => cb(value));
   };
-  // A transient failure (network hiccup, backend momentarily unavailable)
-  // -- not cached at all, same reasoning as _resolveSpookBlueprintInfo's
+  // A transient failure (network hiccup, backend momentarily unavailable),
+  // not cached at all, same reasoning as _resolveSpookBlueprintInfo's
   // own catch block below: caching this would wrongly treat a one-off
   // failure as a stable "this repo has no info", permanently hiding it
   // for the rest of the session even once the backend recovers. Found by
@@ -2138,14 +2138,14 @@ function _resolveMarketplaceInfo(hass, owner, repo, onResolved) {
 }
 
 // Spook's own blueprint-update entities (see https://spook.boo/blueprint/)
-// never carry their real source outside their own dialog -- release_url
-// stays empty (confirmed live, 2026-11-08) -- so this panel's own normal
+// never carry their real source outside their own dialog: release_url
+// stays empty (confirmed live, 2026-11-08), so this panel's own normal
 // repoLinks (which only ever derives from release_url, see that
 // function's own top comment) finds nothing at all for one of these, and
 // the header menu doesn't even render in the first place (configuration/
 // repository/issues all come up empty). Every Spook-created entity's own
 // entity_picture falls back to Spook's own brand icon unless something
-// else overrides it -- a free, synchronous hint already sitting on the
+// else overrides it, a free, synchronous hint already sitting on the
 // entity's own state, worth checking before ever asking the backend.
 const _SPOOK_BRAND_ICON_RE = /\/brands\/integration\/spook\//;
 function _looksLikeSpookEntity(hass, entityId) {
@@ -2157,7 +2157,7 @@ function _looksLikeSpookEntity(hass, entityId) {
 // Same cache-plus-callback shape as _resolveMarketplaceInfo above, keyed
 // by entity_id instead of owner/repo. Only the backend can actually
 // confirm *and* resolve this (see device_identity.py's own
-// async_spook_blueprint_info) -- entity_registry's own unique_id isn't
+// async_spook_blueprint_info). entity_registry's own unique_id isn't
 // exposed to the frontend at all, and both the blueprint file on disk and
 // automations_with_blueprint/scripts_with_blueprint's own live count are
 // only reachable server-side. Settles straight to null, synchronously,
@@ -2188,7 +2188,7 @@ function _resolveSpookBlueprintInfo(hass, entityId, onResolved) {
     .then((result) => {
       // A real, successful response confirming this specific entity isn't
       // a blueprint-tracked one after all (Spook's own brand icon, but
-      // not this feature -- its own integration self-update entity, say)
+      // not this feature, its own integration self-update entity, say)
       // is a stable fact about the entity itself, same as
       // _looksLikeSpookEntity's own permanent cache above. Cached
       // permanently.
@@ -2201,7 +2201,7 @@ function _resolveSpookBlueprintInfo(hass, entityId, onResolved) {
     .catch(() => {
       // Confirmed live, 2026-11-08: the call itself failing (the backend
       // command not deployed/restarted yet, a momentary disconnect) used
-      // to cache this exact same permanent null -- correct the moment it
+      // to cache this exact same permanent null, correct the moment it
       // happens, every later dialog open for this entity, this session,
       // still saw the stale failure and never tried again even once the
       // backend genuinely came up. Not cached at all here: only ever
@@ -2246,7 +2246,7 @@ function _resolveDeviceIdentity(hass, entityId, onResolved) {
     })
     .catch(() => {
       // Not cached, same reasoning as _resolveSpookBlueprintInfo's own
-      // catch above -- a failed call retries on the next dialog open
+      // catch above, a failed call retries on the next dialog open
       // instead of sticking forever.
       _deviceIdentityPending.delete(entityId);
     });
@@ -2254,7 +2254,7 @@ function _resolveDeviceIdentity(hass, entityId, onResolved) {
 }
 
 // The dialog header's own manufacturer/model line, between the name and
-// the status badge (_buildDialogHeaderShell's own identityEl) -- only
+// the status badge (_buildDialogHeaderShell's own identityEl), only
 // for a genuine, vendor-issued Zigbee device (identity, from
 // _resolveDeviceIdentity, is already null for anything else). Never
 // repeats what the name already says: a name like "Sonoff BASICR3"
@@ -2310,7 +2310,7 @@ function _buildDeviceIdentityLine(friendlyName, identity) {
 // markdown links to the exact same repo already sit right there in the
 // same text. _findSelfReferenceRepo below finds that same repo from a
 // self-reference link embedded in the notes themselves (a real, existing
-// fact about this entity, not a guess) -- the same self-reference
+// fact about this entity, not a guess), the same self-reference
 // _findEmbeddedUpstreamRelease already recognizes and excludes, reused
 // here as a positive result instead, not duplicated. Direct user
 // feedback, 2026-08-12, confirmed live against Music Assistant Server's
@@ -2328,7 +2328,7 @@ function _decorateReleaseNotes(notes, releaseUrl, fromVersion) {
 // fromVersion) as a genuine, positive match instead of something to
 // exclude while searching for a different, external project. Mirrored,
 // not shared, in release_notes_decoration.py's own find_self_reference_repo,
-// used by the get_release_notes service -- keep both in sync by hand.
+// used by the get_release_notes service. Keep both in sync by hand.
 function _findSelfReferenceRepo(notes, fromVersion) {
   if (!notes || !fromVersion) return null;
   const normalizedFromVersion = fromVersion.replace(/^v/i, "").toLowerCase();
@@ -5836,7 +5836,7 @@ class UpdateManagerPanel extends HTMLElement {
     const repoLinks = _repoMenuLinks(this._hass, entityId, releaseUrlForRepo);
     // about's own destination is fixed and never depends on the backend
     // call below, so it's set the moment the cheap, synchronous
-    // _looksLikeSpookEntity check alone says yes -- the menu then always
+    // _looksLikeSpookEntity check alone says yes. The menu then always
     // renders with at least this one item for a genuine Spook blueprint
     // entity, even before (or if) the backend call below ever resolves.
     // Previously waited on spookInfo too, same as repository/automations
@@ -5847,12 +5847,12 @@ class UpdateManagerPanel extends HTMLElement {
     if (_looksLikeSpookEntity(this._hass, entityId)) repoLinks.about = "https://spook.boo/blueprint/#updates";
     // repository/automations genuinely do need the backend (the real
     // source address/live count), so these still only show up once that
-    // resolves -- neither configuration/repository/issues above found
+    // resolves. Neither configuration/repository/issues above found
     // anything for one of these either, so the menu wouldn't otherwise
     // render at all without about's own synchronous fallback above. No
     // menu existing yet for this entity means there's nothing to patch in
     // place once this resolves (unlike marketplaceInfo below, which only
-    // ever touches an already-open menu) -- reopening is the simplest way
+    // ever touches an already-open menu), reopening is the simplest way
     // to show it up without a second, parallel "build the menu" path just
     // for this one case.
     const spookInfo = _resolveSpookBlueprintInfo(this._hass, entityId, () => {
@@ -5861,7 +5861,7 @@ class UpdateManagerPanel extends HTMLElement {
     });
     if (spookInfo) {
       if (spookInfo.source_url) repoLinks.repository = spookInfo.source_url;
-      // A filtered dashboard with nothing to show isn't useful -- the
+      // A filtered dashboard with nothing to show isn't useful, the
       // native Blueprints page instead, search-prefilled with this
       // blueprint's own name (confirmed live, the same friendly_name
       // Spook itself sets, see this entity's own entity_picture comment
@@ -5870,7 +5870,7 @@ class UpdateManagerPanel extends HTMLElement {
       const blueprintName = entityState(this._hass, entityId) && entityState(this._hass, entityId).attributes.friendly_name;
       // Two genuinely different destinations depending on count, so this
       // gets its own label and icon either way rather than reusing one
-      // generic "Automations"/robot icon for both -- landing on the
+      // generic "Automations"/robot icon for both, landing on the
       // Blueprints page itself (see above) read as wrong under that same
       // label.
       if (spookInfo.count > 0) {
@@ -5879,7 +5879,7 @@ class UpdateManagerPanel extends HTMLElement {
         repoLinks.automationsLabel = isScript ? tr.dialog_menu_scripts_count(spookInfo.count) : tr.dialog_menu_automations_count(spookInfo.count);
         // Same icons HA's own config-sections.ts uses for these two real
         // tabs (mdiRobot/mdiScriptText), confirmed against its real
-        // source -- not a close-enough guess.
+        // source, not a close-enough guess.
         repoLinks.automationsIcon = isScript ? "mdi:script-text" : "mdi:robot";
       } else {
         repoLinks.automations = `/config/blueprint/dashboard?search=${encodeURIComponent(blueprintName || "")}&sort=name`;
@@ -6042,7 +6042,7 @@ class UpdateManagerPanel extends HTMLElement {
       // fields: this needs to reflect a vote just cast in this same
       // dialog session immediately, before coordinator.py's own
       // held_back_by_community field has had a chance to catch up with a
-      // real refresh -- the one place this project's own client-side code
+      // real refresh. The one place this project's own client-side code
       // still needs communityBlocksAutoInstall itself, every other caller
       // reads that field directly instead.
       communityBlocksAutoInstall(effectiveTrustedVote, communityProblematicCount, u.auto_install_whitelisted) &&
@@ -6675,7 +6675,7 @@ class UpdateManagerPanel extends HTMLElement {
             else window.open(repoLinks.configuration.href, "_blank", "noopener");
           } else if (value === "automations" && repoLinks.automations) {
             // An in-app HA path (/config/automation|script/dashboard?...),
-            // not an external URL -- same treatment as configuration's own
+            // not an external URL, same treatment as configuration's own
             // inApp branch above, see _repoMenuLinks's own top comment.
             this._navigate(repoLinks.automations);
           } else if (repoLinks[value]) {
@@ -9473,7 +9473,7 @@ class UpdateManagerPanel extends HTMLElement {
       .dialog-header-status { --ha-badge-size: 28px; }
       /* A genuine Zigbee device's own manufacturer/model (or, when that's
          already said by the name itself, a plain "Zigbee2MQTT" link
-         instead, see _buildDeviceIdentityLine's own top comment) -- small
+         instead, see _buildDeviceIdentityLine's own top comment), small
          secondary-text either way, not competing with the real title
          above it. The clickable variant only ever differs by color/
          underline, same link convention ha-markdown's own real anchors

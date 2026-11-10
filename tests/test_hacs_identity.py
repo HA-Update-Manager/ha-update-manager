@@ -79,7 +79,7 @@ class TestExtractBlueprintIdentity:
         )
 
     def test_branch_segment_discarded(self):
-        # Different branch, same owner/repo/path -- the branch itself isn't
+        # Different branch, same owner/repo/path. The branch itself isn't
         # part of the identity, only ever used to resolve which file to read.
         url = "https://github.com/owner/repo/blob/some-feature-branch/path/to/file.yaml"
         assert hacs_identity.extract_blueprint_identity(url) == ("owner", "repo", "path/to/file.yaml")
@@ -279,7 +279,7 @@ class TestResolveIdentity:
         )
 
     def test_blueprint_without_source_url_unidentifiable(self):
-        # Not every blueprint author sets blueprint.source_url -- no
+        # Not every blueprint author sets blueprint.source_url, no
         # fallback, same "can't identify this" treatment as a HACS entity
         # with no usable release_url.
         assert (

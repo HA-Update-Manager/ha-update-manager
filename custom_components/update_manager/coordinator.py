@@ -675,7 +675,7 @@ class UpdateManagerCoordinator:
         for the same restart reason, __init__.py's own _on_install used to
         always log this as a manual install, never an auto-install, even
         if install_manager.py's own InstallManager actually dispatched it
-        right before the restart -- was_auto_installed() reads
+        right before the restart. was_auto_installed() reads
         InstallManager._recently_executed, an in-memory-only dict that
         can't survive a restart any more than this coordinator's own
         un-persisted cache can. Resolved 2026-11-09 not by persisting
