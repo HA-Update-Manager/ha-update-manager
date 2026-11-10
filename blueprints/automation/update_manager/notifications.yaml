@@ -130,6 +130,10 @@ action:
                       tag: "update_manager_announced_{{ repeat.item.entity_id }}"
                       channel: "Update Manager"
                       notification_icon: "mdi:update"
+                      # HA's own design-token blue (--ha-color-on-primary-normal,
+                      # light mode), a neutral FYI, same reasoning as the other
+                      # three color: lines below.
+                      color: "#009ac7"
                       importance: low
                       push:
                         interruption-level: passive
@@ -171,6 +175,9 @@ action:
                     tag: "update_manager_installed_{{ trigger.event.data.entity_id }}"
                     channel: "Update Manager"
                     notification_icon: "mdi:update"
+                    # HA's own design-token green (--ha-color-on-success-normal,
+                    # light mode): a successful install.
+                    color: "#036730"
                     importance: low
                     push:
                       interruption-level: passive
@@ -235,6 +242,9 @@ action:
                           tag: "update_manager_failed_{{ repeat.item.entity_id }}"
                           channel: "Update Manager"
                           notification_icon: "mdi:update"
+                          # HA's own design-token red (--ha-color-on-danger-normal,
+                          # light mode): a real failure.
+                          color: "#b30532"
                           importance: low
                           push:
                             interruption-level: passive
@@ -294,6 +304,9 @@ action:
                           clickAction: /update-manager/updates
                           channel: "Update Manager"
                           notification_icon: "mdi:update"
+                          # HA's own design-token orange (--ha-color-on-warning-normal,
+                          # light mode): needs your attention, but isn't a failure.
+                          color: "#9d3800"
                           importance: low
                           push:
                             interruption-level: passive
