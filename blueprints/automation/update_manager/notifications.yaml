@@ -117,13 +117,19 @@ action:
               sequence:
                 - action: "{{ notify_target }}"
                   data:
-                    title: "Update Manager: Scheduled update"
+                    title: "Update Manager"
                     message: >-
                       {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
                       to version {{ repeat.item.to_version }} in
                       {{ as_datetime(repeat.item.execute_at) | time_until }}
                       (on {{ as_timestamp(repeat.item.execute_at) | timestamp_custom('%d-%m-%Y %H:%M') }}).
                     data:
+                      # subtitle: iOS/macOS, shows between title and message.
+                      # subject: Android, may replace long content instead
+                      # (device-dependent) rather than add a line the same way
+                      # -- not a true equivalent, just the closest Android has.
+                      subtitle: "Scheduled update"
+                      subject: "Scheduled update"
                       url: /update-manager/updates
                       clickAction: /update-manager/updates
                       group: update_manager_scheduled
@@ -160,7 +166,7 @@ action:
             then:
               - action: "{{ notify_target }}"
                 data:
-                  title: "Update Manager: Update installed"
+                  title: "Update Manager"
                   message: >-
                     {{ device_name }} updated from {{ trigger.event.data.from_version }} to
                     {{ trigger.event.data.to_version }}
@@ -170,6 +176,8 @@ action:
                     (installed manually)
                     {%- endif %}.
                   data:
+                    subtitle: "Update installed"
+                    subject: "Update installed"
                     url: /update-manager/history
                     clickAction: /update-manager/history
                     tag: "update_manager_installed_{{ trigger.event.data.entity_id }}"
@@ -228,7 +236,7 @@ action:
                   else:
                     - action: "{{ notify_target }}"
                       data:
-                        title: "Update Manager: Update failed"
+                        title: "Update Manager"
                         message: >-
                           {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}
                           {% if repeat.item.reason == "warning_not_accepted" -%}
@@ -238,6 +246,8 @@ action:
                           Assistant logs, or install it manually.
                           {%- endif %}
                         data:
+                          subtitle: "Update failed"
+                          subject: "Update failed"
                           url: /update-manager/updates
                           clickAction: /update-manager/updates
                           tag: "update_manager_failed_{{ repeat.item.entity_id }}"
@@ -296,11 +306,13 @@ action:
                   else:
                     - action: "{{ notify_target }}"
                       data:
-                        title: "Update Manager: Ready, but won't auto-install"
+                        title: "Update Manager"
                         message: >-
                           {{ state_attr(repeat.item.entity_id, 'friendly_name') | regex_replace("\\s*Update$", "") }}:
                           {{ repeat.item.installed_version }} → {{ repeat.item.latest_version }}
                         data:
+                          subtitle: "Ready, but won't auto-install"
+                          subject: "Ready, but won't auto-install"
                           tag: "update_manager_manual_{{ repeat.item.entity_id }}"
                           url: /update-manager/updates
                           clickAction: /update-manager/updates
