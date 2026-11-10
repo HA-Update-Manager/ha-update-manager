@@ -126,7 +126,7 @@ action:
                     data:
                       url: /update-manager/updates
                       clickAction: /update-manager/updates
-                      group: update_manager_announced
+                      group: update_manager_scheduled
                       tag: "update_manager_announced_{{ repeat.item.entity_id }}"
                       channel: "Update Manager"
                       notification_icon: "mdi:update"
@@ -173,6 +173,7 @@ action:
                     url: /update-manager/history
                     clickAction: /update-manager/history
                     tag: "update_manager_installed_{{ trigger.event.data.entity_id }}"
+                    group: update_manager_installed
                     channel: "Update Manager"
                     notification_icon: "mdi:update"
                     # HA's own design-token green (--ha-color-on-success-normal,
@@ -240,6 +241,7 @@ action:
                           url: /update-manager/updates
                           clickAction: /update-manager/updates
                           tag: "update_manager_failed_{{ repeat.item.entity_id }}"
+                          group: update_manager_failed
                           channel: "Update Manager"
                           notification_icon: "mdi:update"
                           # HA's own design-token red (--ha-color-on-danger-normal,
@@ -302,6 +304,7 @@ action:
                           tag: "update_manager_manual_{{ repeat.item.entity_id }}"
                           url: /update-manager/updates
                           clickAction: /update-manager/updates
+                          group: update_manager_manual
                           channel: "Update Manager"
                           notification_icon: "mdi:update"
                           # HA's own design-token orange (--ha-color-on-warning-normal,
