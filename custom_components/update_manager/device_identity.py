@@ -88,7 +88,7 @@ _SPOOK_DOMAIN = "spook"
 # _unique_id(): f"blueprint_{blueprint_domain}_{blueprint_path}", only ever
 # "automation" or "script" for blueprint_domain). entry.platform alone
 # isn't enough to tell this apart from any of Spook's own other update
-# entities (its own integration self-update, for one) -- this prefix is
+# entities (its own integration self-update, for one). This prefix is
 # what's actually specific to the blueprint feature.
 _SPOOK_BLUEPRINT_UNIQUE_ID_PREFIXES = {
     "automation": "blueprint_automation_",
@@ -110,7 +110,7 @@ _SPOOK_BLUEPRINT_DASHBOARD_PATH = {
 # automations_with_blueprint/scripts_with_blueprint (verified against
 # home-assistant/core's real source, stable tag 2026.10.0): plain,
 # synchronous @callback helpers, each returning the entity_ids of every
-# automation/script currently using a given blueprint path -- exactly the
+# automation/script currently using a given blueprint path, exactly the
 # same fact the dashboard's own ?blueprint= filter (see
 # _SPOOK_BLUEPRINT_DASHBOARD_PATH above) shows as a list, just as a count
 # here. No extra I/O: both just walk that domain's already-loaded
@@ -129,7 +129,7 @@ class SpookBlueprintInfo(NamedTuple):
     # conflict (a NamedTuple field named count would need to be the
     # method's own Callable type, not a plain int).
     usage_count: int
-    # "automation" or "script" -- the panel needs this to label its own
+    # "automation" or "script": the panel needs this to label its own
     # menu item correctly (Automations vs Scripts), not just to build
     # list_url/usage_count above.
     blueprint_domain: str
@@ -142,16 +142,16 @@ async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> Spo
 
     source_url: the blueprint's real source address. Spook deliberately
     never puts this in the entity's own state (its own release_url stays
-    empty, confirmed live 2026-11-08) -- this re-derives it the same way
+    empty, confirmed live 2026-11-08). This re-derives it the same way
     Spook's own update entity itself does, straight from the blueprint
     file on disk, via the automation/script component's own already-loaded
-    DomainBlueprints instance (not a second, hand-rolled YAML parser here
-    -- that would also need to handle blueprints' own `!input` tag, which
+    DomainBlueprints instance (not a second, hand-rolled YAML parser here:
+    that would also need to handle blueprints' own `!input` tag, which
     this gets for free this way).
 
     list_url: the automations/scripts dashboard, pre-filtered to whatever
     currently uses this exact blueprint (automations_with_blueprint/
-    scripts_with_blueprint's own frontend counterpart) -- needs nothing
+    scripts_with_blueprint's own frontend counterpart). Needs nothing
     beyond blueprint_path itself, already known before source_url's own
     file read even starts, so this is set even if that read fails.
 
@@ -169,7 +169,7 @@ async def async_spook_blueprint_info(hass: HomeAssistant, entity_id: str) -> Spo
             break
     if blueprint_path is None:
         return None
-    # Always set together, in the same loop iteration above -- just not
+    # Always set together, in the same loop iteration above, just not
     # something mypy's own flow analysis follows from one loop back out
     # to here.
     assert blueprint_domain is not None

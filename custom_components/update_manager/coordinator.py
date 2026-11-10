@@ -309,7 +309,7 @@ def schedule_from_options(options: dict) -> PostponementSchedule:
 
     # WEEKDAY_READY_OPTION_KEYS is a real, fixed 7-entry constant
     # (Monday..Sunday, see its own comment in const.py), just not declared
-    # as a fixed-length tuple type there -- the cast preserves
+    # as a fixed-length tuple type there. The cast preserves
     # PostponementSchedule.days' own stronger, self-documenting length-7
     # type instead of weakening it to match.
     days = tuple(_day(enabled_key, time_key) for enabled_key, time_key in WEEKDAY_READY_OPTION_KEYS)
@@ -1367,9 +1367,9 @@ class UpdateManagerCoordinator:
             # just past the wait-days math.
             return result
         # Provably non-None here: evaluate_staging (inside
-        # _staging_result above) only ever produces "ready"/"waiting" --
+        # _staging_result above) only ever produces "ready"/"waiting",
         # the two statuses the early return at this method's own top
-        # already filtered down to -- when its own, identically-sourced
+        # already filtered down to, when its own, identically-sourced
         # wait_for_size(rules, size) call came back non-None (a None wait
         # means "blocked" instead, see evaluate_staging's own body).
         wait = wait_for_size(rules, size)
@@ -1671,7 +1671,7 @@ class UpdateManagerCoordinator:
             "trusted_vote": trusted_vote,
             "trusted_voters_matched": trusted_voters_matched,
             # Computed once here, server-side, from the same inputs the
-            # panel already has -- replaces its own former client-side
+            # panel already has. Replaces its own former client-side
             # copy of this exact precedence (communityBlocksAutoInstall,
             # found duplicating announcer.py's own effective_auto_install_state
             # by code review, 2026-07-29). See
@@ -1725,7 +1725,7 @@ class UpdateManagerCoordinator:
             cached["trusted_vote"] = trusted_vote
             cached["trusted_voters_matched"] = trusted_voters_matched
             # Kept in sync with the fields above, not just set once at the
-            # initial cache build -- this exact async refresh is what makes
+            # initial cache build: this exact async refresh is what makes
             # community_verdict/trusted_vote go stale in the first place,
             # held_back_by_community would silently follow if left alone
             # here.

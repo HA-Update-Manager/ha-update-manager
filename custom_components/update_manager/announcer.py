@@ -164,16 +164,16 @@ def effective_auto_install_state(
 def community_blocks_auto_install(
     trusted_vote: str | None, community_problematic_count: int, auto_install_whitelisted: bool
 ) -> bool:
-    """Whether the community aspect alone -- ignoring status/size/
-    exclusion/native-auto-update, which effective_auto_install_state above
-    already handles on its own -- would block auto-install for this
+    """Whether the community aspect alone, ignoring status/size/
+    exclusion/native-auto-update (which effective_auto_install_state above
+    already handles on its own), would block auto-install for this
     version. Same whitelist > trusted-healthy > problematic-count
     precedence as that function's own body, factored out here since
     coordinator.py needs just this one narrow fact for every cached entry
     (exposed to the panel as held_back_by_community), not that function's
     own wider eligibility verdict. Previously duplicated client-side,
     update-manager-panel.js's own communityBlocksAutoInstall, found by
-    code review, 2026-07-29 -- that duplication itself produced two real
+    code review, 2026-07-29. That duplication itself produced two real
     bugs before this, a list-vs-dialog contradiction and an "Open update"
     button that stayed accent-colored during a held-back state it
     shouldn't have."""

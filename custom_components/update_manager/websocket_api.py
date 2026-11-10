@@ -669,7 +669,7 @@ async def _handle_spook_blueprint_source(hass: HomeAssistant, connection: websoc
             # Not info.count: SpookBlueprintInfo deliberately doesn't use
             # that name for its own count field (NamedTuple's own built-in
             # .count(value) method already claims it, see that class's own
-            # docstring) -- info.count here silently returned that bound
+            # docstring). info.count here silently returned that bound
             # method object instead of a number, which can't be JSON-
             # serialized, so this whole command failed every single time.
             # Found live, 2026-11-10: a History dialog's own menu stayed
@@ -1257,7 +1257,7 @@ async def _async_resolve_my_verdict(hass: HomeAssistant, data: UpdateManagerData
         return None
     # async_fetch_my_vote reads a raw string straight off community-votes'
     # own real data, typed as plain str (not Verdict) since nothing
-    # guarantees it's actually one of the two known values -- narrowed
+    # guarantees it's actually one of the two known values, narrowed
     # here instead of trusting it blindly, same "don't believe external
     # data without checking" reasoning this project already applies
     # elsewhere.

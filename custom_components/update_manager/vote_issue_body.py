@@ -74,13 +74,13 @@ def build_issue_body(
     # does `ownerRepo.split("/")` and rejects the whole vote unless that's
     # exactly 2 parts, its blueprint branch the same but requiring 3+),
     # same for "To version" (used verbatim to build the per-version storage
-    # path/issue title) -- a markdown link or an appended URL in either
+    # path/issue title). A markdown link or an appended URL in either
     # would break real, load-bearing parsing, not just sit there unused
     # like this new field does.
     #
     # "Owner/repo" itself is shared between the marketplace and blueprint
     # categories (identity.owner_repo / identity.blueprint_identity are
-    # mutually exclusive, see ResolvedIdentity's own docstring) -- a plain
+    # mutually exclusive, see ResolvedIdentity's own docstring), a plain
     # "owner/repo" for marketplace, "owner/repo/path/to/file.yaml" for
     # blueprint. Same field, same split("/")-based parsing on the
     # community-votes side either way, just a different minimum part count.

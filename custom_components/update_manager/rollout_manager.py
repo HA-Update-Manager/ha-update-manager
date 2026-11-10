@@ -160,6 +160,16 @@ _STALL_WINDOW = timedelta(minutes=15)
 
 _RECHECK_INTERVAL = timedelta(seconds=30)
 
+# How long a self._recently_manual record stays eligible to match, now that
+# it's persisted (2026-11-10) and so no longer automatically wiped by the
+# next restart. Generous on purpose: a real install (a HACS download, a
+# firmware flash) can take a while, and Home Assistant Core's own update
+# specifically needs this to survive the restart it causes to finish. Not
+# so long that a stalled/never-completed install's own stale record risks
+# matching some much later, unrelated install that happens to land on the
+# same to_version.
+_MANUAL_RECORD_MAX_AGE = timedelta(hours=1)
+
 # How long a freshly-dispatched queue front gets before _async_recheck_
 # queue_fronts is allowed to conclude it's stalled at all -- found live,
 # 2026-08-10, after two Zigbee updates ended up installing at the same
@@ -454,7 +464,15 @@ class RolloutManager:
         # EVENT_CALL_SERVICE listener that populates it has no way to know
         # which version was being installed at request time, only who
         # requested it.
-        self._recently_manual: dict[str, tuple[str | None, str | None]] = {}
+        # Third element: when this was recorded (isoformat), added
+        # alongside persistence below (2026-11-10) -- without this, a
+        # record whose matching completion is never actually observed
+        # (an install that silently stalls, say) would now sit here
+        # forever across every future restart instead of being wiped by
+        # the next one, risking a wrong match against some much later,
+        # unrelated install that happens to land on the same to_version.
+        # _MANUAL_RECORD_MAX_AGE below bounds that.
+        self._recently_manual: dict[str, tuple[str | None, str | None, str]] = {}
 
     def _in_flight_entry(self, entity_id: str) -> _InFlightInstall:
         entry = self._in_flight.get(entity_id)
@@ -539,6 +557,19 @@ class RolloutManager:
             group_key: [_deserialize_entry(e) for e in entries] for group_key, entries in queues_data.items()
         }
         self._tier_blocked = {entity_id: _deserialize_entry(e) for entity_id, e in tier_blocked_data.items()}
+        # Added 2026-11-10, found by direct user feedback: previously
+        # in-memory-only, same restart-wipe gap install_manager.py's own
+        # _recently_executed still has (that one's left as-is: install_
+        # manager.py dispatches and completes an auto-install itself, with
+        # no restart-causing entity of its own to worry about the way
+        # Home Assistant Core's own update does). A plain list here, not
+        # _serialize_entry/_deserialize_entry: (to_version, user_id) is
+        # already two plain JSON-safe values, nothing version-aware to
+        # migrate the way a queued _QueuedEntry needs.
+        self._recently_manual = {
+            entity_id: (record[0], record[1], record[2])
+            for entity_id, record in data.get("recently_manual", {}).items()
+        }
 
     async def _async_save(self) -> None:
         await self._store.async_save(
@@ -547,6 +578,9 @@ class RolloutManager:
                     group_key: [_serialize_entry(e) for e in entries] for group_key, entries in self._queues.items()
                 },
                 "tier_blocked": {entity_id: _serialize_entry(e) for entity_id, e in self._tier_blocked.items()},
+                "recently_manual": {
+                    entity_id: list(record) for entity_id, record in self._recently_manual.items()
+                },
             }
         )
         # Every real change to self._queues/self._tier_blocked calls this
@@ -684,7 +718,8 @@ class RolloutManager:
             # exists at all. entity_id, not group_key: was_manually_
             # requested below is looked up by the entity whose own state
             # actually changed, the same way was_auto_installed already is.
-            self._recently_manual[entity_id] = (to_version, ha_context.user_id)
+            self._recently_manual[entity_id] = (to_version, ha_context.user_id, dt_util.utcnow().isoformat())
+            await self._async_save()
         entry = _QueuedEntry(entity_id, to_version, service_data, is_auto, context, ha_context)
         blocking = self._tier_blocking_entity(entity_id)
         if blocking is not None:
@@ -693,16 +728,24 @@ class RolloutManager:
             return "queued"
         return await self._async_request_past_tier_gate(entry)
 
-    def _matching_manual_record(self, entity_id: str, to_version: str) -> tuple[str | None, str | None] | None:
+    def _matching_manual_record(
+        self, entity_id: str, to_version: str
+    ) -> tuple[str | None, str | None, str] | None:
         """The shared lookup was_manually_requested and
         note_external_install_request's own reader both rely on: a record
         for entity_id whose own to_version either matches the one asked
         about, or is None (see self._recently_manual's own comment for why
-        one can look like that) -- a call this module didn't itself
-        dispatch never told it which version was actually being installed,
-        so that kind of record matches any version asked about."""
+        one can look like that), and that isn't older than
+        _MANUAL_RECORD_MAX_AGE (now that this survives a restart, see that
+        constant's own comment for why that matters) -- a call this module
+        didn't itself dispatch never told it which version was actually
+        being installed, so that kind of record matches any version asked
+        about."""
         record = self._recently_manual.get(entity_id)
         if record is None or (record[0] is not None and record[0] != to_version):
+            return None
+        recorded_at = dt_util.parse_datetime(record[2])
+        if recorded_at is not None and dt_util.utcnow() - recorded_at > _MANUAL_RECORD_MAX_AGE:
             return None
         return record
 
@@ -723,6 +766,12 @@ class RolloutManager:
         if record is None:
             return False, None
         del self._recently_manual[entity_id]
+        # Fire-and-forget: this method is sync (called synchronously from
+        # __init__.py's own install-listener, same reasoning as reading
+        # coordinator.cache there), but the deletion above still needs to
+        # reach disk, or a restart before the next save would resurrect
+        # this exact already-consumed record from its last-saved copy.
+        self.hass.async_create_task(self._async_save())
         return True, record[1]
 
     def note_external_install_request(self, entity_id: str, user_id: str | None) -> None:
@@ -737,7 +786,9 @@ class RolloutManager:
         resulting update.install call this same event is announcing, so it
         must win, not be overwritten by this less specific one for the
         exact same request."""
-        self._recently_manual.setdefault(entity_id, (None, user_id))
+        if entity_id not in self._recently_manual:
+            self._recently_manual[entity_id] = (None, user_id, dt_util.utcnow().isoformat())
+            self.hass.async_create_task(self._async_save())
 
     async def _async_request_past_tier_gate(self, entry: _QueuedEntry) -> RequestResult:
         """The Zigbee-network gate on its own, unchanged in substance from
@@ -948,7 +999,7 @@ class RolloutManager:
             # *real* in-flight install actually completes.
             group_key = self._group_key_for(entity_id)
             # group_key is None for a non-Zigbee tier-blocked entity (Core/
-            # Supervisor/OS/host firmware) -- that's already "no queue for
+            # Supervisor/OS/host firmware), that's already "no queue for
             # it", functionally identical to self._queues.get(group_key)
             # itself (a dict.get on a key that's genuinely never present
             # simply misses, same result), just made explicit here for

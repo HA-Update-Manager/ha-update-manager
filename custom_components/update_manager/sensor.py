@@ -171,7 +171,7 @@ class UpdateManagerNeedsManualActionSensor(SensorEntity):
             u
             for u in ready
             # Already in motion (queued behind a sibling, or genuinely the
-            # one being dispatched right now) -- same "is_queued or
+            # one being dispatched right now), same "is_queued or
             # is_in_flight" pair install_manager.py's own three-guard
             # pattern already checks before ever re-evaluating an entity.
             # A manually-dispatched (Update All) Zigbee queue entry has

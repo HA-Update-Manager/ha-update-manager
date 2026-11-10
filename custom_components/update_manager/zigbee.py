@@ -58,7 +58,7 @@ def zigbee2mqtt_device_url(hass: HomeAssistant, device: dr.DeviceEntry) -> str |
     model_id, not model: Zigbee2MQTT publishes the real model
     (zigbee-herdsman-converters' own definition id, e.g. "ZG-308Z") as
     model_id, and the human-readable description (e.g. "Water valve") as
-    model -- confirmed against Zigbee2MQTT's own real source,
+    model, confirmed against Zigbee2MQTT's own real source,
     lib/extension/homeassistant.ts's getDevicePayload, and against Home
     Assistant's own MQTT integration (entity.py's
     device_info_from_specifications) actually carrying model_id through to

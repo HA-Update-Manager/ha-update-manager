@@ -383,19 +383,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         # "external" still carried that stronger, wrong implication.
         if context is not None:
             install_method = "auto"
-        elif retroactive:
-            install_method = "external"
         else:
+            # was_manually_requested's own record now survives a restart
+            # (2026-11-10, see rollout_manager.py's own _recently_manual
+            # comment), so it's worth checking even here: Home Assistant
+            # Core's own update is the prime retroactive case (it always
+            # restarts itself to finish), and pressing Install/Update All
+            # for it is exactly the kind of request this record exists to
+            # remember past that restart. new_state.context.user_id is
+            # still never trusted for a retroactive transition though (see
+            # this function's own comment above): a moment with no
+            # guaranteed relationship to when the install actually
+            # happened can't tell a genuine recent context from a stale
+            # leftover one.
             requested, _ = rollout_manager.was_manually_requested(entity_id, new_version)
-            install_method = "manual" if requested or new_state.context.user_id else "external"
+            install_method = "manual" if requested or (not retroactive and new_state.context.user_id) else "external"
         cached = coordinator.cache.get(entity_id)
-        hass.async_create_task(
-            install_log.async_log_install(
+        available_since_from_cache = cached.get("available_since") if cached else None
+
+        async def _async_log_install() -> None:
+            # Live transition: coordinator.cache already has the right
+            # available_since (this listener fires before cache's own
+            # recompute, see this function's own opening comment), so the
+            # synchronous read above is already correct and this never
+            # needs the async fallback below. A retroactive install's own
+            # cache entry has just been rebuilt from scratch after the
+            # restart though, with no available_since in it yet. Found by
+            # review, 2026-11-10: the persisted store behind
+            # coordinator._async_get_available_since (unlike coordinator.cache,
+            # it survives a restart intact) still knows it, so fall back
+            # to that instead of logging this field blank for every
+            # retroactively-detected install (Home Assistant Core chief
+            # among them, since it always restarts itself to finish).
+            available_since = available_since_from_cache
+            if available_since is None and retroactive:
+                since = await coordinator._async_get_available_since(entity_id, new_version)
+                available_since = since.isoformat()
+            await install_log.async_log_install(
                 entity_id,
                 old_version,
                 new_version,
                 # Corrected for Core the same way coordinator.py's own cache
-                # already is -- see corrected_release_url's own docstring.
+                # already is, see corrected_release_url's own docstring.
                 # A History entry's own release_url is captured once, right
                 # here, and never revisited, so getting this right at
                 # logging time matters even more than for the live cache:
@@ -406,9 +435,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
                 auto_install_reason=reason,
                 trusted_voter_usernames=trusted_voter_usernames,
                 announced_at=announced_at,
-                available_since=cached.get("available_since") if cached else None,
+                available_since=available_since,
             )
-        )
+
+        hass.async_create_task(_async_log_install())
         # See const.py's own EVENT_ANNOUNCED docstring for the events
         # design overall. Fired for every completed install, auto or
         # manual alike -- same "this is the one unified place an install

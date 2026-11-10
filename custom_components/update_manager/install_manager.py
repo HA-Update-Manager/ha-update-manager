@@ -86,7 +86,7 @@ _CHECK_INTERVAL = timedelta(minutes=5)
 _PENDING_NOTIFICATION_ID = f"{DOMAIN}_pending_installs"
 _PANEL_UPDATES_URL = "/update-manager/updates"
 # How far apart consecutive EVENT_ANNOUNCED fires within the same tick are
-# spaced -- see self._announce_fire_count's own comment for why. 1.5s
+# spaced, see self._announce_fire_count's own comment for why. 1.5s
 # keeps a default `mode: queued` automation (max 10) comfortably inside
 # its own max-runs window for a realistic batch size, without making a
 # genuinely large batch's own total announce window noticeably long.
@@ -271,7 +271,7 @@ class InstallManager:
         # live, 2026-11-02: a `mode: queued` automation reacting to this
         # event (the default for this project's own notifications
         # Blueprint) hit its own default max-runs-of-10 within seconds for
-        # a batch bigger than that, silently dropping the rest -- HA's own
+        # a batch bigger than that, silently dropping the rest. HA's own
         # queued-mode script.py never re-queues a rejected run, see
         # _ANNOUNCE_FIRE_STAGGER_SECONDS below for the actual spacing.
         # Safe to read-then-increment with no lock of its own: every
@@ -628,7 +628,7 @@ class InstallManager:
             # 2026-11-02.
             entity_ids = set(self._coordinator.cache) | set(self._pending) | set(self._postponed)
             self._dirty = False
-            # Reset once per tick, under the same lock -- see
+            # Reset once per tick, under the same lock, see
             # self._announce_fire_count's own comment.
             self._announce_fire_count = 0
             await asyncio.gather(*(self._async_evaluate_one(entity_id, now) for entity_id in entity_ids))
@@ -779,7 +779,7 @@ class InstallManager:
             if owner_repo_tag is not None:
                 # Not reusing required_version from the reactive branch
                 # above: that one's a known-str tuple field, this one's a
-                # fresh, possibly-unresolved lookup -- different shapes for
+                # fresh, possibly-unresolved lookup, different shapes for
                 # mypy, not just a naming collision.
                 proactive_required_version = await self._async_min_ha_version(*owner_repo_tag)
                 if proactive_required_version is not None and not ha_core_version_satisfies(
@@ -857,7 +857,7 @@ class InstallManager:
         # current_to_version is guaranteed non-None in both branches below:
         # decide_action only ever returns "announce"/"execute" once
         # is_ready was True, and is_ready only comes back True when cached
-        # was truthy above (the else branch hardcodes it False) -- which is
+        # was truthy above (the else branch hardcodes it False), which is
         # exactly the one case current_to_version is a real string instead
         # of None.
         if action == "announce":
@@ -903,24 +903,37 @@ class InstallManager:
         # actually runs, e.g. to run its own analysis and decide whether
         # to cancel it via cancel_scheduled_install.
         cached = self._coordinator.cache.get(entity_id)
-        # Staggered, not fired the instant the state above is set -- see
+        event_data = {
+            "entity_id": entity_id,
+            "from_version": cached.get("installed_version") if cached else None,
+            "to_version": to_version,
+            "release_url": cached.get("release_url") if cached else None,
+            "execute_at": announcement.execute_at.isoformat(),
+        }
+        # Staggered, not fired the instant the state above is set, see
         # self._announce_fire_count's own comment. Only the event itself
         # is delayed; the pending state/notification just above already
-        # reflect this announcement immediately, same as before.
+        # reflect this announcement immediately, same as before. Dispatched
+        # as its own background task, not awaited inline here: this method
+        # runs inside _async_tick's own asyncio.gather, itself inside
+        # self._lock (see that method's own comment on why that lock must
+        # stay fast). An inline sleep here would hold that same lock for
+        # the whole batch's stagger, reintroducing the exact "Save spins
+        # for a long time" symptom that comment already fixed once. Found
+        # by review, 2026-11-10, before this ever shipped.
         stagger_delay = self._announce_fire_count * _ANNOUNCE_FIRE_STAGGER_SECONDS
         self._announce_fire_count += 1
         if stagger_delay:
-            await asyncio.sleep(stagger_delay)
-        self.hass.bus.async_fire(
-            EVENT_ANNOUNCED,
-            {
-                "entity_id": entity_id,
-                "from_version": cached.get("installed_version") if cached else None,
-                "to_version": to_version,
-                "release_url": cached.get("release_url") if cached else None,
-                "execute_at": announcement.execute_at.isoformat(),
-            },
-        )
+            self.hass.async_create_task(self._async_fire_announced_after_delay(stagger_delay, event_data))
+        else:
+            self.hass.bus.async_fire(EVENT_ANNOUNCED, event_data)
+
+    async def _async_fire_announced_after_delay(self, delay: float, event_data: dict[str, Any]) -> None:
+        """The staggered half of _async_announce's own EVENT_ANNOUNCED fire,
+        split into its own detached task so the delay never blocks
+        _async_tick's own lock (see _async_announce's own comment)."""
+        await asyncio.sleep(delay)
+        self.hass.bus.async_fire(EVENT_ANNOUNCED, event_data)
 
     @callback
     def _refresh_pending_notification(self) -> None:

@@ -65,7 +65,7 @@ def entries_to_keep_full_notes(
     for i in range(len(entries) - 1, -1, -1):
         entry = entries[i]
         # Always a real string in practice (install_log.py's own entries
-        # always carry one) -- the "" fallback is only here to satisfy
+        # always carry one), the "" fallback is only here to satisfy
         # seen_per_entity's own str-keyed type, entries never actually
         # lack this field.
         entity_id = entry.get("entity_id") or ""

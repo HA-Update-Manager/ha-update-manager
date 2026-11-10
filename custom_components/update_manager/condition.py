@@ -10,7 +10,7 @@ avoid.
 Uses homeassistant.helpers.condition.Condition, the current, forward-
 looking class-based condition API (confirmed present on the stable
 2026.10.0 tag, not dev/next-only, same verification trigger.py's own
-docstring already did for its own Trigger API) -- the older function-
+docstring already did for its own Trigger API). The older function-
 based `*_from_config` pattern still works but isn't the one to build
 against going forward.
 """
@@ -38,14 +38,14 @@ class _UpdateManagerEntityCondition(Condition):
     right now, for every entity in the condition's own target
     (conditions.yaml's own `target: entity: domain: update`, same picker
     trigger.py's triggers already use). Requires *every* targeted entity
-    to satisfy the check -- the same "AND across multiple targets"
+    to satisfy the check, the same "AND across multiple targets"
     convention HA's own built-in state condition uses, not "any", so
     adding a second entity to the target only ever narrows the
     condition, never widens it.
 
     Unlike a trigger's own target (where no selection at all means "match
     everything", see trigger.py's own _UpdateManagerEventTrigger), a
-    condition has nothing to check at all without a target -- an empty
+    condition has nothing to check at all without a target. An empty
     selection here means the condition can never pass, not "pass for
     everything"."""
 
@@ -73,9 +73,9 @@ class _UpdateManagerEntityCondition(Condition):
 
 class HeldBackByCommunityCondition(_UpdateManagerEntityCondition):
     """True when every targeted update entity is currently held back by a
-    problematic community verdict -- coordinator.py's own
+    problematic community verdict (coordinator.py's own
     held_back_by_community cache field, the same single source of truth
-    the panel itself reads (see announcer.py's own
+    the panel itself reads, see announcer.py's own
     community_blocks_auto_install for the actual precedence)."""
 
     @override

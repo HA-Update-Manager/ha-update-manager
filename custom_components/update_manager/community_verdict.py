@@ -111,13 +111,13 @@ async def _fetch_to_version_json(hass: HomeAssistant, to_version_path: str) -> d
 
     For a "hacs"-category path specifically: tries community-votes' own
     future "marketplace" category first (same owner/repo/version shape,
-    just a different leading path segment -- see hacs_identity.py's own
+    just a different leading path segment, see hacs_identity.py's own
     category string), falling back to the still-canonical "hacs" path on a
-    clean 404. community-votes hasn't migrated yet (planned ~2027-01-01,
-    see TODO-CLAUDE.md), so today this "marketplace" attempt always 404s
-    and silently falls through -- built now, ahead of time, specifically so
-    that migration needs no matching ha-update-manager release of its own:
-    once community-votes actually moves a jump's data, any already-updated
+    clean 404. community-votes hasn't migrated yet (planned ~2027-01-01),
+    so today this "marketplace" attempt always 404s and silently falls
+    through. Built now, ahead of time, specifically so that migration
+    needs no matching ha-update-manager release of its own: once
+    community-votes actually moves a jump's data, any already-updated
     client (this one) picks it up immediately, the next time it fetches."""
     if to_version_path.startswith("hacs/"):
         marketplace_path = "marketplace/" + to_version_path[len("hacs/") :]

@@ -50,7 +50,7 @@ class UpdateManagerData:
     integration_version: str
 
 
-# Explicit TypeAlias, not a bare assignment -- without it, homeassistant
+# Explicit TypeAlias, not a bare assignment. Without it, homeassistant
 # not being locally installable (see quality_scale.yaml's own
 # test-coverage comment) means ConfigEntry itself resolves to Any, and
 # mypy won't otherwise treat a subscript of an unresolved base as a real
