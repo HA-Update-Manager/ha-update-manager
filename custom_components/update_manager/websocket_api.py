@@ -1209,7 +1209,7 @@ def _from_version_for_version(hass: HomeAssistant, data: UpdateManagerData, enti
     return None
 
 
-def _resolve_identity_for_version(
+async def _resolve_identity_for_version(
     hass: HomeAssistant, data: UpdateManagerData, entity_id: str, version: str
 ) -> ResolvedIdentity | None:
     """_release_url_for_version + _from_version_for_version +
@@ -1224,7 +1224,7 @@ def _resolve_identity_for_version(
     from_version = _from_version_for_version(hass, data, entity_id, version)
     if from_version is None:
         return None
-    return resolve_full_identity(hass, entity_id, release_url, version, from_version)
+    return await resolve_full_identity(hass, entity_id, release_url, version, from_version)
 
 
 async def _async_resolve_my_verdict(hass: HomeAssistant, data: UpdateManagerData, identity: ResolvedIdentity) -> str | None:
@@ -1291,7 +1291,7 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     # "can never be rated" look identical as a bare null verdict otherwise.
     # The panel uses this to hide vote controls entirely for these, instead
     # of offering a button that would always fail.
-    identity = _resolve_identity_for_version(hass, data, msg["entity_id"], msg["version"])
+    identity = await _resolve_identity_for_version(hass, data, msg["entity_id"], msg["version"])
     # Deliberately always the uncached fetch, never CommunityVerdictManager's
     # own time-cached entry (tried once, reverted live 2026-07-22): that
     # cache is fine for the passive Updates-tab badge, up to an hour stale
@@ -1420,7 +1420,7 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
 
-    identity = _resolve_identity_for_version(hass, data, msg["entity_id"], msg["version"])
+    identity = await _resolve_identity_for_version(hass, data, msg["entity_id"], msg["version"])
     if identity is None:
         connection.send_error(msg["id"], "not_identifiable", "This update can't be identified for voting yet")
         return

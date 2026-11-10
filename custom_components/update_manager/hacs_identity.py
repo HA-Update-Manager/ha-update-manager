@@ -20,6 +20,12 @@ from .semver import strip_version_prefix
 
 _RELEASE_URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/releases/(?:tag/)?(.+)$")
 
+# A blueprint's own source_url points at the file itself, not a release --
+# github.com/<owner>/<repo>/blob/<branch>/<path/to/file.yaml>. The branch
+# segment is matched but discarded: not part of the identity, and blueprint
+# authors are free to point source_url at any branch.
+_BLUEPRINT_URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/blob/[^/]+/(.+)$")
+
 
 def extract_hacs_identity(release_url: str | None) -> tuple[str, str, str] | None:
     """(owner, repo, version) from a GitHub release URL, or None if
@@ -40,6 +46,20 @@ def extract_hacs_identity(release_url: str | None) -> tuple[str, str, str] | Non
     if not match:
         return None
     return match.group(1), match.group(2), strip_version_prefix(match.group(3))
+
+
+def extract_blueprint_identity(source_url: str | None) -> tuple[str, str, str] | None:
+    """(owner, repo, path-within-repo) from a blueprint's own source_url, or
+    None if it's missing or doesn't match a github.com blob URL at all --
+    not every blueprint author sets source_url (see
+    device_identity.py's async_spook_blueprint_info), and nothing requires
+    the ones that do to point at GitHub specifically."""
+    if not source_url:
+        return None
+    match = _BLUEPRINT_URL_RE.match(source_url)
+    if not match:
+        return None
+    return match.group(1), match.group(2), match.group(3)
 
 
 # Found by review, 2026-07-22: Home Assistant Core/Supervisor/OS's own
@@ -125,6 +145,12 @@ class ResolvedIdentity(NamedTuple):
     owner_repo: str | None = None
     manufacturer_model: str | None = None
     app_slug: str | None = None
+    # "owner/repo/path/to/file.yaml" -- blueprint category only. Kept as one
+    # joined string, not separate owner/repo/path fields, since nothing else
+    # here needs owner/repo on its own for this category (unlike hacs, where
+    # owner_repo alone is also used to build vote_issue_body.py's "Owner/
+    # repo" field and release_url's own owner/repo).
+    blueprint_identity: str | None = None
     # The exact release_url this owner_repo/to_version pair was resolved
     # from (hacs category only, see resolve_identity below) -- kept so
     # vote_issue_body.py can link "Owner/repo" straight to the release being
@@ -156,6 +182,8 @@ class ResolvedIdentity(NamedTuple):
             return f"hacs/{self.owner_repo}/{self.to_version}"
         if self.category == "devices":
             return f"devices/{self.manufacturer_model}/{self.to_version}"
+        if self.category == "blueprint":
+            return f"blueprint/{self.blueprint_identity}/{self.to_version}"
         return f"apps/{self.app_slug}/{self.to_version}"
 
 
@@ -169,6 +197,7 @@ def resolve_identity(
     device_manufacturer: str | None = None,
     device_model: str | None = None,
     app_slug: str | None = None,
+    blueprint_source_url: str | None = None,
 ) -> ResolvedIdentity | None:
     """Which category this entity belongs under, plus the specific identity
     fields for it, or None if it can't be identified at all.
@@ -191,11 +220,12 @@ def resolve_identity(
     this at all" treatment as a missing release_url), so this takes a plain
     str, not Optional.
 
-    is_hacs_entity, device_manufacturer/device_model, and app_slug are all
-    pre-resolved by the caller (device_identity.py), not looked up here:
-    this module stays free of any homeassistant import, same reasoning as
-    semver.py/staging.py/rollout.py (see each one's own docstring), and
-    entity_registry/device_registry lookups need a real hass.
+    is_hacs_entity, device_manufacturer/device_model, app_slug, and
+    blueprint_source_url are all pre-resolved by the caller
+    (device_identity.py), not looked up here: this module stays free of any
+    homeassistant import, same reasoning as semver.py/staging.py/rollout.py
+    (see each one's own docstring), and entity_registry/device_registry/
+    blueprint-file lookups need a real hass.
 
     is_hacs_entity gates the HACS branch entirely (found live, 2026-07-22,
     real bug hit on an ESPHome device's update entity): release_url merely
@@ -254,6 +284,22 @@ def resolve_identity(
             from_version,
             owner_repo=f"{owner}/{repo}",
             release_url=release_url,
+        )
+
+    blueprint_identity = extract_blueprint_identity(blueprint_source_url)
+    if blueprint_identity is not None:
+        owner, repo, path = blueprint_identity
+        # Spook's own content-fingerprint versions (see
+        # device_identity.py's async_spook_blueprint_info) are already bare
+        # hex, never "v"-prefixed -- strip_version_prefix is a no-op for
+        # them, applied anyway for the same reason every other category
+        # applies it: consistency, not because this category specifically
+        # needs it.
+        return ResolvedIdentity(
+            "blueprint",
+            strip_version_prefix(latest_version),
+            from_version,
+            blueprint_identity=f"{owner}/{repo}/{path}",
         )
 
     if device_manufacturer is not None and device_model is not None:

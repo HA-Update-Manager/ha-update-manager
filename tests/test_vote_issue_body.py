@@ -111,3 +111,22 @@ class TestBuildIssueBody:
         identity = hacs_identity.ResolvedIdentity("hacs", "1.0.0", "0.9.0", owner_repo="owner/repo")
         body = vote_issue_body.build_issue_body(identity, "healthy", "other", None, None)
         assert "### Reason category\n\n(not applicable, verdict is healthy)\n" in body
+
+    def test_blueprint_vote_fills_owner_repo_with_full_path(self):
+        # blueprint_identity (not owner_repo) is the field set for this
+        # category, but both share the same "### Owner/repo" rendered
+        # field -- see vote_issue_body.py's own comment for why.
+        identity = hacs_identity.ResolvedIdentity(
+            "blueprint",
+            "5f4f24ec",
+            "aaeae848",
+            blueprint_identity="HA-Update-Manager/ha-update-manager/blueprints/automation/update_manager/notifications.yaml",
+        )
+        body = vote_issue_body.build_issue_body(identity, "healthy", None, None, None)
+        assert "### Category\n\nblueprint\n" in body
+        assert (
+            "### Owner/repo\n\nHA-Update-Manager/ha-update-manager/blueprints/automation/update_manager/notifications.yaml\n"
+            in body
+        )
+        assert "### From version\n\naaeae848\n" in body
+        assert "### To version\n\n5f4f24ec\n" in body

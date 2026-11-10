@@ -70,17 +70,25 @@ def build_issue_body(
     # known keys (Category, Owner/repo, etc.) back out of it, so an unknown
     # extra key just sits there unread, never rejected or misparsed.
     # Deliberately not folded into "Owner/repo" itself, though: that field's
-    # own value *is* structurally used (that Action's hacs branch does
-    # `ownerRepo.split("/")` and rejects the whole vote unless that's
-    # exactly 2 parts), same for "To version" (used verbatim to build the
-    # per-version storage path/issue title) -- a markdown link or an
-    # appended URL in either would break real, load-bearing parsing, not
-    # just sit there unused like this new field does.
+    # own value *is* structurally used (that Action's marketplace branch
+    # does `ownerRepo.split("/")` and rejects the whole vote unless that's
+    # exactly 2 parts, its blueprint branch the same but requiring 3+),
+    # same for "To version" (used verbatim to build the per-version storage
+    # path/issue title) -- a markdown link or an appended URL in either
+    # would break real, load-bearing parsing, not just sit there unused
+    # like this new field does.
+    #
+    # "Owner/repo" itself is shared between the marketplace and blueprint
+    # categories (identity.owner_repo / identity.blueprint_identity are
+    # mutually exclusive, see ResolvedIdentity's own docstring) -- a plain
+    # "owner/repo" for marketplace, "owner/repo/path/to/file.yaml" for
+    # blueprint. Same field, same split("/")-based parsing on the
+    # community-votes side either way, just a different minimum part count.
     return "\n".join(
         [
             _field("Category", identity.category),
             _field("Component", identity.component),
-            _field("Owner/repo", identity.owner_repo),
+            _field("Owner/repo", identity.owner_repo or identity.blueprint_identity),
             _field("Manufacturer/model", identity.manufacturer_model),
             _field("App slug", identity.app_slug),
             _field("From version", identity.from_version),

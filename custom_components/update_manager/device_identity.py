@@ -1,10 +1,12 @@
 """HA-dependent counterpart to hacs_identity.py's pure resolve_identity: looks
 up an update entity's device_registry/entity_registry entries and turns
-them into the is_hacs_entity/device_manufacturer/device_model/app_slug
-arguments resolve_identity expects, for everything that needs a real hass
-(confirming an entity is actually HACS-owned, plus the devices/apps
-categories). Kept out of hacs_identity.py itself so that module stays free
-of any homeassistant import (see its own docstring).
+them into the is_hacs_entity/device_manufacturer/device_model/app_slug/
+blueprint_source_url arguments resolve_identity expects, for everything
+that needs a real hass (confirming an entity is actually HACS-owned, the
+devices/apps categories, and reading a Spook blueprint's own source_url
+off disk for the blueprint category). Kept out of hacs_identity.py itself
+so that module stays free of any homeassistant import (see its own
+docstring).
 
 Verified against home-assistant/core's stable release tag 2026.7.3 (not
 dev), homeassistant/components/hassio/entity.py: HassioAddonEntity sets
@@ -227,28 +229,34 @@ def resolve_app_slug(device: dr.DeviceEntry) -> str | None:
     return None
 
 
-def resolve_full_identity(
+async def resolve_full_identity(
     hass: HomeAssistant, entity_id: str, release_url: str | None, latest_version: str, installed_version: str
 ) -> ResolvedIdentity | None:
     """resolve_identity, extended with the two categories that need a real
-    hass (devices, apps). Tries the cheap, pure checks (home-assistant,
-    hacs) first, only falling back to a single device_registry/
-    entity_registry lookup (shared between the devices and apps checks
-    below, found by review: they used to each re-fetch the device
-    independently) when those don't already resolve it, since that's the
-    common case and a registry lookup is comparatively expensive.
+    hass (devices, apps), plus the one that needs an async blueprint-file
+    read (blueprint). Tries the cheap, pure checks (home-assistant, hacs)
+    first, then the one async check (blueprint, gated on entity_registry's
+    own platform field inside async_spook_blueprint_info, so this is a fast
+    reject for the overwhelming majority of entities that aren't Spook's),
+    only falling back to a single device_registry/entity_registry lookup
+    (shared between the devices and apps checks below, found by review:
+    they used to each re-fetch the device independently) when none of
+    those already resolve it, since that's the common case and a registry
+    lookup is comparatively expensive.
 
     installed_version is passed straight through to resolve_identity (see
     that function's own docstring for the normalization it applies) --
     callers are expected to have already treated a missing/unknown
     installed_version as "can't identify this at all", same as a missing
     release_url, so this takes a plain str, not Optional."""
+    spook_info = await async_spook_blueprint_info(hass, entity_id)
     identity = resolve_identity(
         entity_id,
         release_url,
         latest_version,
         installed_version,
         is_hacs_entity=is_hacs_entity(hass, entity_id),
+        blueprint_source_url=spook_info.source_url if spook_info is not None else None,
     )
     if identity is not None:
         return identity

@@ -69,6 +69,37 @@ class TestExtractHacsIdentity:
         assert hacs_identity.extract_hacs_identity("https://github.com//repo/releases/tag/1.0.0") is None
 
 
+class TestExtractBlueprintIdentity:
+    def test_basic(self):
+        url = "https://github.com/HA-Update-Manager/ha-update-manager/blob/main/blueprints/automation/update_manager/notifications.yaml"
+        assert hacs_identity.extract_blueprint_identity(url) == (
+            "HA-Update-Manager",
+            "ha-update-manager",
+            "blueprints/automation/update_manager/notifications.yaml",
+        )
+
+    def test_branch_segment_discarded(self):
+        # Different branch, same owner/repo/path -- the branch itself isn't
+        # part of the identity, only ever used to resolve which file to read.
+        url = "https://github.com/owner/repo/blob/some-feature-branch/path/to/file.yaml"
+        assert hacs_identity.extract_blueprint_identity(url) == ("owner", "repo", "path/to/file.yaml")
+
+    def test_none_input(self):
+        assert hacs_identity.extract_blueprint_identity(None) is None
+
+    def test_empty_string(self):
+        assert hacs_identity.extract_blueprint_identity("") is None
+
+    def test_release_url_shape_not_a_blueprint_url(self):
+        # A genuine HACS-style release URL ("/releases/tag/...") must not
+        # also match the blueprint shape ("/blob/...").
+        url = "https://github.com/owner/repo/releases/tag/1.2.3"
+        assert hacs_identity.extract_blueprint_identity(url) is None
+
+    def test_missing_path(self):
+        assert hacs_identity.extract_blueprint_identity("https://github.com/owner/repo/blob/main/") is None
+
+
 class TestResolveIdentity:
     def test_hacs_entity(self):
         url = "https://github.com/owner/repo/releases/tag/1.2.3"
@@ -227,6 +258,49 @@ class TestResolveIdentity:
         assert identity.category == "apps"
         assert identity.app_slug == "core_mosquitto"
         assert identity.to_version_path == "apps/core_mosquitto/6.5.0"
+
+    def test_blueprint_identity(self):
+        url = "https://github.com/HA-Update-Manager/ha-update-manager/blob/main/blueprints/automation/update_manager/notifications.yaml"
+        identity = hacs_identity.resolve_identity(
+            "update.spook_blueprint_automation_update_manager_notifications",
+            None,
+            "5f4f24ec",
+            "aaeae848",
+            blueprint_source_url=url,
+        )
+        assert identity.category == "blueprint"
+        assert identity.blueprint_identity == (
+            "HA-Update-Manager/ha-update-manager/blueprints/automation/update_manager/notifications.yaml"
+        )
+        assert identity.to_version == "5f4f24ec"
+        assert identity.from_version == "aaeae848"
+        assert identity.to_version_path == (
+            "blueprint/HA-Update-Manager/ha-update-manager/blueprints/automation/update_manager/notifications.yaml/5f4f24ec"
+        )
+
+    def test_blueprint_without_source_url_unidentifiable(self):
+        # Not every blueprint author sets blueprint.source_url -- no
+        # fallback, same "can't identify this" treatment as a HACS entity
+        # with no usable release_url.
+        assert (
+            hacs_identity.resolve_identity(
+                "update.spook_blueprint_automation_something", None, "5f4f24ec", "aaeae848", blueprint_source_url=None
+            )
+            is None
+        )
+
+    def test_blueprint_checked_before_device_or_app_kwargs(self):
+        url = "https://github.com/owner/repo/blob/main/blueprint.yaml"
+        identity = hacs_identity.resolve_identity(
+            "update.some_blueprint",
+            None,
+            "5f4f24ec",
+            "aaeae848",
+            blueprint_source_url=url,
+            device_manufacturer="should not be used",
+            device_model="should not be used",
+        )
+        assert identity.category == "blueprint"
 
     def test_home_assistant_checked_before_device_or_app_kwargs(self):
         # A fixed home-assistant entity_id always wins, even if a caller
