@@ -1847,15 +1847,24 @@ class RolloutManager:
         it."""
         return entity_id in self._in_flight
 
-    def tier_blocked_entity_ids(self) -> list[str]:
+    def tier_blocked_entity_ids(self) -> dict[str, str | None]:
         """Read by websocket_api.py's own _handle_updates, alongside
-        rollout_groups_snapshot above -- the panel's own "Installing"
-        section shows these with the generic "Waiting for other updates to
-        finish first" badge (never naming a specific entity the way the
-        Zigbee rollout queue's own badge does: the tier ahead can be
-        several entities at once, e.g. every "safe" update in the same
-        batch, so there's no one name to point at)."""
-        return list(self._tier_blocked)
+        rollout_groups_snapshot above -- entity_id -> the specific other
+        entity_id currently blocking it (_tier_blocking_entity's own
+        single, first-found answer), so the panel's own "Installing"
+        section can name it the same "Waiting for X to finish" way the
+        Zigbee rollout queue's own badge already does, direct user
+        feedback, 2026-11-13, overriding this method's own earlier
+        "always generic" choice. _tier_blocking_entity can only ever
+        return one entity_id even when more than one genuinely blocks at
+        once (e.g. every "safe" update in the same batch) -- naming that
+        one is still more useful than a wholly generic message, same "one
+        name, not an exhaustive list" spirit the Zigbee queue's own badge
+        already settles for. None (rather than the key being absent) for
+        the rare case nothing currently blocks it anymore by the exact
+        instant this snapshot is taken -- the panel falls back to the old
+        generic text only for that case."""
+        return {entity_id: self._tier_blocking_entity(entity_id) for entity_id in self._tier_blocked}
 
     def stuck_since_snapshot(self) -> dict[str, dict[str, Any]]:
         """Read by websocket_api.py's own _handle_updates -- entity_id ->

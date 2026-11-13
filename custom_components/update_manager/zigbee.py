@@ -107,3 +107,22 @@ def is_zigbee_entity(hass: HomeAssistant, entity_id: str) -> bool:
     an ordinary WiFi device like WLED) would just be wrong."""
     device = device_for_entity(hass, entity_id)
     return device is not None and zigbee_network_id(hass, device) is not None
+
+
+def is_zha_entity(hass: HomeAssistant, entity_id: str) -> bool:
+    """entity_id's own device is specifically on a ZHA-managed Zigbee
+    network (not Zigbee2MQTT) -- install_tiers.py's own tier_for_entity
+    uses this distinction specifically: ZHA is a built-in part of Home
+    Assistant Core's own process, so a Core restart (Core's own
+    update.install) cuts an in-flight ZHA firmware OTA transfer off
+    mid-air, the same way it would any other in-process state. Every other
+    Zigbee-radio-adjacent firmware-class update this project already
+    treats as safe to run alongside anything -- Zigbee2MQTT included --
+    runs as its own separate process (an add-on, or the device's own
+    onboard flash reached directly over the network), entirely unaffected
+    by Core's own restart. zigbee_network_id's own "zha:"/"z2m:" prefix is
+    the one place that distinction is already made, reused here rather
+    than re-derived."""
+    device = device_for_entity(hass, entity_id)
+    network = device is not None and zigbee_network_id(hass, device)
+    return bool(network and network.startswith("zha:"))

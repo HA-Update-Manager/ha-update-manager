@@ -216,8 +216,9 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
             # Tier-gate equivalent of rollout_groups above (see
             # rollout_manager.py's own install_tiers.py-driven gate) -- who's
             # currently held back purely by "something less disruptive still
-            # needs to finish first", and who's crossed the stuck threshold
-            # and now shows the wrench badge instead.
+            # needs to finish first" (entity_id -> the specific other
+            # entity_id blocking it, or null), and who's crossed the stuck
+            # threshold and now shows the wrench badge instead.
             "tier_waiting": data.rollout_manager.tier_blocked_entity_ids(),
             "stuck": data.rollout_manager.stuck_since_snapshot(),
             # Entities recently observed in_progress, per this module's own

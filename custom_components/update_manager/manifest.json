@@ -1,7 +1,7 @@
 {
     "domain": "update_manager",
     "name": "Update Manager",
-    "after_dependencies": ["recorder"],
+    "after_dependencies": ["blueprint", "recorder"],
     "codeowners": ["@klaptafel"],
     "config_flow": true,
     "dependencies": ["http", "websocket_api", "panel_custom", "persistent_notification"],

@@ -13,16 +13,34 @@ require SUPERVISOR_UPDATED as a hard job condition), not guessed:
 
 - "safe": everything else, never blocked by anything -- ordinary integration/
   add-on/card updates, the overwhelming majority.
-- "firmware": device_class == "firmware" (HA's own UpdateDeviceClass enum).
-  Dozens of real integrations use this (WLED, Shelly, ESPHome, UniFi, ZHA/
-  Z-Wave JS/Matter radios, and more, confirmed via a real code search) --
-  ordinary peripheral/networked device firmware, safe alongside each other
-  *and* alongside "safe"-tier installs too (direct user feedback,
-  2026-08-24: nothing about an unrelated HACS integration/card install
-  threatens an over-the-air device firmware flash, so gating one behind
-  the other was needless waiting, not real safety). FIRST_GATED_RANK
-  below is what actually excuses both of these two tiers from ever being
+- "firmware": device_class == "firmware" (HA's own UpdateDeviceClass enum),
+  minus ZHA (see "zha_firmware" below). Dozens of real integrations use
+  this device_class (WLED, Shelly, ESPHome, UniFi, Zigbee2MQTT, Z-Wave JS,
+  Matter Server, and more, confirmed via a real code search) -- ordinary
+  peripheral/networked device firmware, safe alongside each other *and*
+  alongside "safe"-tier installs too (direct user feedback, 2026-08-24:
+  nothing about an unrelated HACS integration/card install threatens an
+  over-the-air device firmware flash, so gating one behind the other was
+  needless waiting, not real safety). Every one of these runs its own
+  flash from its own separate process -- an add-on's own container
+  (Zigbee2MQTT, Z-Wave JS, Matter Server) or the device's own onboard
+  flash reached directly over the network (WLED, Shelly, ESPHome, UniFi)
+  -- genuinely unaffected by whatever else Home Assistant's own process is
+  doing at the same moment, Core's own restart included. FIRST_GATED_RANK
+  below is what actually excuses this tier (and "safe") from ever being
   held back by anything.
+- "zha_firmware": device_class == "firmware" *and* the device is on a
+  ZHA-managed Zigbee network specifically (see zigbee.py's own
+  is_zha_entity) -- split out from the plain "firmware" tier above, direct
+  user feedback, 2026-11-13: unlike every other firmware-class update
+  listed there, ZHA is a built-in part of Home Assistant Core's own
+  process, not a separate add-on or the device's own onboard flash, so a
+  Core restart lands on it exactly the same way it lands on any other
+  in-process state -- not "another install happening to run at the same
+  moment" (the needless-waiting case "firmware" above is exempted from),
+  a real risk of cutting an in-flight OTA transfer off mid-air. Zigbee2MQTT
+  (its own separate add-on process) is unaffected by this and stays in
+  "firmware" -- this split is ZHA-specific, not "Zigbee" in general.
 - "host_firmware": specifically RaspberryPiFirmwareUpdateEntity (its own
   _attr_translation_key, "rpi_firmware" -- both the standalone raspberry_pi
   integration and homeassistant_yellow's own CM4/CM5 module use this exact
@@ -52,28 +70,32 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
 from .coordinator import home_assistant_component_for_entity
+from .zigbee import is_zha_entity
 
-TIER_ORDER = ("safe", "firmware", "host_firmware", "supervisor", "core", "os")
+TIER_ORDER = ("safe", "firmware", "zha_firmware", "host_firmware", "supervisor", "core", "os")
 TIER_RANK = {tier: rank for rank, tier in enumerate(TIER_ORDER)}
 
-# Only "host_firmware" and up actually restart/reboot something (the host's
-# own EEPROM programmer, the Supervisor container, Core's own process, the
-# whole host); see the tier list above for why each of those genuinely
-# needs to wait its turn. "safe" and "firmware" don't restart anything and
-# were never a real risk to each other, so rollout_manager.py's tier gate
-# exempts both of them from ever being held back, however much other work
-# is running.
-FIRST_GATED_RANK = TIER_RANK["host_firmware"]
+# Only "zha_firmware" and up are genuinely at risk from something else
+# running at the same time (a ZHA OTA transfer cut off mid-air by Core's
+# own restart, the host's own EEPROM programmer, the Supervisor container,
+# Core's own process, the whole host); see the tier list above for why
+# each of those genuinely needs to wait its turn. "safe" and "firmware"
+# (ZHA excluded, see "zha_firmware" above) were never a real risk to each
+# other, so rollout_manager.py's tier gate exempts both of them from ever
+# being held back, however much other work is running.
+FIRST_GATED_RANK = TIER_RANK["zha_firmware"]
 
 
 def tier_for_entity(hass: HomeAssistant, entity_id: str) -> str:
-    """Same detection rules as update-manager-panel.js's own
-    updateAllTierFor (JS/Python can't literally share this, kept in sync by
-    hand) -- checked here too, not just client-side, since the actual gate
-    this feeds (rollout_manager.py) is server-side and must reach the same
-    verdict regardless of which panel/client happens to be connected, or
-    none at all (auto-install). Core/Supervisor/OS detection itself is
-    coordinator.py's own, not reimplemented here (see
+    """Server-side only -- no client-side JS counterpart exists to keep in
+    sync with (an earlier version of this docstring claimed one,
+    update-manager-panel.js's own updateAllTierFor, which no longer exists
+    in that file; stale, corrected 2026-11-13). The actual gate this feeds
+    (rollout_manager.py) is server-side and must reach the same verdict
+    regardless of which panel/client happens to be connected, or none at
+    all (auto-install), which is why this lives here rather than being
+    derived from anything the frontend already computed. Core/Supervisor/OS
+    detection itself is coordinator.py's own, not reimplemented here (see
     home_assistant_component_for_entity's own docstring) -- its returned
     "core"/"supervisor"/"os" strings are exactly this module's own tier
     names, no translation needed."""
@@ -85,5 +107,5 @@ def tier_for_entity(hass: HomeAssistant, entity_id: str) -> str:
         return "host_firmware"
     state = hass.states.get(entity_id)
     if state is not None and state.attributes.get("device_class") == "firmware":
-        return "firmware"
+        return "zha_firmware" if is_zha_entity(hass, entity_id) else "firmware"
     return "safe"

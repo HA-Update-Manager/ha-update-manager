@@ -250,6 +250,75 @@ const INSTALLING_FLICKER_GRACE_MS = 60000;
 // holding their spot).
 const INSTALLING_SECTION_GRACE_MS = 15000;
 
+// The Updates tab's own vote-nudge section (_buildUpdatesEmptyState),
+// shown whenever no actionable update row is on screen: at most this many
+// of the user's own install_log entries are actually probed via
+// verdict_for_version, stopping at the first one that's both identifiable
+// and not yet voted on -- so a long-time user with many already-voted
+// entries can't trigger an unbounded burst of websocket calls just
+// because the tab happens to be empty right now.
+const VOTE_NUDGE_SCAN_LIMIT = 10;
+
+// Module-level, not this._voteNudge* on the instance -- direct user
+// feedback, found live: navigating away to another panel and back still
+// showed the loader again. HA's own panel loader doesn't guarantee the
+// same UpdateManagerPanel instance survives that (confirmed by set hass's
+// own `first = !this._hass` branch running _initialLoad() again), so
+// instance state alone doesn't survive it either, unlike a module-level
+// value, which does for as long as this script stays loaded (the same
+// boundary this._releaseNotesCache's own "cleared only by a full page
+// reload" comment already relies on). Reset by _loadAll() only when
+// install_log's own newest entry actually changed (see that method's own
+// comment) -- not on every call, since _checkForNewUpdateEntities calls
+// _loadAll() for *any* update.* entity's signature change anywhere in the
+// house, most of which have nothing to do with which History entry
+// should be offered here.
+let _voteNudgeResolved = false;
+let _voteNudgeOutcome = null;
+// A second qualifying candidate, already resolved alongside the one
+// actually shown (_voteNudgeOutcome) -- see _advanceVoteNudge's own
+// docstring: promoted instantly once a vote lands on the current one,
+// instead of falling back to a fresh scan (and its own loader) right at
+// the one moment that gap is most noticeable.
+let _voteNudgePrefetched = null;
+// Every entity_id this session has already resolved an answer for --
+// shown, prefetched, or voted on -- so a later background refill
+// (_scanVoteNudgeCandidates, which checks this set directly, no explicit
+// parameter needed) never re-probes one of them. Found live, direct user
+// feedback: each refill used to only ever exclude the single
+// just-promoted entity, so every earlier already-voted entity still
+// occupied one of VOTE_NUDGE_SCAN_LIMIT's own 10 probe slots on every
+// subsequent vote, wasted re-confirming a verdict already known -- after
+// only a handful of votes, little to no real budget was left for
+// genuinely untried candidates, even with a much
+// longer History underneath them.
+let _voteNudgeSeenEntityIds = new Set();
+// Same idea as _voteNudgeSeenEntityIds above, keyed by real device
+// identity instead (manufacturer/model, via _deviceIdentityPromise) plus
+// the destination version -- direct user feedback: several identical
+// Zigbee devices (via Zigbee2MQTT or ZHA) making the exact same firmware
+// jump each get their own entity_id, so entity-level dedup alone still
+// asked about each one in turn. Deliberately not just (from_version,
+// to_version) alone: two genuinely different products (a Hue E27 bulb
+// and a Hue GU10 bulb, direct user feedback) can coincidentally share the
+// exact same version string jump, and conflating those would wrongly
+// skip a real, distinct candidate -- manufacturer/model is the same real
+// identity hacs_identity.py's own ResolvedIdentity already keys a
+// "devices"-category vote on server-side (to_version_path's own
+// manufacturer_model segment), just resolved client-side here instead of
+// waiting on a vote's own (genuinely slow, processed via a GitHub Action)
+// propagation back through community-votes.
+let _voteNudgeSeenJumps = new Set();
+// The _loadAll() comparison baseline for the reset above also has to be
+// module-level, not this._installLog -- found live: a fresh instance's
+// own this._installLog starts undefined regardless of the module-level
+// cache above already holding a real, still-valid outcome, so comparing
+// against it made every single fresh instance's first _loadAll() look
+// like "the newest entry changed" (anything real vs. undefined), quietly
+// invalidating an otherwise-correctly-surviving cache on every single
+// panel re-entry -- exactly the case this was meant to survive.
+let _lastKnownNewestInstall;
+
 // The one place "problematic -> alert icon, else thumb-up" gets decided --
 // found by code review, 2026-07-27: this exact ternary (or its count>0
 // equivalent) was independently re-derived at five call sites across this
@@ -1048,10 +1117,11 @@ function buildReleaseNotesLoader() {
   return wrap;
 }
 
-// The Updates tab's own empty state (matches ha-config-section-updates.ts's
-// real source exactly: an outlined ha-card containing a .no-updates div)
-// and the History tab's own empty state both build this same shape -- found
-// by review: independently hand-rolled twice rather than shared once.
+// Matches ha-config-section-updates.ts's real source exactly: an outlined
+// ha-card containing a plain .no-updates div. Now only the History tab's
+// own empty state (_buildHistoryList) -- the Updates tab's own two empty
+// states moved to the celebratory/vote-nudge treatment instead, see
+// _buildUpdatesEmptyState.
 function buildEmptyStateCard(text) {
   const card = document.createElement("ha-card");
   card.outlined = true;
@@ -1321,9 +1391,23 @@ function absoluteWhen(tr, iso, hass, compact) {
 // them, in that fixed order, so an instance with only a handful of old
 // entries doesn't show four empty "This week"/"This month" headings above
 // its one real "Earlier" section.
-function historySections(tr, entries) {
+// Calendar-day difference between `installedAt` and today -- shared by
+// historySections' own Today/Yesterday/This week/This month/Earlier
+// bucketing below and the vote-nudge's own 30-day relevance cutoff (see
+// _scanVoteNudgeCandidates): the same "This month" boundary that groups a
+// History entry visually also doubles as the cutoff for whether asking
+// someone to rate it still makes sense at all. NaN (unparseable/missing
+// installed_at) and a future timestamp (clock skew between this browser
+// and whatever wrote the entry) both read as 0 ("just now") -- there's no
+// sensible "how long ago" for something that doesn't parse as being in
+// the past at all.
+function daysSince(installedAt) {
   const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const today = startOfDay(new Date());
+  const date = new Date(installedAt);
+  return Number.isNaN(date.getTime()) ? 0 : Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000);
+}
+
+function historySections(tr, entries) {
   // `key` (language-independent, unlike `label`) lets a caller single out
   // "today" specifically: see _buildHistoryList, which only shows a
   // relative time in each entry's own subtitle for that one section; every
@@ -1337,13 +1421,7 @@ function historySections(tr, entries) {
     { key: "earlier", label: tr.history_section_earlier, items: [] },
   ];
   for (const entry of entries) {
-    const date = new Date(entry.installed_at);
-    // NaN (unparseable/missing installed_at) and a future timestamp (clock
-    // skew between this browser and whatever wrote the entry) both fall
-    // through to dayDiff <= 0, the same bucket a genuinely "just now" entry
-    // lands in: there's no sensible "earlier" section for something that
-    // fails to parse as being in the past at all.
-    const dayDiff = Number.isNaN(date.getTime()) ? 0 : Math.round((today - startOfDay(date)) / 86400000);
+    const dayDiff = daysSince(entry.installed_at);
     if (dayDiff <= 0) buckets[0].items.push(entry);
     else if (dayDiff === 1) buckets[1].items.push(entry);
     else if (dayDiff < 7) buckets[2].items.push(entry);
@@ -1618,16 +1696,33 @@ function _justFailed(hass, entityId) {
 // only "for backward compatibility", per that same post). Every one of
 // this project's own update entities is its own device's one real entity
 // (has_entity_name, no entity name of its own beyond "Update"), so the
-// device's own name alone is already exactly the right displayed name, no
-// suffix-stripping regex needed to approximate it anymore. undefined
-// whenever this entity has no device at all (hass.entities/hass.devices
-// are always real HA frontend objects, never guessed): callers fall back
-// to the older friendly_name-based guess for that case.
+// device's own name alone is exactly the right displayed name there --
+// but that's not true of every integration's own update entities. Direct
+// user feedback, found live: a device exposing several distinct update
+// entities (Pi-hole's own Supervisor add-on, for one -- Core/FTL/Web each
+// their own update.* entity, one shared device) all collapsed to the
+// exact same bare device name, discarding the one thing that actually
+// told them apart. Falls back to the entity's own real name instead
+// (trailing "Update"/"Update available" stripped, the same words this
+// project's own single-entity devices already carry and don't need
+// repeated) whenever more than one update entity shares this device --
+// and, if that strip would leave nothing left at all, to the raw name
+// unstripped rather than an empty string. undefined whenever this entity
+// has no device at all (hass.entities/hass.devices are always real HA
+// frontend objects, never guessed): callers fall back to the older
+// friendly_name-based guess for that case.
 function _deviceName(hass, entityId) {
   const deviceId = hass && hass.entities && hass.entities[entityId] && hass.entities[entityId].device_id;
   const device = deviceId && hass.devices && hass.devices[deviceId];
   const name = device && (device.name_by_user || device.name);
-  return typeof name === "string" ? name.trim() || undefined : undefined;
+  if (typeof name !== "string" || !name.trim()) return undefined;
+  const siblingUpdateEntities = Object.keys(hass.entities).filter(
+    (id) => id.startsWith("update.") && hass.entities[id].device_id === deviceId
+  );
+  if (siblingUpdateEntities.length <= 1) return name.trim();
+  const rawName = hass.states && hass.states[entityId] && hass.states[entityId].attributes.friendly_name;
+  const stripped = typeof rawName === "string" ? rawName.replace(/\s+update(\s+available)?$/i, "").trim() : "";
+  return stripped || name.trim();
 }
 
 function entityState(hass, entityId) {
@@ -2242,7 +2337,15 @@ function _resolveDeviceIdentity(hass, entityId, onResolved) {
       _deviceIdentityCache.set(entityId, info);
       const waiting = _deviceIdentityPending.get(entityId) || [];
       _deviceIdentityPending.delete(entityId);
-      if (info) waiting.forEach((cb) => cb(info));
+      // Fires for null too now, not just a real match -- the one existing
+      // caller (_openDetailDialog's own dialog-header reopen) never
+      // needed the null case (nothing new to show, so no need to rebuild),
+      // but _deviceIdentityPromise below (the vote-nudge's own scan) needs
+      // a definite answer either way, not just "eventually, if it's a
+      // real match". Harmless for that existing caller either way: a
+      // rebuild triggered by a null resolution just redraws the same
+      // content it already had.
+      waiting.forEach((cb) => cb(info));
     })
     .catch(() => {
       // Not cached, same reasoning as _resolveSpookBlueprintInfo's own
@@ -2251,6 +2354,22 @@ function _resolveDeviceIdentity(hass, entityId, onResolved) {
       _deviceIdentityPending.delete(entityId);
     });
   return undefined;
+}
+
+// Promise-based wrapper around _resolveDeviceIdentity, for a caller that
+// genuinely needs to await a definite answer (null included) -- used by
+// the vote-nudge's own scan (_scanVoteNudgeCandidates) to tell apart two
+// entities that genuinely are different products (e.g. a Hue E27 vs. a
+// Hue GU10 bulb) from two that are truly the same device model, without
+// waiting on anything external: this is the same local device_identity
+// lookup the dialog header already uses, nothing to do with community
+// votes' own real (and, for a vote, genuinely slow -- it's processed via
+// a GitHub Action) propagation delay.
+function _deviceIdentityPromise(hass, entityId) {
+  return new Promise((resolve) => {
+    const result = _resolveDeviceIdentity(hass, entityId, resolve);
+    if (result !== undefined) resolve(result);
+  });
 }
 
 // The dialog header's own manufacturer/model line, between the name and
@@ -2617,7 +2736,13 @@ class UpdateManagerPanel extends HTMLElement {
     this._updates = null;
     this._rolloutGroups = [];
     this._rolloutStatusByEntityId = new Map();
-    this._tierWaiting = new Set();
+    // entityId -> the specific other entity_id currently blocking it
+    // (rollout_manager.py's own tier_blocked_entity_ids, keyed the same
+    // way, value possibly null) -- a Map, not a Set, since 2026-11-13:
+    // direct user feedback, this now carries that name instead of just
+    // membership, the same "Waiting for X" treatment the Zigbee rollout
+    // queue's own badge already had.
+    this._tierWaiting = new Map();
     this._stuck = new Map();
     // entityId -> Date.now() it was first observed installing=true, purely
     // client-side (distinct from rollout_manager.py's own server-side
@@ -2887,9 +3012,11 @@ class UpdateManagerPanel extends HTMLElement {
       this._rolloutGroups = updatesResp.rollout_groups || [];
       this._rebuildRolloutStatusMap();
       // Tier-gate equivalent of _rolloutGroups above (see rollout_manager.py's
-      // own tier_blocked_entity_ids/stuck_entity_ids) -- entityId Sets, not
-      // arrays, since every use of these is a membership check.
-      this._tierWaiting = new Set(updatesResp.tier_waiting || []);
+      // own tier_blocked_entity_ids) -- entity_id -> the specific other
+      // entity_id blocking it (or null), a plain object over the wire,
+      // rebuilt into a Map here the same way this._rolloutStatusByEntityId
+      // already is.
+      this._tierWaiting = new Map(Object.entries(updatesResp.tier_waiting || {}));
       // entityIds rollout_manager.py's own periodic tracking has recently
       // (see its own _RECENTLY_INSTALLING_GRACE) observed in_progress true
       // -- consulted by _isEffectivelyInstalling as a source of truth that
@@ -2908,7 +3035,22 @@ class UpdateManagerPanel extends HTMLElement {
           { since: new Date(info.since), isZigbee: !!info.is_zigbee },
         ])
       );
+      // Compared against the module-level _lastKnownNewestInstall (see its
+      // own comment -- not this._installLog, a fresh instance's own copy
+      // starts undefined regardless of whether the module-level cache
+      // below already holds a real, still-valid outcome from before).
+      // Invalidates the vote-nudge's own cached outcome only when a
+      // genuinely new install actually landed, not on every call this
+      // method gets: _checkForNewUpdateEntities calls this for *any*
+      // update.* entity's signature change anywhere in the house, most of
+      // which have nothing to do with which History entry should be
+      // offered here.
       this._installLog = logResp.entries.slice().reverse();
+      const newestInstall = this._installLog[0]?.installed_at;
+      if (newestInstall !== _lastKnownNewestInstall) {
+        _voteNudgeResolved = false;
+        _lastKnownNewestInstall = newestInstall;
+      }
       // Also true (not just after a real "load older" fetch) when the
       // backend's own default page already covers everything -- a quiet
       // instance where nothing falls outside DEFAULT_PAGE_POLICY has
@@ -3971,7 +4113,8 @@ class UpdateManagerPanel extends HTMLElement {
   // to begin with.
   //
   // No client-side tiering here anymore -- the same disruption-order
-  // (safe/firmware/host_firmware/supervisor/core/os) is now enforced
+  // (safe/firmware/zha_firmware/host_firmware/supervisor/core/os) is now
+  // enforced
   // server-side, in rollout_manager.py's own tier gate (install_tiers.py),
   // the exact same shared gate every dispatch path already goes through
   // regardless of how it was triggered. This method is back to exactly
@@ -4393,12 +4536,12 @@ class UpdateManagerPanel extends HTMLElement {
   // _installingEntityIds), never reordered there, same principle the
   // rollout-queue-only version already established.
   //
-  // Zigbee waits keep their own, named "waiting for X" text (always
-  // exactly one specific device directly in front, a single-file queue);
-  // tier waits stay generic (tr.tier_waiting_text) -- the tier ahead can
-  // be several entities at once (every "safe" update in the same batch),
-  // so there's no one name to point at, same reasoning already settled
-  // for the tier gate's own badge text.
+  // Both the Zigbee rollout queue and the disruption-order tier gate name
+  // the one specific entity_id they're each waiting on (tr.waiting_for_entity,
+  // shared text -- see that key's own comment), falling back to the
+  // plain tr.tier_waiting_text only for the tier gate's own rare "nothing
+  // currently blocks it, by this exact snapshot" case (see
+  // rollout_manager.py's own tier_blocked_entity_ids).
   _buildInstallingCard(entityIds) {
     const tr = this._tr;
     const { card, content } = this._buildCardShell(tr.installing_section_title);
@@ -4421,14 +4564,25 @@ class UpdateManagerPanel extends HTMLElement {
     // own members sorted by their real queue position, so each one prints
     // directly below the entity its own "Waiting for X" badge names, not
     // scattered through the list in whatever arbitrary order entityIds
-    // itself happens to carry (see this method's own comment above).
-    // null for anything with no rollout group at all (tier-blocked, or
-    // genuinely nothing to pace against) -- left in its existing relative
-    // order, same stable-sort guarantee the undifferentiated tier already
-    // relied on before this.
+    // itself happens to carry (see this method's own comment above). A
+    // tier-blocked entry has no equivalent real "position" of its own to
+    // sort by (_tier_blocking_entity's own docstring: more than one
+    // entity can genuinely block at once, this just names one of them) --
+    // grouped by its own blocking entity_id instead, direct user
+    // feedback, 2026-11-13: not positioned relative to that entity's own
+    // exact place in this same list the way a rollout queue member is,
+    // but every entry waiting on the same thing at least prints together
+    // now, instead of scattered arbitrarily the way it was before this
+    // existed. null (left in its existing relative order, same
+    // stable-sort guarantee as before) only for an entry with neither --
+    // genuinely nothing to group by.
     const rolloutSortKey = (entityId) => {
       const status = this._rolloutStatusFor(entityId);
-      return status && status.groupKey != null ? `${status.groupKey}\u0000${String(status.position).padStart(6, "0")}` : null;
+      if (status && status.groupKey != null) {
+        return `0\u0000${status.groupKey}\u0000${String(status.position).padStart(6, "0")}`;
+      }
+      const blockingEntityId = this._tierWaiting.get(entityId);
+      return blockingEntityId ? `1\u0000${blockingEntityId}` : null;
     };
     entityIds
       .slice()
@@ -4465,14 +4619,18 @@ class UpdateManagerPanel extends HTMLElement {
           // walk of the same groups, built fresh here just to get the same
           // predecessor's name. Genuinely queued-behind-someone (status
           // !== "installing") gets that entity's own name; anything else
-          // reaching this branch is either genuinely tier-waiting, or an
-          // entity INSTALLING_SECTION_GRACE_MS is still holding a spot for
-          // after it was actually released (see _buildUpdatesList's own
-          // comment) -- both fall back to the same generic text, since
-          // neither has one specific entity's name worth naming.
+          // reaching this branch is either genuinely tier-waiting (now
+          // also named, via this._tierWaiting -- see this method's own
+          // comment above), or an entity INSTALLING_SECTION_GRACE_MS is
+          // still holding a spot for after it was actually released (see
+          // _buildUpdatesList's own comment), which has no name of its
+          // own either way.
           const rolloutStatus = this._rolloutStatusFor(entityId);
+          const tierBlockingEntityId = this._tierWaiting.get(entityId);
           if (rolloutStatus) {
-            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId)) };
+            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.waiting_for_entity(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId)) };
+          } else if (tierBlockingEntityId) {
+            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.waiting_for_entity(friendlyEntityName(this._hass, tierBlockingEntityId)) };
           } else {
             timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.tier_waiting_text };
           }
@@ -4663,7 +4821,7 @@ class UpdateManagerPanel extends HTMLElement {
     }
 
     if (!this._updates.length) {
-      outer.appendChild(buildEmptyStateCard(tr.updates_empty));
+      outer.appendChild(this._buildUpdatesEmptyState(tr.updates_empty_title, tr.updates_empty));
       return outer;
     }
 
@@ -4767,7 +4925,7 @@ class UpdateManagerPanel extends HTMLElement {
     // the page whenever something was also actively installing/queued at
     // the same time -- not every update, contradicting its own wording.
     if (!groups.length && !installingEntityIds.length) {
-      outer.appendChild(buildEmptyStateCard(tr.updates_hidden_by_filter));
+      outer.appendChild(this._buildUpdatesEmptyState(tr.updates_empty_title, tr.updates_hidden_by_filter));
       return outer;
     }
 
@@ -4855,6 +5013,369 @@ class UpdateManagerPanel extends HTMLElement {
     return outer;
   }
 
+  // The Updates tab's own two empty states -- genuinely nothing left to
+  // update (tr.updates_empty) and everything hidden by the overflow
+  // menu's own filters (tr.updates_hidden_by_filter) -- share this one
+  // builder: either way, no actionable row is actually on screen right
+  // now, so both get the same celebratory icon/color treatment and the
+  // same vote-nudge opportunity underneath, just with their own already-
+  // distinct primaryText. Two stacked cards, deliberately unequal in
+  // weight: this page exists to update things, so the primary card's own
+  // text stays primary; the vote-nudge underneath is secondary, both
+  // visually (the .hint-styled intro text, no heading of its own) and in
+  // when it appears -- only once resolved async, well after the primary
+  // card is already on screen.
+  _buildUpdatesEmptyState(title, text) {
+    const tr = this._tr;
+    const wrap = document.createDocumentFragment();
+
+    // Same visual recipe as the detail dialog's own .dialog-header
+    // (_buildDialogHeaderShell) -- big centered icon, bold title, text
+    // below -- but its own dedicated classes, not literally shared ones:
+    // that header's real markup is built around a live entity's
+    // state-badge, which doesn't apply here at all.
+    const card = document.createElement("ha-card");
+    card.outlined = true;
+    const header = document.createElement("div");
+    header.className = "empty-state-header";
+    const icon = document.createElement("ha-svg-icon");
+    icon.className = "empty-state-icon";
+    icon.path = ICON_CHECK_CIRCLE;
+    header.appendChild(icon);
+    const titleEl = document.createElement("div");
+    titleEl.className = "empty-state-title";
+    titleEl.textContent = title;
+    header.appendChild(titleEl);
+    const textEl = document.createElement("div");
+    textEl.className = "empty-state-text";
+    textEl.textContent = text;
+    header.appendChild(textEl);
+    card.appendChild(header);
+    wrap.appendChild(card);
+
+    // Resolved once per _loadAll() snapshot (_voteNudgeResolved, reset
+    // there -- see that method's own comment), not once per render --
+    // direct user feedback: switching tabs away and back re-ran the whole
+    // github_link_status + verdict_for_version scan from scratch every
+    // single time, which read as broken/reloading rather than just
+    // genuinely new data.
+    //
+    // Nothing of the vote-nudge section itself (not even its own heading)
+    // is built here until the outcome is actually known, unlike an
+    // earlier version of this that showed the heading + a loading spinner
+    // immediately -- direct user feedback: when that resolved to "nothing
+    // to show" (the common case for most visits), the whole section
+    // flashed in as a loader and then vanished again, reading as broken
+    // rather than "turns out there's nothing right now". Built by
+    // _buildVoteNudgeSection and inserted right after the primary card
+    // above (`card`, still in scope) only once resolved, and only if
+    // outcome.type isn't "none" -- this page's own layout never reserves
+    // space for it in the meantime.
+    if (_voteNudgeResolved) {
+      if (_voteNudgeOutcome.type !== "none") wrap.appendChild(this._buildVoteNudgeSection(tr, _voteNudgeOutcome));
+      return wrap;
+    }
+
+    // Guarded the same isStale() shape the detail dialog's own async
+    // sections already use against a closed/reopened dialog -- scoped
+    // here to "did this exact empty-state build get superseded" instead
+    // (tab switched away, or _renderContent ran again, e.g. a new update
+    // just got announced, before this resolved).
+    const generation = (this._voteNudgeGeneration = (this._voteNudgeGeneration || 0) + 1);
+    const isStale = () => this._tab !== "updates" || this._voteNudgeGeneration !== generation;
+
+    (async () => {
+      let status;
+      try {
+        status = await this._hass.callWS({ type: "update_manager/github_link_status" });
+      } catch {
+        // Left unresolved on a transient failure (not cached as "none")
+        // -- the next tab visit tries again fresh instead of a network
+        // blip permanently suppressing it for the rest of the session.
+        return;
+      }
+      if (isStale()) return;
+      // No GitHub account linked: nothing shown at all, same as "none"
+      // below -- direct user feedback, removing the earlier link-nudge
+      // variant that prompted toward Settings instead.
+      if (status.status !== "linked") {
+        _voteNudgeResolved = true;
+        _voteNudgeOutcome = { type: "none" };
+        return;
+      }
+
+      // Finds up to 2 qualifying candidates, not just 1 -- the first is
+      // shown now, the second is kept in reserve (_voteNudgePrefetched)
+      // so a vote on the first can promote it instantly afterward, no
+      // spinner, see _advanceVoteNudge's own docstring for why.
+      const [first, second] = await this._scanVoteNudgeCandidates(2);
+      if (isStale()) return;
+      _voteNudgeResolved = true;
+      _voteNudgePrefetched = second || null;
+      _voteNudgeOutcome = first ? { type: "candidate", entry: first.entry, counts: first.counts } : { type: "none" };
+      if (_voteNudgeOutcome.type !== "none") {
+        card.insertAdjacentElement("afterend", this._buildVoteNudgeSection(tr, _voteNudgeOutcome));
+      }
+    })();
+
+    return wrap;
+  }
+
+  // The vote-nudge section itself (.history-section-heading + its body),
+  // only ever built once the outcome is already known -- see
+  // _buildUpdatesEmptyState's own comment for why nothing is built
+  // speculatively ahead of that. Only ever called for outcome.type
+  // "candidate" -- "none" (no GitHub account linked, or genuinely nothing
+  // left to rate) never calls this at all.
+  _buildVoteNudgeSection(tr, outcome) {
+    const nudgeSection = document.createElement("div");
+    nudgeSection.className = "vote-nudge-section";
+    const heading = document.createElement("h2");
+    heading.className = "history-section-heading";
+    heading.textContent = tr.vote_nudge_heading;
+    nudgeSection.appendChild(heading);
+    const nudgeBody = document.createElement("div");
+    nudgeSection.appendChild(nudgeBody);
+    this._renderVoteNudgeCandidate(nudgeBody, tr, outcome.entry, outcome.counts);
+    return nudgeSection;
+  }
+
+  // Deduped to each entity's own single newest entry first (walking
+  // this._installLog in its own newest-first order for that part
+  // specifically) -- an entity that's since moved on to a newer version
+  // has no business surfacing an older, still-unvoted jump here, only its
+  // latest one ever counts (if that one isn't itself within the last 30
+  // days -- same "This month" cutoff historySections' own bucketing
+  // already uses, see daysSince -- this entity is skipped entirely, not
+  // fallen back to an older entry of its own). Direct user feedback:
+  // rating a jump that old doesn't tell anyone currently deciding whether
+  // to install a *recent* update anything useful, and left unbounded,
+  // this would otherwise keep reaching further back through the entire
+  // History for as long as the user kept voting, well past the point of
+  // being relevant to anyone. Any History entry is eligible here, not
+  // just a manual install -- direct user feedback, overriding this
+  // feature's own earlier manual-only design: "rate the jump", not "rate
+  // something you personally clicked Install on".
+  //
+  // Shuffled before probing, not left in that same newest-first order --
+  // direct user feedback, discussed and settled on over sorting oldest-
+  // first (more "soak time" to notice a problem, but risks aging back out
+  // of the 30-day window before ever being offered) or newest-first
+  // (topical, but not always enough time to have an opinion yet): no
+  // deliberate preference either way, every eligible candidate gets an
+  // equal shot. Shuffled before the VOTE_NUDGE_SCAN_LIMIT slice below, not
+  // after -- a shuffle-then-cap over the whole eligible pool is a real
+  // random sample of it; capping to the newest 10 first and only
+  // shuffling *within* that subset would still have been recency-biased
+  // in disguise.
+  //
+  // _voteNudgeSeenEntityIds (module-level, see its own comment): every
+  // entity already resolved this session -- shown, prefetched, or voted
+  // on -- excluded here too, so _advanceVoteNudge's own background refill
+  // actually advances to the next untried entities on every vote instead
+  // of re-probing ones already known, which otherwise kept the same
+  // handful occupying VOTE_NUDGE_SCAN_LIMIT's own probe window call after
+  // call.
+  //
+  // Probes at most VOTE_NUDGE_SCAN_LIMIT entries past both of those
+  // exclusions, stopping once `limit` qualifying (identifiable, not yet
+  // voted) ones are found -- returns fewer than `limit` (down to none) if
+  // that many simply don't exist within that probe budget.
+  async _scanVoteNudgeCandidates(limit) {
+    const seenEntities = new Set();
+    const candidates = [];
+    for (const entry of this._installLog) {
+      if (seenEntities.has(entry.entity_id)) continue;
+      seenEntities.add(entry.entity_id);
+      if (_voteNudgeSeenEntityIds.has(entry.entity_id)) continue;
+      if (daysSince(entry.installed_at) < 30) candidates.push(entry);
+    }
+    // Fisher-Yates, in place -- candidates is this scan's own fresh local
+    // array, never read elsewhere, nothing else depends on its order.
+    for (let i = candidates.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+    }
+    const found = [];
+    for (const entry of candidates.slice(0, VOTE_NUDGE_SCAN_LIMIT)) {
+      if (found.length >= limit) break;
+      // Local, instant, no round trip to anything external -- see
+      // _voteNudgeSeenJumps' own comment for why this is real device
+      // identity (manufacturer/model), not just the version string.
+      // Entries with no device at all (identity resolves to null -- a
+      // HACS/Core/app entity, not a physical device) have no sibling to
+      // worry about, so they're never excluded by this check.
+      const identity = await _deviceIdentityPromise(this._hass, entry.entity_id);
+      const jumpKey = identity ? `${identity.manufacturer}/${identity.model}::${entry.to_version}` : null;
+      if (jumpKey && _voteNudgeSeenJumps.has(jumpKey)) continue;
+      let result;
+      try {
+        result = await this._hass.callWS({
+          type: "update_manager/verdict_for_version",
+          entity_id: entry.entity_id,
+          version: entry.to_version,
+        });
+      } catch {
+        continue;
+      }
+      if (result.identifiable && !result.my_verdict) {
+        // Added the moment it's found, not only once actually voted on --
+        // this entity is now either shown or held in _voteNudgePrefetched,
+        // either way already accounted for, so a later scan has no
+        // reason to probe it again before that changes.
+        _voteNudgeSeenEntityIds.add(entry.entity_id);
+        if (jumpKey) _voteNudgeSeenJumps.add(jumpKey);
+        found.push({ entry, counts: result.verdict || { healthy_count: 0, problematic_count: 0 } });
+      }
+    }
+    return found;
+  }
+
+  // Called once a vote on the currently-shown candidate actually lands
+  // (healthy here, problematic via _openReportDialog's own onVoted).
+  // Promotes the already-prefetched next candidate instantly if one's
+  // ready -- no spinner, no round trip -- direct user feedback: voting
+  // used to always fall back to a full rescan, which, even fast, still
+  // showed the loader again right after the one moment it mattered most
+  // to feel instant. Silently refills the prefetch slot in the background
+  // afterward (already excluded from that scan via _voteNudgeSeenEntityIds,
+  // added the moment it was first found, see _scanVoteNudgeCandidates'
+  // own comment), so the *next* vote after this one gets the same
+  // instant treatment too, not just this one time.
+  //
+  // _voteNudgePrefetched is only ever null here because an earlier scan
+  // (the initial one, or a prior call to this same method) already
+  // looked and found nothing else, never because nothing's been checked
+  // yet -- a candidate only ever gets shown at all once that same scan
+  // has already run (see _buildUpdatesEmptyState). So null means "there
+  // genuinely isn't a next one", not "unknown" -- no rescan, no spinner,
+  // the whole section just hides, direct user feedback: showing a loader
+  // for an answer this already had was pure theater.
+  //
+  // Trusted as-is, no re-verify round trip before showing it -- tried
+  // that first, direct user feedback: a vote's own real propagation back
+  // through community-votes (it's processed via a GitHub Action) takes
+  // real minutes, nowhere near fast enough for a re-check run moments
+  // after voting to ever catch anything useful; it only added a pointless
+  // round trip in the one case (an identical sibling device) this file
+  // actually needs instant handling for. That case is instead prevented
+  // from ever being prefetched in the first place, by
+  // _scanVoteNudgeCandidates' own local, instant device-identity dedup
+  // (_voteNudgeSeenJumps) -- no vote, no propagation, no round trip
+  // needed to tell two identical devices apart from one already shown.
+  _advanceVoteNudge(container, tr) {
+    if (_voteNudgePrefetched) {
+      const { entry, counts } = _voteNudgePrefetched;
+      _voteNudgePrefetched = null;
+      _voteNudgeOutcome = { type: "candidate", entry, counts };
+      this._renderVoteNudgeCandidate(container, tr, entry, counts);
+      this._scanVoteNudgeCandidates(1).then((found) => {
+        if (this._tab !== "updates") return;
+        _voteNudgePrefetched = found[0] || null;
+      });
+      return;
+    }
+    _voteNudgeOutcome = { type: "none" };
+    container.closest(".vote-nudge-section")?.remove();
+  }
+
+  // Linked branch: one qualifying History entry, never a carousel/queue --
+  // deliberately: paging through several without having actually
+  // experienced each one would dilute the trust signal the whole
+  // community-verdict system leans on. The row is the exact same
+  // _buildListRow/ha-card shape a real History entry already uses
+  // (including its own click-to-dialog), not a hand-rolled lookalike.
+  // "Mark as healthy" votes immediately, same single-click weight
+  // _buildVoteControls' own healthyBtn already has (no extra fields a
+  // healthy vote could even use); on success _advanceVoteNudge takes
+  // over (see its own docstring), promoting an already-prefetched next
+  // candidate instantly whenever one's ready, no gap. "Report as
+  // problematic" instead opens _openReportDialog, landing directly on
+  // the real reason/notes/link form -- a useful vote needs that reason,
+  // so this section never submits one on its own without it;
+  // _advanceVoteNudge runs there too, once the report itself actually
+  // succeeds.
+  _renderVoteNudgeCandidate(container, tr, entry, counts) {
+    container.innerHTML = "";
+
+    const card = document.createElement("ha-card");
+    card.outlined = true;
+    const list = document.createElement("ha-list-base");
+    list.appendChild(
+      this._buildListRow(entry.entity_id, `${entry.from_version} → ${entry.to_version}`, () =>
+        this._openDetailDialog(entry.entity_id, entry)
+      )
+    );
+    card.appendChild(list);
+
+    // Part of this same card, right under the row it's about -- not a
+    // free-floating pair of buttons below it. Icon-only (verdictIcon(),
+    // the exact same healthy/problematic pairing the read-only verdict
+    // badge elsewhere on this tab already uses), labeled with the real
+    // existing vote count for each side instead of a text label -- a real
+    // label ("Mark as healthy"/"Report as problematic") made these far
+    // too big for a secondary, compact nudge, and this data (result.verdict,
+    // from the same verdict_for_version call that already found this
+    // candidate) was otherwise being thrown away. aria-label (the full
+    // sentence, reusing community_verdict_healthy/problematic -- not just
+    // the visible count) carries the accessible name/native tooltip.
+    const actions = document.createElement("div");
+    actions.className = "vote-nudge-actions";
+    card.appendChild(actions);
+    container.appendChild(card);
+
+    const healthyBtn = document.createElement("ha-progress-button");
+    healthyBtn.appearance = "filled";
+    healthyBtn.size = "s";
+    healthyBtn.iconPath = verdictIcon(false);
+    // Zero stays icon-only (centered, no "0" reading like an error) --
+    // only a real count earns a visible label.
+    if (counts.healthy_count > 0) healthyBtn.label = String(counts.healthy_count);
+    healthyBtn.setAttribute("aria-label", tr.community_verdict_healthy(counts.healthy_count));
+    healthyBtn.addEventListener("click", () =>
+      _runProgressAction(healthyBtn, async () => {
+        let result;
+        try {
+          result = await this._hass.callWS({
+            type: "update_manager/vote",
+            entity_id: entry.entity_id,
+            version: entry.to_version,
+            verdict: "healthy",
+          });
+        } catch (err) {
+          this._showToast(describeLoadError(err));
+          throw err;
+        }
+        this._showToast(tr.community_vote_confirmed_healthy(result.updated, result.own_repo_healthy_vote));
+        // 2000ms, matching ha-progress-button's own real built-in
+        // success-checkmark window (verified against its real source), so
+        // the next candidate (_advanceVoteNudge, promoted instantly from
+        // the already-prefetched one, no spinner) doesn't replace this
+        // one out from under that checkmark before the user actually
+        // sees it.
+        setTimeout(() => this._advanceVoteNudge(container, tr), 2000);
+      })
+    );
+    actions.appendChild(healthyBtn);
+
+    const reportBtn = document.createElement("ha-button");
+    reportBtn.appearance = "filled";
+    reportBtn.size = "s";
+    // Zero stays icon-only (centered, no "0" reading like an error) --
+    // only a real count earns a visible label. Set before the icon below
+    // (appended after, not wiped by it) -- see that append's own comment.
+    if (counts.problematic_count > 0) reportBtn.textContent = String(counts.problematic_count);
+    reportBtn.setAttribute("aria-label", tr.community_verdict_problematic(counts.problematic_count));
+    const reportIcon = document.createElement("ha-svg-icon");
+    reportIcon.slot = "start";
+    reportIcon.path = verdictIcon(true);
+    reportBtn.appendChild(reportIcon);
+    reportBtn.addEventListener("click", () =>
+      this._openReportDialog(entry.entity_id, entry, () => this._advanceVoteNudge(container, tr))
+    );
+    actions.appendChild(reportBtn);
+  }
+
   // Own card per entry, not one shared list (changed 2026-07-21, direct
   // user feedback: wanted the same "white card, border, breathing room
   // between rows" look the per-entity dialog's own history cards already
@@ -4912,12 +5433,10 @@ class UpdateManagerPanel extends HTMLElement {
   _buildHistoryList() {
     const tr = this._tr;
     if (!this._installLog.length) {
-      // Same buildEmptyStateCard the Updates tab's own empty state uses
-      // (which already matches ha-config-section-updates.ts's real source
-      // exactly) -- direct user feedback, 2026-07-27: a bare, cardless line
-      // of text here read as inconsistent with both that tab and with
-      // every other History entry on this same tab, which is always its
-      // own ha-card.
+      // buildEmptyStateCard matches ha-config-section-updates.ts's real
+      // source exactly -- direct user feedback, 2026-07-27: a bare,
+      // cardless line of text here read as inconsistent with every other
+      // History entry on this same tab, which is always its own ha-card.
       return buildEmptyStateCard(tr.history_empty);
     }
 
@@ -5685,7 +6204,11 @@ class UpdateManagerPanel extends HTMLElement {
       const step = addStep("var(--primary-color)", ICON_CLOCK_OUTLINE, tr.installing_section_title);
       addDetail(
         step,
-        isQueuedInRollout ? tr.rollout_queue_waiting(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId)) : tr.tier_waiting_text
+        isQueuedInRollout
+          ? tr.waiting_for_entity(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId))
+          : tierBlockingEntityId
+            ? tr.waiting_for_entity(friendlyEntityName(this._hass, tierBlockingEntityId))
+            : tr.tier_waiting_text
       );
       addAction(step, tr.cancel_auto_install, async () => {
         await this._hass.callWS({ type: "update_manager/cancel_queued", entity_id: entityId });
@@ -5982,6 +6505,12 @@ class UpdateManagerPanel extends HTMLElement {
     // Cancel equivalent, since tier-blocking is a live, continuously
     // re-evaluated gate, not a queue position to leave.
     const isTierWaiting = !!(showPendingUpdate && this._tierWaiting.has(entityId));
+    // The specific entity_id isTierWaiting is actually waiting on (or
+    // null for the tier gate's own rare "nothing currently blocks it, by
+    // this exact snapshot" case, see rollout_manager.py's own
+    // tier_blocked_entity_ids) -- read straight from this._tierWaiting.get,
+    // only meaningful alongside isTierWaiting itself.
+    const tierBlockingEntityId = isTierWaiting ? this._tierWaiting.get(entityId) : null;
 
     // Hoisted above the header, direct user feedback 2026-07-29: the
     // header's own brief .state value always shows the plain status
@@ -8233,29 +8762,33 @@ class UpdateManagerPanel extends HTMLElement {
       }
     };
 
-    const submitVote = async (verdict, extra) => {
-      try {
-        // Returns whether this replaced an earlier vote of yours (see
-        // websocket_api.py's own is_vote_update), not derived here --
-        // community-votes' own process-vote.yml now updates a repeat vote
-        // in place instead of rejecting it as a duplicate (2026-07-23).
-        return await this._hass.callWS({ type: "update_manager/vote", entity_id: entityId, version, verdict, ...extra });
-      } catch (err) {
-        this._showToast(describeLoadError(err));
-        throw err;
-      }
-    };
-
     const formContainer = document.createElement("div");
     formContainer.hidden = true;
 
     if (allowHealthy && myVerdict !== "healthy") {
       const healthyBtn = document.createElement("ha-progress-button");
       healthyBtn.appearance = "filled";
+      // Same size as the Updates tab's own vote-nudge card (_renderVoteNudgeCandidate's
+      // own healthyBtn) -- direct user feedback: these two buttons answer
+      // the exact same question, so they should read as the same size of
+      // action wherever either one shows up.
+      healthyBtn.size = "s";
+      // Same verdictIcon() the read-only verdict badge elsewhere on this
+      // tab already uses for this exact healthy/problematic pairing (thumb
+      // up vs. alert) -- ha-progress-button's own real source (verified)
+      // exposes iconPath as a plain reactive property, not a slotted
+      // child, unlike toggleBtn's own plain ha-button below.
+      healthyBtn.iconPath = verdictIcon(false);
       healthyBtn.label = tr.community_vote_healthy;
       healthyBtn.addEventListener("click", () =>
         _runProgressAction(healthyBtn, async () => {
-          const result = await submitVote("healthy", {});
+          let result;
+          try {
+            result = await this._hass.callWS({ type: "update_manager/vote", entity_id: entityId, version, verdict: "healthy" });
+          } catch (err) {
+            this._showToast(describeLoadError(err));
+            throw err;
+          }
           onVoted?.("healthy", null);
           showConfirmed(tr.community_vote_confirmed_healthy(result.updated, result.own_repo_healthy_vote));
         })
@@ -8288,10 +8821,11 @@ class UpdateManagerPanel extends HTMLElement {
     // since 2026-08-14).
     const toggleBtn = document.createElement("ha-button");
     toggleBtn.appearance = allowHealthy ? "filled" : "outlined";
-    // "s" for Journey A only, matching addAction's own buttons right next
-    // to it there (direct user feedback, 2026-11-05); Journey B (History)
-    // keeps the default size, untouched by this same pass.
-    if (!allowHealthy) toggleBtn.size = "s";
+    // "s" everywhere now, not just Journey A -- matches healthyBtn right
+    // next to it (both journeys) and the Updates tab's own vote-nudge
+    // card, direct user feedback: same size wherever this same action
+    // shows up.
+    toggleBtn.size = "s";
     // GitHub issue #7: this button stays visible even after an already-cast
     // problematic vote (see the comment block above), but it used to keep
     // showing the exact same "not yet voted" label, giving no sign the vote
@@ -8306,6 +8840,14 @@ class UpdateManagerPanel extends HTMLElement {
         : allowHealthy
         ? tr.community_vote_problematic
         : tr.community_report_toggle;
+    // Appended after textContent above (which would otherwise wipe it) --
+    // a plain ha-button has no iconPath property of its own the way
+    // ha-progress-button does (verified against both real sources), so a
+    // slotted child is the real mechanism here instead.
+    const toggleIcon = document.createElement("ha-svg-icon");
+    toggleIcon.slot = "start";
+    toggleIcon.path = verdictIcon(true);
+    toggleBtn.appendChild(toggleIcon);
     toggleBtn.addEventListener("click", () => {
       formContainer.hidden = !formContainer.hidden;
       if (viewEl) viewEl.hidden = !formContainer.hidden;
@@ -8313,15 +8855,38 @@ class UpdateManagerPanel extends HTMLElement {
     (actionsRow || container).appendChild(toggleBtn);
     container.appendChild(formContainer);
 
+    this._buildProblematicForm(formContainer, tr, entityId, version, allowHealthy, myReason, (formData, result) => {
+      onVoted?.("problematic", formData);
+      const reasonLabel = tr[_VOTE_REASON_LABEL_KEYS[formData.reason_category]];
+      showConfirmed(tr.community_vote_confirmed_problematic(reasonLabel, result.updated), formData);
+    });
+  }
+
+  // The reason/notes/link mini-form for a "problematic" vote, plus its
+  // submit wiring straight to update_manager/vote -- shared by
+  // _buildVoteControls' own inline toggle (Journey A/B, above) and
+  // _openReportDialog's own standalone view (the Updates tab's vote-nudge,
+  // below), the two different places this exact form actually shows up.
+  // onSubmitted(formData, result) only runs once that call actually
+  // succeeds; what happens next (an inline confirmation replacing the
+  // whole section, or closing a dedicated dialog) is each caller's own
+  // call, not this method's.
+  // actionsContainer (optional): where the submit button itself lands,
+  // separate from the rest of the form (container) -- null for
+  // _buildVoteControls' own inline toggle (the button stays right under
+  // the form, inside the same collapsible formContainer, unchanged);
+  // _openReportDialog instead hands its own dialog footer (slot="footer"),
+  // so Submit sits in the dialog's real footer area, not the page content.
+  _buildProblematicForm(container, tr, entityId, version, allowHealthy, myReason, onSubmitted, actionsContainer = null) {
     if (!allowHealthy) {
       const intro = document.createElement("p");
       intro.className = "hint";
       intro.textContent = tr.community_report_intro;
-      formContainer.appendChild(intro);
+      container.appendChild(intro);
     }
 
     // Reason options limited to the three release-notes-knowable ones
-    // for Journey A (see this method's own docstring above) -- "broken
+    // for Journey A (see _buildVoteControls' own docstring) -- "broken
     // functionality" and "other" both require having actually run the
     // version, which Journey A's caller never has.
     const reasonOptions = (allowHealthy ? _JOURNEY_B_REASON_ORDER : _JOURNEY_A_REASON_ORDER).map((value) => ({
@@ -8350,7 +8915,7 @@ class UpdateManagerPanel extends HTMLElement {
       Object.assign(formData, e.detail.value);
       form.data = { ...formData };
     });
-    formContainer.appendChild(form);
+    container.appendChild(form);
 
     const submitBtn = document.createElement("ha-progress-button");
     submitBtn.appearance = "filled";
@@ -8361,17 +8926,138 @@ class UpdateManagerPanel extends HTMLElement {
           this._showToast(tr.community_vote_reason_required);
           throw new Error("reason_category required");
         }
-        const result = await submitVote("problematic", {
-          reason_category: formData.reason_category,
-          notes: formData.notes || undefined,
-          link: formData.link || undefined,
-        });
-        onVoted?.("problematic", formData);
-        const reasonLabel = tr[_VOTE_REASON_LABEL_KEYS[formData.reason_category]];
-        showConfirmed(tr.community_vote_confirmed_problematic(reasonLabel, result.updated), formData);
+        let result;
+        try {
+          result = await this._hass.callWS({
+            type: "update_manager/vote",
+            entity_id: entityId,
+            version,
+            verdict: "problematic",
+            reason_category: formData.reason_category,
+            notes: formData.notes || undefined,
+            link: formData.link || undefined,
+          });
+        } catch (err) {
+          this._showToast(describeLoadError(err));
+          throw err;
+        }
+        onSubmitted(formData, result);
       })
     );
-    formContainer.appendChild(submitBtn);
+    (actionsContainer || container).appendChild(submitBtn);
+  }
+
+  // A minimal, standalone view in the shared dialog element -- just the
+  // entity/version being judged plus the real reason/notes/link form
+  // (_buildProblematicForm), no toggle needed since arriving here already
+  // means "report a problem". Content-swap, not a second, stacked dialog
+  // on top of the normal one: this panel reuses one single
+  // ha-adaptive-dialog throughout (see _ensureShell), and a real second
+  // dialog instance would need its own backdrop/focus handling built from
+  // scratch for no clear benefit here (HA's own frontend does support
+  // stacking dialogs, but only through its separate showDialog() manager,
+  // which this hand-built panel never uses). Built as its own callable
+  // method specifically so it can be reused from elsewhere later
+  // (Journey A's timeline, Journey B's History rows, both of which still
+  // use their own inline toggle today), not just the Updates tab's
+  // vote-nudge, its only caller for now. onVoted (optional) runs once the
+  // report actually succeeds, letting the caller clean up its own UI
+  // (the nudge removes itself) without this method needing to know
+  // anything about where it was opened from.
+  _openReportDialog(entityId, entry, onVoted = null) {
+    const tr = this._tr;
+    const dialog = this._dialogEl;
+    // Invalidates any in-flight async work tied to whatever the shared
+    // dialog element was last showing (the normal detail dialog's own
+    // release-notes/community-section fetches, see _openDetailDialog's
+    // own isDialogStale) -- the same reset _ensureShell's own "closed"
+    // listener already does for a real close, needed here too since this
+    // view replaces that content without ever going through that listener.
+    this._dialogEntityId = null;
+    this._dialogHistoryEntry = null;
+    dialog.innerHTML = "";
+
+    // The action itself, not the entity name -- the entity/jump is shown
+    // again, in full, right below (the same .dialog-header shape the real
+    // detail dialog's own header already uses, see below), so opening
+    // this view always answers "what am I reporting, and on what action"
+    // at a glance, not just one or the other.
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "dialog-title";
+    titleSpan.slot = "headerTitle";
+    titleSpan.textContent = tr.community_vote_problematic;
+    dialog.appendChild(titleSpan);
+
+    const body = document.createElement("div");
+    body.className = "card-content";
+
+    // The exact same .dialog-header/-info/-name/-identity classes the
+    // real detail dialog's own header already uses (_buildDialogHeaderShell) --
+    // a real entity is genuinely involved here, so literal class reuse
+    // applies this time, not just a matching recipe the way
+    // _buildUpdatesEmptyState's own dedicated classes do. Not built via
+    // that shell method directly: it always requires a statusBadgeEl,
+    // which has no equivalent here. -identity (small secondary text under
+    // the name) fits the version jump perfectly as-is, not repurposed.
+    // Not clickable, direct user feedback: unlike the nudge's own row,
+    // this is purely "what you're reporting on" context, not a navigation
+    // affordance.
+    const header = document.createElement("div");
+    header.className = "dialog-header";
+    const stateBadge = document.createElement("state-badge");
+    stateBadge.stateObj = entityState(this._hass, entityId);
+    header.appendChild(stateBadge);
+    const info = document.createElement("div");
+    info.className = "dialog-header-info";
+    const nameEl = document.createElement("div");
+    nameEl.className = "dialog-header-name";
+    nameEl.textContent = friendlyEntityName(this._hass, entityId);
+    info.appendChild(nameEl);
+    const jumpEl = document.createElement("div");
+    jumpEl.className = "dialog-header-identity";
+    jumpEl.textContent = `${entry.from_version} → ${entry.to_version}`;
+    info.appendChild(jumpEl);
+    header.appendChild(info);
+    body.appendChild(header);
+
+    // Real footer (slot="footer"), not inline page content -- same
+    // mechanism _openDetailDialog's own actions row already uses for its
+    // Skip/Open update buttons.
+    const footer = document.createElement("div");
+    footer.slot = "footer";
+
+    // allowHealthy=true, myReason=null: same Journey B reason set as
+    // History's own already-installed entries (this always is one), and
+    // nothing to pre-fill -- the nudge only ever offers an entry with no
+    // my_verdict at all yet (see _buildUpdatesEmptyState's own scan).
+    this._buildProblematicForm(
+      body,
+      tr,
+      entityId,
+      entry.to_version,
+      true,
+      null,
+      (formData, result) => {
+        body.innerHTML = "";
+        footer.innerHTML = "";
+        const reasonLabel = tr[_VOTE_REASON_LABEL_KEYS[formData.reason_category]];
+        const confirmed = document.createElement("p");
+        confirmed.className = "dialog-community-confirmed";
+        confirmed.textContent = tr.community_vote_confirmed_problematic(reasonLabel, result.updated);
+        body.appendChild(confirmed);
+        body.appendChild(buildReasonItem(tr, formData));
+        onVoted?.();
+      },
+      footer
+    );
+
+    dialog.appendChild(body);
+    dialog.appendChild(footer);
+    // No 200ms pop-in delay the way _openDetailDialog's own open uses --
+    // that exists to cover async fetches (release notes, community
+    // verdict) landing right after open and shifting layout; this view
+    // has none, everything above renders synchronously.
+    dialog.open = true;
   }
 
   // "Update rules": plain and functional -- the earlier traffic-light
@@ -8810,22 +9496,25 @@ class UpdateManagerPanel extends HTMLElement {
          special-casing here at all. */
       .content--groups .loading, .content--form .loading, .content--list .loading { padding: 0; }
       ha-list-base { display: block; }
-      /* Confirmed against ha-config-updates.ts's real static styles: without
-         this, the "start" slot's own layout box doesn't actually match
-         state-badge's real, hardcoded 40x40px size (see state-badge.ts),
-         so the icon rendered inside it wasn't vertically centered. */
-      ha-list-item-button { --md-list-item-leading-icon-size: 40px; }
-      /* Found live, 2026-08-11, direct user feedback: even with the fix
-         above, this slot's own box (md-list-item's internal layout stretches
-         it to the row's full height, 46px, not just the 40px icon-size
-         variable) still didn't match state-badge's fixed 40x40 -- e.g. a
-         genuine entity picture/logo, not just an mdi icon, sat pinned to
-         the top of that taller box instead of centered in it. HA's own
-         reference CSS (ha-config-updates.ts) has this exact same gap, just
-         apparently unnoticed there. Pinning the height to match
-         state-badge's own real size directly, rather than centering within
-         the extra 6px, removes the mismatch outright instead of working
-         around it. */
+      /* Found live, 2026-08-11, direct user feedback: this slot's own box
+         (its internal layout used to stretch it to the row's full height,
+         46px, not state-badge's own real, hardcoded 40x40px size, see
+         state-badge.ts) didn't match otherwise -- e.g. a genuine entity
+         picture/logo, not just an mdi icon, sat pinned to the top of that
+         taller box instead of centered in it. HA's own reference CSS
+         (ha-config-updates.ts) has this exact same gap, just apparently
+         unnoticed there. Pinning the height to match state-badge's own
+         real size directly, rather than centering within the extra 6px,
+         removes the mismatch outright instead of working around it. This
+         used to need a second rule alongside it (--md-list-item-leading-icon-size
+         on ha-list-item-button, matching the slot's own box to that same
+         40px first) -- removed 2026.11: ha-md-list-item (and every
+         --md-list-item-* property with it) was removed from HA's own
+         frontend that release (contributors.home-assistant.io/blog,
+         "Frontend component updates in 2026.11"), already acknowledged
+         back in 2026-08-11 as insufficient on its own anyway (see this
+         same comment's own history) -- this one rule already did the real
+         work by itself. Not yet live-verified against 2026.11 itself. */
       div[slot="start"] { position: relative; height: 40px; }
       .row-end { display: flex; align-items: center; gap: var(--ha-space-2, 8px); }
       /* _buildTimerPill, a real ha-badge now (see its own comment). Not a
@@ -9195,6 +9884,80 @@ class UpdateManagerPanel extends HTMLElement {
          (see _buildHistoryList) reuses this same class/markup shape, not
          just the Updates tab's. */
       .no-updates { padding: 16px; }
+      /* The Updates tab's own two empty states (_buildUpdatesEmptyState):
+         same visual recipe as the detail dialog's own .dialog-header --
+         big centered icon, bold title, text below -- its own dedicated
+         classes, not literally shared ones (that header's real markup is
+         built around a live entity's state-badge, which doesn't apply
+         here at all). */
+      .empty-state-header {
+        display: flex; flex-direction: column; align-items: center; text-align: center;
+        gap: var(--ha-space-2, 8px); padding: var(--ha-space-6, 24px) var(--ha-space-4, 16px);
+      }
+      .empty-state-icon { --mdc-icon-size: 48px; color: var(--ha-color-on-success-normal); }
+      .empty-state-title {
+        color: var(--primary-text-color);
+        font-size: var(--ha-font-size-xl, 20px); font-weight: var(--ha-font-weight-bold, 700);
+      }
+      /* Same values as .hint elsewhere in this file, not a new size of its
+         own -- this is that same secondary, de-emphasized role, just
+         centered here instead of left-aligned. */
+      .empty-state-text {
+        color: var(--secondary-text-color); font-size: var(--ha-font-size-s, 13px);
+        line-height: 1.4; max-width: 400px;
+      }
+      /* The vote-nudge section underneath (same method): a plain heading
+         (.history-section-heading, the same class the History tab's own
+         "Today"/"This week" headings use) plus a real History-row-shaped
+         card, not another ha-card wrapping the whole section -- same
+         600px width cap as every other card on this tab, applied to this
+         wrapper itself since it's a plain div the existing per-ha-card
+         selector above doesn't reach. */
+      /* Own trailing margin-bottom, same token the shared ha-card/ha-alert
+         rule above gives every other card -- this page's own trailing
+         space always comes from whatever its own actual last element is
+         (see that rule's own comment), and a plain div here doesn't match
+         that selector at all (ha-card/ha-alert only). */
+      .vote-nudge-section { max-width: 600px; margin: 0 auto var(--ha-space-6, 24px); }
+      .vote-nudge-section ha-card { width: 100%; }
+      /* The shared .update-groups-outer ha-list-base rule further below
+         (margin-bottom: 8px, meant for the normal Updates-tab list rows)
+         still applies here too -- this card's own list is one more
+         descendant of .update-groups-outer. Zeroed here specifically:
+         left in place, it stacked with .vote-nudge-actions' own top
+         padding below for a visibly bigger gap than intended. */
+      .vote-nudge-section ha-list-base { margin-bottom: 0; }
+      /* Part of the row's own card (see _renderVoteNudgeCandidate), not a
+         sibling below it -- its own padding since it's not using the
+         .card-content class (that'd be zeroed by .update-groups-outer
+         .card-content above, same reasoning _buildUpdatesEmptyState's own
+         nudgeBody already ran into). Almost no top padding on purpose,
+         full padding on the rest -- direct user feedback: this row+buttons
+         pair should read as one unit, not two separately-spaced blocks. */
+      .vote-nudge-actions {
+        display: flex; align-items: center; gap: var(--ha-space-2, 8px);
+        padding: var(--ha-space-1, 4px) var(--ha-space-4, 16px) var(--ha-space-4, 16px);
+      }
+      /* Each button fills half the row (flex: 1), icon-only, no visible
+         label -- a real label on each made these too big; see
+         _renderVoteNudgeCandidate's own comment for why icon-only instead.
+         --ha-space-1: 0 specifically neutralizes ha-button's own real
+         source (verified against @home-assistant/webawesome's
+         button.styles.js): slot[name="start"]::slotted(*) always adds
+         margin-inline-end using this exact token, meant as the gap before
+         a label -- with no label at all, that leftover margin visibly
+         pushed the icon off from the base .button's own already-centered
+         (justify-content: center) layout. Set here, not ::part(start):
+         ha-progress-button's own template never exportparts its inner
+         ha-button (confirmed against its real source), so no ::part()
+         chain reaches that deep from outside either component; a plain
+         custom property is the only thing that actually cascades through
+         both shadow boundaries down to it. */
+      .vote-nudge-actions ha-progress-button,
+      .vote-nudge-actions ha-button {
+        flex: 1;
+        --ha-space-1: 0px;
+      }
 
       /* History tab: one outlined ha-card per entry (see _buildHistoryList),
          same 600px width as the Updates/Settings cards above, grouped under

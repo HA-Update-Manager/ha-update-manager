@@ -470,8 +470,13 @@ export const TRANSLATIONS = {
     // is queued (not yet its turn): no override, direct user feedback,
     // the queue must stay authoritative, not something a hurried click can
     // jump. "...to finish" (not just the bare name) -- direct user
-    // feedback, 2026-08-09: read ambiguously on its own.
-    rollout_queue_waiting: (name) => `Waiting for ${name} to finish`,
+    // feedback, 2026-08-09: read ambiguously on its own. Shared by the
+    // disruption-order tier gate's own "waiting" badge too, 2026-11-13
+    // (install_tiers.py, a separate gate from the Zigbee rollout queue
+    // this was originally written for) -- same "name the one thing you're
+    // actually waiting on" phrasing fits either gate equally well, no
+    // gate-specific wording to duplicate for the second one.
+    waiting_for_entity: (name) => `Waiting for ${name} to finish`,
     // Community-verdict fact rows (see communityVerdictLines for how these
     // get picked), read-only slice added 2026-07-22:
     // https://github.com/HA-Update-Manager/community-votes. Redesigned
@@ -516,13 +521,25 @@ export const TRANSLATIONS = {
     // logica niet overgenomen?".
     group_skipped: (count) => `${count} ${count === 1 ? "skipped update" : "skipped updates"}`,
     group_not_installable: (count) => `${count} ${count === 1 ? "not installable update" : "not installable updates"}`,
-    updates_empty: "No updates need attention, everything is up to date.",
+    // Shared by both empty states below (genuinely nothing left, or
+    // everything hidden by choice) -- direct user feedback: hiding
+    // skipped/not-installable updates is itself a deliberate choice, so
+    // "done" is still the honest headline experience either way; the body
+    // text right under it is what actually carries the distinction (and,
+    // for the filtered case, that those updates still genuinely exist).
+    updates_empty_title: "All caught up!",
+    updates_empty: "You're all caught up, nothing needs your attention right now.",
     // Shown instead of updates_empty whenever there genuinely are updates
     // but every one of them is currently hidden by the overflow (⋮) menu's
     // own Show skipped/Show not installable toggles -- direct user
     // feedback: with both switched off, the tab used to render nothing at
     // all, no message, indistinguishable from an actual empty state.
     updates_hidden_by_filter: "Every update is currently hidden. Open the ⋮ menu to show skipped or not installable updates.",
+    // The vote-nudge section underneath either empty state above (see
+    // _buildUpdatesEmptyState/_renderVoteNudgeCandidate) -- a direct
+    // question about the user's own experience with the update, not a
+    // flat instruction, matching the row+buttons right under it.
+    vote_nudge_heading: "How did this update treat you?",
     history_empty: "No updates logged yet.",
     // History's own date sections (see historySections), relative rather
     // than a fixed calendar date range in the heading itself, same spirit
@@ -759,7 +776,7 @@ export const TRANSLATIONS = {
       "Is dit een batterij-gevoed apparaat? Dan moet het misschien eerst wakker gemaakt worden (bijvoorbeeld door op een knopje op het apparaat te drukken) voordat de update daadwerkelijk kan starten.",
     dialog_stuck_body_neutral: "Dit kan nog gewoon goedkomen. Wil je niet langer wachten, dan gaat de rest van de wachtrij verder.",
     dialog_stop_waiting: "Stop met wachten",
-    rollout_queue_waiting: (name) => `Wacht tot ${name} klaar is`,
+    waiting_for_entity: (name) => `Wacht tot ${name} klaar is`,
     community_verdict_healthy: (count) =>
       `${count} ${count === 1 ? "persoon meldt" : "mensen melden"} deze sprong als probleemloos.`,
     community_verdict_problematic: (count) =>
@@ -777,8 +794,10 @@ export const TRANSLATIONS = {
     group_skipped: (count) => `${count} ${count === 1 ? "overgeslagen update" : "overgeslagen updates"}`,
     group_not_installable: (count) =>
       `${count} ${count === 1 ? "niet installeerbare update" : "niet installeerbare updates"}`,
-    updates_empty: "Geen updates die aandacht nodig hebben, alles is up-to-date.",
+    updates_empty_title: "Helemaal bij!",
+    updates_empty: "Je bent helemaal bij, niets heeft nu je aandacht nodig.",
     updates_hidden_by_filter: "Alle updates zijn nu verborgen. Open het ⋮-menu om overgeslagen of niet-installeerbare updates te tonen.",
+    vote_nudge_heading: "Hoe is deze update bevallen?",
     history_empty: "Nog geen updates gelogd.",
     history_section_today: "Vandaag",
     history_section_yesterday: "Gisteren",
