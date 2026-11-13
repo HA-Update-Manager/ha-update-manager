@@ -3193,6 +3193,32 @@ class UpdateManagerPanel extends HTMLElement {
     return notes;
   }
 
+  // Same cache, a "z2mota" key prefix -- the dialog's own final fallback,
+  // called whenever neither _fetchNativeReleaseNotes nor
+  // _fetchGithubReleaseNotesFallback had anything at all (Zigbee2MQTT never
+  // surfaces its own OTA-check release notes through the generic MQTT
+  // update entity, confirmed against its real source -- see
+  // websocket_api.py's own _handle_zigbee_ota_release_notes docstring for
+  // the full reasoning). Not gated here on entity/integration type at
+  // all, deliberately -- called unconditionally below for every entity
+  // that reaches this point with nothing else to show; the backend's own
+  // exact-match rule (model_id + fileVersion, see
+  // zigbee_ota_release_notes.py) is already the real, cheap no-op for
+  // anything that isn't a genuine match.
+  async _fetchZigbeeOtaReleaseNotesFallback(entityId, fromVersion, toVersion) {
+    const cacheKey = `z2mota:${entityId}:${fromVersion}:${toVersion}`;
+    if (this._releaseNotesCache.has(cacheKey)) return this._releaseNotesCache.get(cacheKey);
+    let result;
+    try {
+      result = await this._hass.callWS({ type: "update_manager/zigbee_ota_release_notes", entity_id: entityId });
+    } catch {
+      return { notes: null, sourceUrl: null };
+    }
+    const resolved = { notes: (result && result.release_notes) || null, sourceUrl: (result && result.source_url) || null };
+    this._releaseNotesCache.set(cacheKey, resolved);
+    return resolved;
+  }
+
   // "Also see: OWNER/REPO's own release notes" -- direct user feedback,
   // 2026-08-02: many add-ons are thin wrappers around an external upstream
   // project, and their own release notes are often just a one-line "bumped
@@ -6506,9 +6532,16 @@ class UpdateManagerPanel extends HTMLElement {
               releaseUrl, u.installed_version, u.latest_version, entityId
             ));
           }
+          // Last resort, see _fetchZigbeeOtaReleaseNotesFallback's own
+          // comment -- harmless no-op for anything that isn't a genuine
+          // Zigbee2MQTT device.
+          let sourceUrl = null;
+          if (!finalNotes) {
+            ({ notes: finalNotes, sourceUrl } = await this._fetchZigbeeOtaReleaseNotesFallback(entityId, u.installed_version, u.latest_version));
+          }
           const { linkUrl } = await withCoreAnnouncement(correctedUrl);
           if (loader) loader.remove();
-          if (!isDialogStale() && (finalNotes || releaseUrl)) appendReleaseNotesSection(finalNotes, linkUrl);
+          if (!isDialogStale() && (finalNotes || releaseUrl || sourceUrl)) appendReleaseNotesSection(finalNotes, linkUrl || sourceUrl);
         });
       } else {
         const releaseSummary = state && state.attributes && state.attributes.release_summary;
@@ -6530,9 +6563,17 @@ class UpdateManagerPanel extends HTMLElement {
           this._fetchGithubReleaseNotesFallback(
             releaseUrl, u.installed_version, u.latest_version, entityId
           ).then(async ({ notes, correctedUrl }) => {
+            let finalNotes = notes;
+            // Last resort, see _fetchZigbeeOtaReleaseNotesFallback's own
+            // comment -- harmless no-op for anything that isn't a genuine
+            // Zigbee2MQTT device.
+            let sourceUrl = null;
+            if (!finalNotes) {
+              ({ notes: finalNotes, sourceUrl } = await this._fetchZigbeeOtaReleaseNotesFallback(entityId, u.installed_version, u.latest_version));
+            }
             const { linkUrl } = await withCoreAnnouncement(correctedUrl);
             if (loader) loader.remove();
-            if (!isDialogStale() && (notes || releaseUrl)) appendReleaseNotesSection(notes, linkUrl);
+            if (!isDialogStale() && (finalNotes || releaseUrl || sourceUrl)) appendReleaseNotesSection(finalNotes, linkUrl || sourceUrl);
           });
         }
       }

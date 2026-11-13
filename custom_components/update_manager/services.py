@@ -23,6 +23,12 @@ pipeline. Mirrors every step, in the same order:
   2. Falls back to the GitHub-compiled range whenever step 1 has nothing
      (async_fetch_github_release_notes, already shared with
      websocket_api.py's own dialog-facing handler).
+  2b. Still empty after that, one last lookup/range-compile against
+      zigpy-ota's own native OTA index (zigbee_ota_release_notes.py, a
+      port of the dialog's own final fallback call to
+      update_manager/zigbee_ota_release_notes; see that module's own
+      docstring for the matching rule, not gated on entity/integration
+      type).
   3. Trims whichever of the two actually produced something down to just
      this jump (changelog_trim.py, a port of _trimChangelogToVersion).
   4. Chases exactly one embedded external upstream release reference, if
@@ -58,6 +64,9 @@ from .release_notes_decoration import decorate_release_notes
 from .runtime_data import UpdateManagerData
 from .runtime_data import get_data as _get_data
 from .websocket_api import async_fetch_core_announcement, async_fetch_github_release_notes
+from .zigbee import device_for_entity
+from .zigbee_ota_index import async_get_zigbee_ota_index
+from .zigbee_ota_release_notes import find_zigbee_ota_release_notes
 
 _SERVICE_SCHEMA = vol.Schema(
     {
@@ -183,6 +192,32 @@ def async_setup_services(hass: HomeAssistant) -> None:
         upstream_notes = decorate_release_notes(upstream_notes, found.owner, found.repo)
         return f"{notes}\n\n---\n\n**{found.owner}/{found.repo}'s own release notes:**\n\n{upstream_notes}"
 
+    async def _async_zigbee_ota_fallback(entity_id: str, from_version: str | None, to_version: str | None) -> str | None:
+        """Mirrors update-manager-panel.js's own final release-notes
+        fallback call (update_manager/zigbee_ota_release_notes) -- matched
+        against zigpy-ota's own native OTA index. See that websocket
+        handler's own docstring, and zigbee_ota_release_notes.py's own
+        module docstring, for the full reasoning (including why this is
+        deliberately not gated on entity/integration type, and how a
+        from_version/to_version range gets compiled). None for anything
+        that isn't a genuine, unambiguous match, same graceful "nothing to
+        add" treatment as every other fallback in this pipeline."""
+        device = device_for_entity(hass, entity_id)
+        if device is None:
+            return None
+
+        def _as_int(value: str | None) -> int | None:
+            try:
+                return int(value) if value is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        index = await async_get_zigbee_ota_index(hass)
+        match = find_zigbee_ota_release_notes(
+            index, device.manufacturer, device.model_id, _as_int(from_version), _as_int(to_version)
+        )
+        return match.release_notes if match else None
+
     async def _async_get_release_notes(call: ServiceCall) -> ServiceResponse:
         data = _data_or_raise()
         entity_id = call.data[ATTR_ENTITY_ID]
@@ -228,6 +263,8 @@ def async_setup_services(hass: HomeAssistant) -> None:
             # copy of that logic.
             result = await async_fetch_github_release_notes(hass, release_url, access_token, from_version, to_version)
             notes, owner, repo, corrected_url = (None, None, None, None) if result is None else result
+            if not notes:
+                notes = await _async_zigbee_ota_fallback(entity_id, from_version, to_version)
 
         # Trim -> chase an embedded upstream release -> decorate, same
         # order and same "operates on the undecorated, already-trimmed

@@ -75,6 +75,8 @@ from .github_release_notes import find_release_by_version, parse_release_url, se
 from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
 from .zigbee import device_for_entity, zigbee2mqtt_device_url
+from .zigbee_ota_index import async_get_zigbee_ota_index
+from .zigbee_ota_release_notes import find_zigbee_ota_release_notes
 from .install_manager import auto_install_rules_from_options, failure_reason_for
 from .my_votes import Verdict
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
@@ -698,6 +700,61 @@ def _handle_device_identity(hass: HomeAssistant, connection: websocket_api.Activ
             "manufacturer": manufacturer_model[0] if manufacturer_model else None,
             "model": manufacturer_model[1] if manufacturer_model else None,
             "zigbee2mqtt_url": zigbee2mqtt_device_url(hass, device) if device else None,
+        },
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "update_manager/zigbee_ota_release_notes",
+        vol.Required("entity_id"): str,
+    }
+)
+async def _handle_zigbee_ota_release_notes(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict
+) -> None:
+    """Last-resort fallback for the update-detail dialog's release-notes
+    section, when neither the entity's own notes nor the GitHub fallback
+    had anything (Zigbee2MQTT in particular never surfaces its own
+    OTA-check release notes through the generic MQTT update entity at all
+    -- see zigbee_ota_release_notes.py's own module docstring for the full
+    reasoning and the exact-match-only rule this never deviates from).
+
+    Deliberately not gated on "is this a Zigbee2MQTT device" (or Zigbee at
+    all) -- find_zigbee_ota_release_notes' own exact-match rule is already
+    the real safety net, and it's a cheap no-op by construction for any
+    entity that doesn't carry a matching model_id/latest_version pair:
+    ZHA's own device registry entries never set model_id at all (confirmed
+    against the real zha library, only plain model), and anything whose
+    latest_version isn't a bare integer string (every non-Zigbee-OTA
+    entity: Shelly's/HACS's/Core's own version strings are never that)
+    fails the int() parse below before the index is even fetched. The
+    panel calls this unconditionally as its own final fallback, regardless
+    of entity type, relying on exactly that."""
+    entity_id = msg["entity_id"]
+    device = device_for_entity(hass, entity_id)
+    if device is None:
+        connection.send_result(msg["id"], {"release_notes": None, "source_url": None})
+        return
+    state = hass.states.get(entity_id)
+
+    def _as_int(value: Any) -> int | None:
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    from_version = _as_int(state.attributes.get("installed_version")) if state else None
+    to_version = _as_int(state.attributes.get("latest_version")) if state else None
+    index = await async_get_zigbee_ota_index(hass)
+    match = find_zigbee_ota_release_notes(index, device.manufacturer, device.model_id, from_version, to_version)
+    connection.send_result(
+        msg["id"],
+        {
+            "release_notes": match.release_notes if match else None,
+            "source_url": match.source_url if match else None,
         },
     )
 
@@ -1509,6 +1566,7 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _handle_core_announcement)
     websocket_api.async_register_command(hass, _handle_spook_blueprint_source)
     websocket_api.async_register_command(hass, _handle_device_identity)
+    websocket_api.async_register_command(hass, _handle_zigbee_ota_release_notes)
     websocket_api.async_register_command(hass, _handle_install_log)
     websocket_api.async_register_command(hass, _handle_cancel_pending_install)
     websocket_api.async_register_command(hass, _handle_force_ready)
