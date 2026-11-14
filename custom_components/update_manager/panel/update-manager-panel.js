@@ -4130,13 +4130,13 @@ class UpdateManagerPanel extends HTMLElement {
   // since a "ready" entity is never skipped/postponed by our own grouping
   // to begin with.
   //
-  // No client-side tiering here anymore -- the same disruption-order
-  // (safe/firmware/zha_firmware/host_firmware/supervisor/core/os) is now
-  // enforced
-  // server-side, in rollout_manager.py's own tier gate (install_tiers.py),
-  // the exact same shared gate every dispatch path already goes through
-  // regardless of how it was triggered. This method is back to exactly
-  // what it always was before that existed: fire every entity concurrently,
+  // No client-side tiering here anymore. The same disruption-order
+  // (safe/firmware/os/zha_firmware/host_firmware/supervisor/core) is now
+  // enforced server-side, in rollout_manager.py's own tier gate
+  // (install_tiers.py), the exact same shared gate every dispatch path
+  // already goes through regardless of how it was triggered. This method
+  // is back to exactly what it always was before that existed: fire every
+  // entity concurrently,
   // let the server decide per entity_id whether to actually dispatch now
   // or hold it back -- see _buildUpdatesList's own "ready" row loop
   // (this._tierWaiting/this._stuck) for how the panel shows that back.

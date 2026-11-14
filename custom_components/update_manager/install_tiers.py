@@ -29,6 +29,21 @@ require SUPERVISOR_UPDATED as a hard job condition), not guessed:
   doing at the same moment, Core's own restart included. FIRST_GATED_RANK
   below is what actually excuses this tier (and "safe") from ever being
   held back by anything.
+- "os": the whole-host update itself doesn't actually reboot anything
+  (confirmed against supervisor's own real source, OSManager.update(): it
+  installs the RAUC bundle, then raises a REBOOT_REQUIRED issue with an
+  EXECUTE_REBOOT suggestion instead of calling sys_host.control.reboot()
+  itself, leaving the real reboot to a separate, user-triggered action,
+  whenever that ends up happening). Reconsidered 2026-11-14, direct user
+  feedback: this install step shares no resource with Core/Supervisor/a
+  ZHA transfer (a background write to the inactive partition, not a
+  process restart), and the one thing that genuinely could disrupt
+  something (the reboot itself) is never something this gate -- or HA's
+  own job conditions on Core/Supervisor, confirmed against their real
+  source too -- can protect against anyway, since it happens whenever the
+  user gets to it, decoupled from any update.install call entirely.
+  Keeping it in the gated group bought no real safety, only needless
+  waiting, so it now sits here instead, exempt like "safe"/"firmware".
 - "zha_firmware": device_class == "firmware" *and* the device is on a
   ZHA-managed Zigbee network specifically (see zigbee.py's own
   is_zha_entity) -- split out from the plain "firmware" tier above, direct
@@ -57,12 +72,16 @@ require SUPERVISOR_UPDATED as a hard job condition), not guessed:
   still enough to disrupt any other Supervisor-managed (add-on) install
   running at the same moment. Also the one every Core/OS update requires be
   current first (JobCondition.SUPERVISOR_UPDATED, confirmed in both
-  supervisor/homeassistant/core.py and supervisor/os/manager.py), so this
-  isn't just a "least disruptive first" heuristic, it's a real, enforced
-  dependency.
+  supervisor/homeassistant/core.py and supervisor/os/manager.py) -- a real,
+  enforced dependency, not just a "least disruptive first" heuristic, and
+  now additionally held to on our own side too: rollout_manager.py's own
+  tier gate (_pending_supervisor_entity) holds a Core/OS request back
+  whenever Supervisor itself still has a real update sitting there
+  uninstalled, direct user feedback, 2026-11-14 -- dispatching either one
+  anyway would just fail outright against that same job condition, a
+  predictable failure this project can hold back instead of letting
+  happen.
 - "core": restarts Home Assistant Core's whole process.
-- "os": reboots the entire host, taking Core and Supervisor down with it
-  regardless -- always last.
 """
 from __future__ import annotations
 
@@ -72,17 +91,19 @@ from homeassistant.helpers import entity_registry as er
 from .coordinator import home_assistant_component_for_entity
 from .zigbee import is_zha_entity
 
-TIER_ORDER = ("safe", "firmware", "zha_firmware", "host_firmware", "supervisor", "core", "os")
+TIER_ORDER = ("safe", "firmware", "os", "zha_firmware", "host_firmware", "supervisor", "core")
 TIER_RANK = {tier: rank for rank, tier in enumerate(TIER_ORDER)}
 
 # Only "zha_firmware" and up are genuinely at risk from something else
 # running at the same time (a ZHA OTA transfer cut off mid-air by Core's
 # own restart, the host's own EEPROM programmer, the Supervisor container,
-# Core's own process, the whole host); see the tier list above for why
-# each of those genuinely needs to wait its turn. "safe" and "firmware"
-# (ZHA excluded, see "zha_firmware" above) were never a real risk to each
-# other, so rollout_manager.py's tier gate exempts both of them from ever
-# being held back, however much other work is running.
+# Core's own process); see the tier list above for why each of those
+# genuinely needs to wait its turn. "safe"/"firmware"/"os" were never a
+# real risk to each other (see "os"'s own entry above for why it moved
+# here, 2026-11-14), so rollout_manager.py's tier gate exempts all three
+# from ever being held back, however much other work is running -- "os"
+# still waits on Supervisor specifically, just via its own dedicated
+# _pending_supervisor_entity check, not this tier mechanism.
 FIRST_GATED_RANK = TIER_RANK["zha_firmware"]
 
 

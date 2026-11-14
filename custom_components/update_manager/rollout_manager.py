@@ -49,7 +49,7 @@ from homeassistant.util import dt as dt_util
 
 from .announcer import AutoInstallContext
 from .const import DOMAIN, localized_strings
-from .coordinator import UpdateManagerCoordinator
+from .coordinator import UpdateManagerCoordinator, home_assistant_component_for_entity
 from .entity_rename import relabel_key
 from .install_tiers import FIRST_GATED_RANK, TIER_RANK, tier_for_entity
 from .semver import min_ha_version_required
@@ -923,10 +923,34 @@ class RolloutManager:
         Core-restart-cuts-a-ZHA-OTA-off-mid-air race this tier split exists
         to prevent, just triggered from the other temporal direction.
 
+        Also returns Supervisor's own entity_id for a Core or OS request
+        whenever Supervisor itself still has a real, uninstalled update
+        pending (see _pending_supervisor_entity's own docstring) -- not
+        just "not currently in progress", _counts_as_blocking only ever
+        tracks genuinely in-flight installs, but a Supervisor update that
+        hasn't even started yet is just as real a reason Core/OS can't
+        succeed: both hard-require Supervisor already being current
+        (confirmed against supervisor's own real source,
+        JobCondition.SUPERVISOR_UPDATED on both), so dispatching either
+        one anyway would just fail outright, direct user feedback,
+        2026-11-14: better to wait it out, the same way this gate already
+        waits out anything else, than to let a predictable failure happen
+        when we already know it's coming.
+
         A live check, deliberately never cached: re-run on every request
         and every periodic recheck (see _async_periodic_recheck), since
         "what's installing right now" changes continuously and this must
         always reflect the current instant, not a stale snapshot."""
+        # Checked before the FIRST_GATED_RANK cutoff below, deliberately --
+        # "os" itself sits below that cutoff now (see install_tiers.py's
+        # own entry for why), but still needs this specific check: the
+        # cutoff below is about the tier-mutex mechanism only, this one is
+        # a real, separate job-condition dependency that applies
+        # regardless of which side of that cutoff entity_id's own tier
+        # falls on.
+        pending_supervisor = self._pending_supervisor_entity(entity_id)
+        if pending_supervisor is not None:
+            return pending_supervisor
         my_rank = TIER_RANK[tier_for_entity(self.hass, entity_id)]
         if my_rank < FIRST_GATED_RANK:
             return None
@@ -938,6 +962,30 @@ class RolloutManager:
                 continue
             if TIER_RANK[tier_for_entity(self.hass, other_id)] >= FIRST_GATED_RANK:
                 return other_id
+        return None
+
+    def _pending_supervisor_entity(self, entity_id: str) -> str | None:
+        """Supervisor's own update entity_id, only when entity_id is Core
+        or OS *and* Supervisor itself still has a real update sitting
+        there uninstalled (latest_version != installed_version) -- None
+        for anything else, including Supervisor's own entity_id itself
+        (nothing is its own prerequisite) and the ordinary case where
+        Supervisor is already current. Scanned by home_assistant_
+        component_for_entity rather than a hardcoded entity_id: that
+        helper's own docstring explains why (a real instance's unique_id
+        can drift from the conventional entity_id, this stays correct
+        either way)."""
+        if home_assistant_component_for_entity(self.hass, entity_id) not in ("core", "os"):
+            return None
+        for other_id in self.hass.states.async_entity_ids("update"):
+            if home_assistant_component_for_entity(self.hass, other_id) != "supervisor":
+                continue
+            state = self.hass.states.get(other_id)
+            if state is None:
+                return None
+            latest = state.attributes.get("latest_version")
+            installed = state.attributes.get("installed_version")
+            return other_id if latest and latest != installed else None
         return None
 
     async def _async_retry_tier_blocked(self) -> None:
