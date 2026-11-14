@@ -905,17 +905,28 @@ class RolloutManager:
 
     def _tier_blocking_entity(self, entity_id: str) -> str | None:
         """The entity_id of some *other* update entity, currently counting
-        as blocking (see _counts_as_blocking), at a strictly lower
-        disruption tier than entity_id's own (see install_tiers.py's own
-        module docstring for the full tier list and the real, confirmed
-        reasoning behind each one), or None if entity_id's own tier is
-        below FIRST_GATED_RANK ("safe" or "firmware", neither of which
-        restarts anything and so is never worth holding back, direct user
-        feedback 2026-08-24) or if nothing currently qualifies. A live check,
-        deliberately never cached: re-run on every request and every
-        periodic recheck (see _async_periodic_recheck), since "what's
-        installing right now" changes continuously and this must always
-        reflect the current instant, not a stale snapshot."""
+        as blocking (see _counts_as_blocking), itself at or above
+        FIRST_GATED_RANK -- every tier from "zha_firmware" up is mutually
+        exclusive with every other one, each waiting its turn regardless of
+        which of the two ranks higher (see install_tiers.py's own module
+        docstring for the full tier list and the real, confirmed reasoning
+        behind each one) -- or None if entity_id's own tier is below
+        FIRST_GATED_RANK ("safe" or "firmware", neither of which restarts
+        anything and so is never worth holding back, direct user feedback
+        2026-08-24) or if nothing currently qualifies.
+
+        Compares against FIRST_GATED_RANK, not my_rank -- found by
+        /code-review, 2026-11-14: comparing against my_rank only blocked a
+        request behind something of a *strictly lower* rank, so a new
+        zha_firmware request (rank 2) was never blocked by an already
+        in-progress Core restart (rank 5, 5 < 2 is false) -- the exact
+        Core-restart-cuts-a-ZHA-OTA-off-mid-air race this tier split exists
+        to prevent, just triggered from the other temporal direction.
+
+        A live check, deliberately never cached: re-run on every request
+        and every periodic recheck (see _async_periodic_recheck), since
+        "what's installing right now" changes continuously and this must
+        always reflect the current instant, not a stale snapshot."""
         my_rank = TIER_RANK[tier_for_entity(self.hass, entity_id)]
         if my_rank < FIRST_GATED_RANK:
             return None
@@ -925,7 +936,7 @@ class RolloutManager:
             state = self.hass.states.get(other_id)
             if state is None or not self._counts_as_blocking(other_id, state):
                 continue
-            if TIER_RANK[tier_for_entity(self.hass, other_id)] < my_rank:
+            if TIER_RANK[tier_for_entity(self.hass, other_id)] >= FIRST_GATED_RANK:
                 return other_id
         return None
 
