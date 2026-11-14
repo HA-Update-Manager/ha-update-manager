@@ -76,7 +76,7 @@ from .hacs_identity import ResolvedIdentity, corrected_release_url
 from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_notes
 from .zigbee import device_for_entity, zigbee2mqtt_device_url
 from .zigbee_ota_index import async_get_zigbee_ota_index
-from .zigbee_ota_release_notes import find_zigbee_ota_release_notes
+from .zigbee_ota_release_notes import find_zigbee_ota_release_notes, parse_zigbee_ota_version
 from .install_manager import auto_install_rules_from_options, failure_reason_for
 from .my_votes import Verdict
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
@@ -740,15 +740,8 @@ async def _handle_zigbee_ota_release_notes(
         connection.send_result(msg["id"], {"release_notes": None, "source_url": None})
         return
     state = hass.states.get(entity_id)
-
-    def _as_int(value: Any) -> int | None:
-        try:
-            return int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    from_version = _as_int(state.attributes.get("installed_version")) if state else None
-    to_version = _as_int(state.attributes.get("latest_version")) if state else None
+    from_version = parse_zigbee_ota_version(state.attributes.get("installed_version")) if state else None
+    to_version = parse_zigbee_ota_version(state.attributes.get("latest_version")) if state else None
     index = await async_get_zigbee_ota_index(hass)
     match = find_zigbee_ota_release_notes(index, device.manufacturer, device.model_id, from_version, to_version)
     connection.send_result(
@@ -1336,6 +1329,23 @@ async def _async_resolve_my_verdict(hass: HomeAssistant, data: UpdateManagerData
     return my_verdict
 
 
+def _is_own_repo(identity: ResolvedIdentity | None, username: str | None) -> bool:
+    """Whether username (the linked GitHub account) is identity's own repo
+    owner -- shared by _handle_vote's own is_own_repo_healthy_vote and
+    _handle_verdict_for_version's own own_repo (found by /simplify review:
+    both independently repeated this exact owner_repo/username comparison).
+    owner_repo is only ever set for the "hacs" identity category (see
+    hacs_identity.py); a blueprint identity's own blueprint_identity isn't
+    checked here, matching process-vote.yml's own "hacs only" asymmetric-
+    weight rule this mirrors."""
+    return bool(
+        identity is not None
+        and identity.owner_repo
+        and username
+        and identity.owner_repo.split("/", 1)[0].lower() == username.lower()
+    )
+
+
 @websocket_api.require_admin
 @websocket_api.async_response
 @websocket_api.websocket_command(
@@ -1417,12 +1427,19 @@ async def _handle_verdict_for_version(hass: HomeAssistant, connection: websocket
     else:
         verdict, other_jumps, trusted_vote, trusted_voters_matched, problematic_reasons, my_reason, _, _ = EMPTY_VERDICT_RESULT
         my_verdict = None
+    # A vote on your own repo is still accepted (see _handle_vote's own
+    # is_own_repo_healthy_vote), but it never moves the public tally, so
+    # the Updates-tab vote-nudge (its own _scanVoteNudgeCandidates) uses
+    # this to skip offering these at all -- nudging someone to vote on
+    # their own release is pointless.
+    own_repo = _is_own_repo(identity, username)
     connection.send_result(
         msg["id"],
         {
             "verdict": verdict,
             "identifiable": identity is not None,
             "my_verdict": my_verdict,
+            "own_repo": own_repo,
             # Every other jump landing on this same destination version
             # (direct user feedback, 2026-07-24), my own jump excluded --
             # "verdict"/"my_verdict" above already are my own jump, always
@@ -1543,12 +1560,7 @@ async def _handle_vote(hass: HomeAssistant, connection: websocket_api.ActiveConn
     # 2026-07-30: a repo owner voting healthy on their own release saw
     # "0 healthy" right after "Thanks for your vote!" with no explanation.
     linked_username = data.github_auth_manager.linked_username
-    is_own_repo_healthy_vote = bool(
-        msg["verdict"] == "healthy"
-        and identity.owner_repo
-        and linked_username
-        and identity.owner_repo.split("/", 1)[0].lower() == linked_username.lower()
-    )
+    is_own_repo_healthy_vote = msg["verdict"] == "healthy" and _is_own_repo(identity, linked_username)
     connection.send_result(
         msg["id"], {"updated": is_vote_update, "own_repo_healthy_vote": is_own_repo_healthy_vote}
     )

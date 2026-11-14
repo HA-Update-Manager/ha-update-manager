@@ -540,6 +540,10 @@ export const TRANSLATIONS = {
     // question about the user's own experience with the update, not a
     // flat instruction, matching the row+buttons right under it.
     vote_nudge_heading: "How did this update treat you?",
+    // Skips to the next candidate without voting (see _advanceVoteNudge) --
+    // a plain, no-opinion way out for whoever genuinely doesn't know/care
+    // about this specific jump, distinct from either vote button above it.
+    vote_nudge_skip: "Skip",
     history_empty: "No updates logged yet.",
     // History's own date sections (see historySections), relative rather
     // than a fixed calendar date range in the heading itself, same spirit
@@ -798,6 +802,7 @@ export const TRANSLATIONS = {
     updates_empty: "Je bent helemaal bij, niets heeft nu je aandacht nodig.",
     updates_hidden_by_filter: "Alle updates zijn nu verborgen. Open het ⋮-menu om overgeslagen of niet-installeerbare updates te tonen.",
     vote_nudge_heading: "Hoe is deze update bevallen?",
+    vote_nudge_skip: "Overslaan",
     history_empty: "Nog geen updates gelogd.",
     history_section_today: "Vandaag",
     history_section_yesterday: "Gisteren",

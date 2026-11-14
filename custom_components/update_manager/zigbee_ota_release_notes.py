@@ -47,6 +47,19 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 
+def parse_zigbee_ota_version(value: Any) -> int | None:
+    """value as an int, or None whenever it isn't one (missing, or a
+    non-Zigbee-OTA entity's own version string, e.g. a semver) -- shared
+    by both real callers (websocket_api.py's own
+    _handle_zigbee_ota_release_notes, services.py's own
+    _async_zigbee_ota_fallback), found by /simplify review: each had
+    defined its own identical local helper for exactly this."""
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 class ZigbeeOtaMatch(NamedTuple):
     release_notes: str
     # The newest compiled entry's own release_url (the zigpy-ota PR/issue

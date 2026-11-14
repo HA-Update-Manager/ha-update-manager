@@ -273,8 +273,12 @@ const VOTE_NUDGE_SCAN_LIMIT = 10;
 // _loadAll() for *any* update.* entity's signature change anywhere in the
 // house, most of which have nothing to do with which History entry
 // should be offered here.
-let _voteNudgeResolved = false;
-let _voteNudgeOutcome = null;
+// undefined (not yet resolved this snapshot) vs. a real {type: ...} object
+// once known -- a single sentinel instead of a separate _voteNudgeResolved
+// boolean the two had to be kept in sync by hand (found by /simplify
+// review: the reset below used to touch only the boolean, leaving this
+// holding a stale object nothing then read without that flag).
+let _voteNudgeOutcome;
 // A second qualifying candidate, already resolved alongside the one
 // actually shown (_voteNudgeOutcome) -- see _advanceVoteNudge's own
 // docstring: promoted instantly once a vote lands on the current one,
@@ -1320,6 +1324,11 @@ function useAmPm(hass) {
 // title out. Left off (the default) for the dialog's own status sentence
 // and the History detail rows, both of which have the room and genuinely
 // benefit from the explicit word.
+// Midnight of d's own calendar day, as a plain timestamp -- shared by
+// absoluteWhen's own day-diff below and daysSince further down (found by
+// /simplify review: each had declared its own identical local copy).
+const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+
 function absoluteWhen(tr, iso, hass, compact) {
   if (!iso) return tr.dash;
   const date = new Date(iso);
@@ -1342,7 +1351,6 @@ function absoluteWhen(tr, iso, hass, compact) {
   const time = isMidnight
     ? null
     : date.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit", hour12: useAmPm(hass) });
-  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const now = new Date();
   const dayDiff = Math.round((startOfDay(date) - startOfDay(now)) / 86400000);
   if (dayDiff === 0) {
@@ -1402,7 +1410,6 @@ function absoluteWhen(tr, iso, hass, compact) {
 // sensible "how long ago" for something that doesn't parse as being in
 // the past at all.
 function daysSince(installedAt) {
-  const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const date = new Date(installedAt);
   return Number.isNaN(date.getTime()) ? 0 : Math.round((startOfDay(new Date()) - startOfDay(date)) / 86400000);
 }
@@ -3048,7 +3055,7 @@ class UpdateManagerPanel extends HTMLElement {
       this._installLog = logResp.entries.slice().reverse();
       const newestInstall = this._installLog[0]?.installed_at;
       if (newestInstall !== _lastKnownNewestInstall) {
-        _voteNudgeResolved = false;
+        _voteNudgeOutcome = undefined;
         _lastKnownNewestInstall = newestInstall;
       }
       // Also true (not just after a real "load older" fetch) when the
@@ -3359,6 +3366,17 @@ class UpdateManagerPanel extends HTMLElement {
     const resolved = { notes: (result && result.release_notes) || null, sourceUrl: (result && result.source_url) || null };
     this._releaseNotesCache.set(cacheKey, resolved);
     return resolved;
+  }
+
+  // Shared by both release-notes branches below (supportsReleaseNotes and
+  // its own GitHub-only else) -- each repeated this exact "still nothing?
+  // try the Zigbee OTA fallback" block verbatim before this was factored
+  // out (found by /simplify review). A no-op ({ notes, sourceUrl: null })
+  // whenever notes is already non-empty, so a caller can always run this
+  // unconditionally rather than re-checking itself.
+  async _applyZigbeeOtaFallback(notes, entityId, installedVersion, latestVersion) {
+    if (notes) return { notes, sourceUrl: null };
+    return this._fetchZigbeeOtaReleaseNotesFallback(entityId, installedVersion, latestVersion);
   }
 
   // "Also see: OWNER/REPO's own release notes" -- direct user feedback,
@@ -5053,8 +5071,9 @@ class UpdateManagerPanel extends HTMLElement {
     card.appendChild(header);
     wrap.appendChild(card);
 
-    // Resolved once per _loadAll() snapshot (_voteNudgeResolved, reset
-    // there -- see that method's own comment), not once per render --
+    // Resolved once per _loadAll() snapshot (_voteNudgeOutcome itself,
+    // reset to undefined there -- see that method's own comment), not
+    // once per render --
     // direct user feedback: switching tabs away and back re-ran the whole
     // github_link_status + verdict_for_version scan from scratch every
     // single time, which read as broken/reloading rather than just
@@ -5071,7 +5090,7 @@ class UpdateManagerPanel extends HTMLElement {
     // above (`card`, still in scope) only once resolved, and only if
     // outcome.type isn't "none" -- this page's own layout never reserves
     // space for it in the meantime.
-    if (_voteNudgeResolved) {
+    if (_voteNudgeOutcome) {
       if (_voteNudgeOutcome.type !== "none") wrap.appendChild(this._buildVoteNudgeSection(tr, _voteNudgeOutcome));
       return wrap;
     }
@@ -5099,7 +5118,6 @@ class UpdateManagerPanel extends HTMLElement {
       // below -- direct user feedback, removing the earlier link-nudge
       // variant that prompted toward Settings instead.
       if (status.status !== "linked") {
-        _voteNudgeResolved = true;
         _voteNudgeOutcome = { type: "none" };
         return;
       }
@@ -5110,7 +5128,6 @@ class UpdateManagerPanel extends HTMLElement {
       // spinner, see _advanceVoteNudge's own docstring for why.
       const [first, second] = await this._scanVoteNudgeCandidates(2);
       if (isStale()) return;
-      _voteNudgeResolved = true;
       _voteNudgePrefetched = second || null;
       _voteNudgeOutcome = first ? { type: "candidate", entry: first.entry, counts: first.counts } : { type: "none" };
       if (_voteNudgeOutcome.type !== "none") {
@@ -5219,6 +5236,18 @@ class UpdateManagerPanel extends HTMLElement {
         continue;
       }
       if (result.identifiable && !result.my_verdict) {
+        // own_repo (direct user feedback, 2026-11-13: nudging someone to
+        // vote on their own release is pointless, that vote is accepted
+        // server-side -- see websocket_api.py's own
+        // _handle_verdict_for_version -- but never counts toward the
+        // public tally) is a stable fact about this entity, not something
+        // that changes between scans, so it's marked seen the same as a
+        // genuinely voted-on one rather than re-probed on every refill.
+        if (result.own_repo) {
+          _voteNudgeSeenEntityIds.add(entry.entity_id);
+          if (jumpKey) _voteNudgeSeenJumps.add(jumpKey);
+          continue;
+        }
         // Added the moment it's found, not only once actually voted on --
         // this entity is now either shown or held in _voteNudgePrefetched,
         // either way already accounted for, so a later scan has no
@@ -5374,6 +5403,18 @@ class UpdateManagerPanel extends HTMLElement {
       this._openReportDialog(entry.entity_id, entry, () => this._advanceVoteNudge(container, tr))
     );
     actions.appendChild(reportBtn);
+
+    // A plain, low-emphasis way out for whoever genuinely has no opinion
+    // on this specific jump, distinct from the two vote buttons above it
+    // -- its own full-width row underneath, not squeezed into .vote-
+    // nudge-actions' own flex pair. Never votes anything, just moves on.
+    const skipBtn = document.createElement("ha-button");
+    skipBtn.appearance = "plain";
+    skipBtn.size = "s";
+    skipBtn.className = "vote-nudge-skip";
+    skipBtn.textContent = tr.vote_nudge_skip;
+    skipBtn.addEventListener("click", () => this._advanceVoteNudge(container, tr));
+    card.appendChild(skipBtn);
   }
 
   // Own card per entry, not one shared list (changed 2026-07-21, direct
@@ -5588,6 +5629,7 @@ class UpdateManagerPanel extends HTMLElement {
     {
       isQueuedInRollout,
       isTierWaiting,
+      tierBlockingEntityId,
       rolloutStatus,
       heldBackByCommunity,
       communityHealthyCount,
@@ -6416,7 +6458,8 @@ class UpdateManagerPanel extends HTMLElement {
       // Spook itself sets, see this entity's own entity_picture comment
       // above) so this still lands on roughly just this one, not an
       // unrelated full list.
-      const blueprintName = entityState(this._hass, entityId) && entityState(this._hass, entityId).attributes.friendly_name;
+      const blueprintState = entityState(this._hass, entityId);
+      const blueprintName = blueprintState && blueprintState.attributes.friendly_name;
       // Two genuinely different destinations depending on count, so this
       // gets its own label and icon either way rather than reusing one
       // generic "Automations"/robot icon for both, landing on the
@@ -6835,6 +6878,7 @@ class UpdateManagerPanel extends HTMLElement {
         this._buildTimeline(u, tr, entityId, {
           isQueuedInRollout,
           isTierWaiting,
+          tierBlockingEntityId,
           rolloutStatus,
           heldBackByCommunity,
           communityHealthyCount,
@@ -7061,13 +7105,12 @@ class UpdateManagerPanel extends HTMLElement {
               releaseUrl, u.installed_version, u.latest_version, entityId
             ));
           }
-          // Last resort, see _fetchZigbeeOtaReleaseNotesFallback's own
-          // comment -- harmless no-op for anything that isn't a genuine
-          // Zigbee2MQTT device.
-          let sourceUrl = null;
-          if (!finalNotes) {
-            ({ notes: finalNotes, sourceUrl } = await this._fetchZigbeeOtaReleaseNotesFallback(entityId, u.installed_version, u.latest_version));
-          }
+          // Last resort, see _applyZigbeeOtaFallback's own comment --
+          // harmless no-op for anything that isn't a genuine match.
+          let sourceUrl;
+          ({ notes: finalNotes, sourceUrl } = await this._applyZigbeeOtaFallback(
+            finalNotes, entityId, u.installed_version, u.latest_version
+          ));
           const { linkUrl } = await withCoreAnnouncement(correctedUrl);
           if (loader) loader.remove();
           if (!isDialogStale() && (finalNotes || releaseUrl || sourceUrl)) appendReleaseNotesSection(finalNotes, linkUrl || sourceUrl);
@@ -7092,14 +7135,11 @@ class UpdateManagerPanel extends HTMLElement {
           this._fetchGithubReleaseNotesFallback(
             releaseUrl, u.installed_version, u.latest_version, entityId
           ).then(async ({ notes, correctedUrl }) => {
-            let finalNotes = notes;
-            // Last resort, see _fetchZigbeeOtaReleaseNotesFallback's own
-            // comment -- harmless no-op for anything that isn't a genuine
-            // Zigbee2MQTT device.
-            let sourceUrl = null;
-            if (!finalNotes) {
-              ({ notes: finalNotes, sourceUrl } = await this._fetchZigbeeOtaReleaseNotesFallback(entityId, u.installed_version, u.latest_version));
-            }
+            // Last resort, see _applyZigbeeOtaFallback's own comment --
+            // harmless no-op for anything that isn't a genuine match.
+            const { notes: finalNotes, sourceUrl } = await this._applyZigbeeOtaFallback(
+              notes, entityId, u.installed_version, u.latest_version
+            );
             const { linkUrl } = await withCoreAnnouncement(correctedUrl);
             if (loader) loader.remove();
             if (!isDialogStale() && (finalNotes || releaseUrl || sourceUrl)) appendReleaseNotesSection(finalNotes, linkUrl || sourceUrl);
@@ -9936,7 +9976,12 @@ class UpdateManagerPanel extends HTMLElement {
          pair should read as one unit, not two separately-spaced blocks. */
       .vote-nudge-actions {
         display: flex; align-items: center; gap: var(--ha-space-2, 8px);
-        padding: var(--ha-space-1, 4px) var(--ha-space-4, 16px) var(--ha-space-4, 16px);
+        /* Bottom padding tightened from the original --ha-space-4 (16px):
+           this row is no longer the card's own last element now that
+           .vote-nudge-skip follows it, that breathing room belongs at the
+           true bottom now, not stacked again on top of .vote-nudge-skip's
+           own padding too. */
+        padding: var(--ha-space-1, 4px) var(--ha-space-4, 16px) var(--ha-space-2, 8px);
       }
       /* Each button fills half the row (flex: 1), icon-only, no visible
          label -- a real label on each made these too big; see
@@ -9957,6 +10002,18 @@ class UpdateManagerPanel extends HTMLElement {
       .vote-nudge-actions ha-button {
         flex: 1;
         --ha-space-1: 0px;
+      }
+      /* Its own full-width row under .vote-nudge-actions, not one of its
+         flex children -- a text-labeled "Skip" at half-width next to two
+         icon-only buttons would read as oddly unbalanced. No top padding
+         of its own (the --ha-space-2 above it, on .vote-nudge-actions' own
+         now-tightened bottom, is the only gap between the two rows); the
+         full --ha-space-4 card-bottom breathing room moved here instead,
+         since this is now the card's real last element. */
+      .vote-nudge-skip {
+        display: block;
+        width: 100%;
+        padding: 0 var(--ha-space-4, 16px) var(--ha-space-4, 16px);
       }
 
       /* History tab: one outlined ha-card per entry (see _buildHistoryList),

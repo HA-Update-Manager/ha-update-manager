@@ -66,7 +66,7 @@ from .runtime_data import get_data as _get_data
 from .websocket_api import async_fetch_core_announcement, async_fetch_github_release_notes
 from .zigbee import device_for_entity
 from .zigbee_ota_index import async_get_zigbee_ota_index
-from .zigbee_ota_release_notes import find_zigbee_ota_release_notes
+from .zigbee_ota_release_notes import find_zigbee_ota_release_notes, parse_zigbee_ota_version
 
 _SERVICE_SCHEMA = vol.Schema(
     {
@@ -205,16 +205,13 @@ def async_setup_services(hass: HomeAssistant) -> None:
         device = device_for_entity(hass, entity_id)
         if device is None:
             return None
-
-        def _as_int(value: str | None) -> int | None:
-            try:
-                return int(value) if value is not None else None
-            except (TypeError, ValueError):
-                return None
-
         index = await async_get_zigbee_ota_index(hass)
         match = find_zigbee_ota_release_notes(
-            index, device.manufacturer, device.model_id, _as_int(from_version), _as_int(to_version)
+            index,
+            device.manufacturer,
+            device.model_id,
+            parse_zigbee_ota_version(from_version),
+            parse_zigbee_ota_version(to_version),
         )
         return match.release_notes if match else None
 

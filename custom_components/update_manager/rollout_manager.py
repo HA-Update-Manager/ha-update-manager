@@ -711,20 +711,30 @@ class RolloutManager:
         for a "queued" one, can both pass the real calling user through to
         the actual update.install call, see _QueuedEntry.ha_context's own
         comment for why this matters."""
-        if not is_auto and ha_context is not None:
-            # Recorded regardless of whether this dispatches immediately or
-            # ends up queued/tier-blocked for a while -- see
-            # self._recently_manual's own comment in __init__ for why this
-            # exists at all. entity_id, not group_key: was_manually_
-            # requested below is looked up by the entity whose own state
-            # actually changed, the same way was_auto_installed already is.
+        # Recorded regardless of whether this dispatches immediately or
+        # ends up queued/tier-blocked for a while -- see
+        # self._recently_manual's own comment in __init__ for why this
+        # exists at all. entity_id, not group_key: was_manually_requested
+        # below is looked up by the entity whose own state actually
+        # changed, the same way was_auto_installed already is.
+        is_manual_with_context = not is_auto and ha_context is not None
+        if is_manual_with_context:
+            # Provably true from is_manual_with_context's own definition
+            # just above, just not something mypy's own flow analysis
+            # follows through a derived bool variable.
+            assert ha_context is not None
             self._recently_manual[entity_id] = (to_version, ha_context.user_id, dt_util.utcnow().isoformat())
-            await self._async_save()
         entry = _QueuedEntry(entity_id, to_version, service_data, is_auto, context, ha_context)
         blocking = self._tier_blocking_entity(entity_id)
         if blocking is not None:
             self._tier_blocked[entity_id] = entry
+        # Both mutations above are known by this point -- one save covers
+        # either or both, instead of the store's own full serialize-and-
+        # write twice in immediate succession whenever a manual request is
+        # also tier-blocked (found by /simplify review).
+        if is_manual_with_context or blocking is not None:
             await self._async_save()
+        if blocking is not None:
             return "queued"
         return await self._async_request_past_tier_gate(entry)
 

@@ -1557,6 +1557,17 @@ class UpdateManagerCoordinator:
             return {"status": "skipped", **_NO_TIMING_FIELDS}
         return self._derive_status_fields(cached["entity_id"], cached, now or dt_util.utcnow())
 
+    def _held_back_by_community(self, entity_id: str, trusted_vote: str | None, verdict: dict | None) -> bool:
+        """community_blocks_auto_install, with this coordinator's own
+        whitelisted_entities already applied -- shared by export_entry,
+        _async_refresh_community_verdict, and _cache_skipped below, each
+        of which otherwise repeated this exact 3-argument call (found by
+        /simplify review). See announcer.community_blocks_auto_install's
+        own docstring for what this field itself means."""
+        return community_blocks_auto_install(
+            trusted_vote, (verdict or {}).get("problematic_count", 0), _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities)
+        )
+
     def export_entry(self, cached: dict, now: datetime | None = None) -> dict:
         """One cache entry's own facts, with status/remaining_seconds/
         ready_at overridden by status_now's own fresh derivation -- the one
@@ -1677,11 +1688,7 @@ class UpdateManagerCoordinator:
             # by code review, 2026-07-29). See
             # announcer.community_blocks_auto_install's own docstring for
             # the two real bugs that duplication already produced once.
-            "held_back_by_community": community_blocks_auto_install(
-                trusted_vote,
-                (community_verdict or {}).get("problematic_count", 0),
-                _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
-            ),
+            "held_back_by_community": self._held_back_by_community(entity_id, trusted_vote, community_verdict),
         }
 
     async def _async_refresh_community_verdict(
@@ -1729,11 +1736,7 @@ class UpdateManagerCoordinator:
             # community_verdict/trusted_vote go stale in the first place,
             # held_back_by_community would silently follow if left alone
             # here.
-            cached["held_back_by_community"] = community_blocks_auto_install(
-                trusted_vote,
-                (verdict or {}).get("problematic_count", 0),
-                _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
-            )
+            cached["held_back_by_community"] = self._held_back_by_community(entity_id, trusted_vote, verdict)
 
     async def async_force_refresh_community_verdicts(self) -> None:
         """Bypasses CommunityVerdictManager's own hour-long freshness window
@@ -1840,9 +1843,9 @@ class UpdateManagerCoordinator:
             # its own to keep it current), only ever carried over from
             # previous the same way community_verdict just above already
             # is, purely to feed this one computation.
-            "held_back_by_community": community_blocks_auto_install(
+            "held_back_by_community": self._held_back_by_community(
+                entity_id,
                 previous.get("trusted_vote") if previous else None,
-                ((previous.get("community_verdict") if previous else None) or {}).get("problematic_count", 0),
-                _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),
+                previous.get("community_verdict") if previous else None,
             ),
         }
