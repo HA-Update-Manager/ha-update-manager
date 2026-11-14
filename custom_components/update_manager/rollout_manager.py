@@ -203,6 +203,22 @@ _FRONT_GRACE = timedelta(seconds=60)
 # several ticks, not just bridge one continuous check.
 _RECENTLY_INSTALLING_GRACE = timedelta(minutes=2)
 
+# How long _counts_as_blocking trusts a just-decided "dispatch" verdict
+# (_InFlightInstall.dispatch_requested_at) as equivalent to a real
+# in_progress=True, before falling back to the real attribute alone.
+# update.install itself always runs as its own detached background task
+# (never awaited by the handler that decided to dispatch it, see
+# websocket_api.py's own _handle_install/_async_run_manual_install), so
+# in_progress can take a genuine moment to actually turn true after that
+# decision -- the tier gate's own cross-entity mutex check otherwise has
+# a real window where a second, concurrently-evaluated request sees
+# "nothing in_progress yet" and wrongly proceeds alongside the first.
+# Only ever needs to bridge that one scheduling gap, not a real install's
+# own duration, so this stays short and deliberately separate from
+# _FRONT_GRACE/_RECENTLY_INSTALLING_GRACE above, which both cover
+# unrelated, much longer-lived concerns.
+_DISPATCH_GRACE = timedelta(seconds=5)
+
 
 def _serialize_context(context: AutoInstallContext | None) -> dict[str, Any] | None:
     if context is None:
@@ -284,7 +300,12 @@ class _InFlightInstall:
     own comment and recently_installing_entity_ids below) -- a separate,
     purely additive record, never consulted by the stall-detection logic
     above. force_cleared: the manual "stop waiting" override (Repair issue
-    fix-flow, or the panel's own dialog button)."""
+    fix-flow, or the panel's own dialog button). dispatch_requested_at:
+    when async_request_install last decided "dispatch" for this entity,
+    bridging the real in_progress attribute's own brief delay in actually
+    turning true (see _DISPATCH_GRACE's own comment). A separate,
+    short-lived signal _counts_as_blocking also consults, cleared once
+    the real attribute catches up or the grace window itself expires."""
 
     front_since: datetime | None = None
     started_at: datetime | None = None
@@ -292,6 +313,7 @@ class _InFlightInstall:
     progress_last_increase_at: datetime | None = None
     last_true_at: datetime | None = None
     force_cleared: bool = False
+    dispatch_requested_at: datetime | None = None
 
 
 class _QueuedEntry:
@@ -736,7 +758,22 @@ class RolloutManager:
             await self._async_save()
         if blocking is not None:
             return "queued"
-        return await self._async_request_past_tier_gate(entry)
+        # Marked here, provisionally, synchronously, right after the tier
+        # gate itself clears -- not after the await self._async_save()
+        # just above (manual requests only) or after
+        # _async_request_past_tier_gate below (which can itself await),
+        # either of which would reopen the exact same cross-call race
+        # _DISPATCH_GRACE exists to close: a concurrently-evaluated second
+        # request's own synchronous tier-check could otherwise run in the
+        # gap before this entity_id's own claim is visible at all.
+        # Corrected back out below if the Zigbee-network gate actually
+        # queues this entity instead of dispatching it (not blocking,
+        # just not running yet either).
+        self._in_flight_entry(entity_id).dispatch_requested_at = dt_util.utcnow()
+        result = await self._async_request_past_tier_gate(entry)
+        if result != "dispatch":
+            self._in_flight_entry(entity_id).dispatch_requested_at = None
+        return result
 
     def _matching_manual_record(
         self, entity_id: str, to_version: str
@@ -886,19 +923,27 @@ class RolloutManager:
 
     def _counts_as_blocking(self, entity_id: str, state: State) -> bool:
         """Whether entity_id's own current state should count as "actively
-        installing" for the tier gate -- almost always just its own
-        in_progress attribute, except while genuinely unavailable, where
-        that attribute may just be stale (or missing outright). See
-        _UNAVAILABLE_GRACE's own comment for why a short grace period is
-        given before an unavailable entity stops counting, rather than
-        either extreme (trusting stale in_progress forever, or discounting
-        it the instant it goes unavailable). state.last_changed already
-        records the exact instant the main state itself last transitioned
-        (unlike in_progress, an attribute, not the main state) -- no need
-        for this module to track "since when unavailable" by hand."""
+        installing" for the tier gate: its own in_progress attribute, a
+        just-decided dispatch still within _DISPATCH_GRACE (see that
+        constant's own comment for why the real attribute alone isn't
+        enough here), or, while genuinely unavailable, a short grace
+        period in case that attribute is just stale (or missing outright).
+        See _UNAVAILABLE_GRACE's own comment for why that one specific
+        grace period exists, rather than either extreme (trusting stale
+        in_progress forever, or discounting it the instant it goes
+        unavailable). state.last_changed already records the exact instant
+        the main state itself last transitioned (unlike in_progress, an
+        attribute, not the main state), no need for this module to track
+        "since when unavailable" by hand."""
         entry = self._in_flight.get(entity_id)
         if entry is not None and entry.force_cleared:
             return False
+        if (
+            entry is not None
+            and entry.dispatch_requested_at is not None
+            and dt_util.utcnow() - entry.dispatch_requested_at < _DISPATCH_GRACE
+        ):
+            return True
         if state.state == "unavailable":
             return dt_util.utcnow() - state.last_changed < _UNAVAILABLE_GRACE
         return bool(state.attributes.get("in_progress"))
@@ -1075,6 +1120,16 @@ class RolloutManager:
             # mypy's own benefit too.
             if not group_key or not self._queues.get(group_key):
                 self._mark_entry_dispatching(entry)
+                # Same cross-call race as async_request_install's own
+                # (see _DISPATCH_GRACE's own comment), and the exact same
+                # condition _mark_entry_dispatching's own call just above
+                # already relies on: no Zigbee-network queue in the way,
+                # so _async_request_past_tier_gate a few lines down is
+                # guaranteed to resolve to "dispatch" too. Marked here,
+                # before the await self._async_save() right below, not
+                # after it or after that call -- either would reopen the
+                # same gap a concurrently-evaluated request could run in.
+                self._in_flight_entry(entity_id).dispatch_requested_at = dt_util.utcnow()
             # Persisted right away, not batched until this whole loop ends
             # (as it used to be, found by code review 2026-08-10, to avoid
             # one Store write per entry when several clear in the same
@@ -1094,6 +1149,12 @@ class RolloutManager:
             await self._async_save()
             if await self._async_request_past_tier_gate(entry) == "dispatch":
                 await self._async_dispatch(entry)
+            else:
+                # The provisional mark above turned out to be wrong (a
+                # same-network front entry appeared between the check
+                # above and here) -- corrected back out, same as
+                # async_request_install's own equivalent correction.
+                self._in_flight_entry(entity_id).dispatch_requested_at = None
             # This entry is now itself either dispatched or freshly queued
             # behind a same-network front entry, either way it hasn't
             # finished, so it must keep blocking anything at a higher tier
@@ -1713,7 +1774,19 @@ class RolloutManager:
                 entry.last_true_at = now
                 if entry.started_at is None:
                     entry.started_at = now
+                # The real attribute has caught up, this bridge is no
+                # longer needed -- see _DISPATCH_GRACE's own comment.
+                entry.dispatch_requested_at = None
         for entity_id, entry in list(self._in_flight.items()):
+            # Expired without the real attribute ever catching up (a
+            # dispatch that failed outright, or simply hasn't been
+            # observed yet by this same tick) -- _counts_as_blocking's
+            # own grace-window check already stops trusting this the
+            # instant it's this old anyway, cleared here too so a stale
+            # entry doesn't linger in self._in_flight forever.
+            if entry.dispatch_requested_at is not None and now - entry.dispatch_requested_at >= _DISPATCH_GRACE:
+                entry.dispatch_requested_at = None
+                self._prune_in_flight_if_empty(entity_id)
             if entry.last_true_at is not None and now - entry.last_true_at >= _RECENTLY_INSTALLING_GRACE:
                 entry.last_true_at = None
                 self._prune_in_flight_if_empty(entity_id)

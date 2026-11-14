@@ -34,54 +34,73 @@ require SUPERVISOR_UPDATED as a hard job condition), not guessed:
   installs the RAUC bundle, then raises a REBOOT_REQUIRED issue with an
   EXECUTE_REBOOT suggestion instead of calling sys_host.control.reboot()
   itself, leaving the real reboot to a separate, user-triggered action,
-  whenever that ends up happening). Reconsidered 2026-11-14, direct user
-  feedback: this install step shares no resource with Core/Supervisor/a
-  ZHA transfer (a background write to the inactive partition, not a
-  process restart), and the one thing that genuinely could disrupt
-  something (the reboot itself) is never something this gate -- or HA's
-  own job conditions on Core/Supervisor, confirmed against their real
-  source too -- can protect against anyway, since it happens whenever the
-  user gets to it, decoupled from any update.install call entirely.
-  Keeping it in the gated group bought no real safety, only needless
-  waiting, so it now sits here instead, exempt like "safe"/"firmware".
+  whenever that ends up happening). This install step shares no resource
+  with Core/Supervisor/a ZHA transfer (a background write to the
+  inactive partition, not a process restart), and the one thing that
+  genuinely could disrupt something (the reboot itself) is never
+  something this gate, or HA's own job conditions on Core/Supervisor
+  (confirmed against their real source too), can protect against anyway,
+  since it happens whenever the user gets to it, decoupled from any
+  update.install call entirely. Exempt like "safe"/"firmware".
+- "host_firmware": specifically RaspberryPiFirmwareUpdateEntity (its own
+  _attr_translation_key, "rpi_firmware"; both the standalone
+  raspberry_pi integration and homeassistant_yellow's own CM4/CM5 module
+  use this exact class). Same reasoning as "os" above, confirmed against
+  its own real source (homeassistant_hardware/util.py): the install call
+  itself only writes the new firmware (delegated to Supervisor, the same
+  bootloader-EEPROM path OS's own RAUC write already uses, not anything
+  inside Core's own process), the actual effect only takes hold after the
+  next reboot, and Supervisor raises its own REBOOT_REQUIRED issue the
+  same way it does for OS. An earlier version of this module isolated
+  this tier from every other firmware flash out of caution for a
+  hardware-level EEPROM conflict that never actually appears in the real
+  source, and that caution couldn't even have covered every
+  installation's own host firmware consistently in the first place (only
+  Raspberry Pi/Yellow are detected here at all). Exempt like "os".
+- "supervisor": restarts only its own container, not Home Assistant Core
+  itself (confirmed against supervisor's own real source, supervisor.py's
+  own update(): the sys_core.stop() it calls there is Supervisor's own
+  internal lifecycle orchestrator, a same-named but unrelated class to
+  HomeAssistantCore, confirmed by reading both. Core's own container is
+  never touched unless it was already missing when the new Supervisor
+  comes back up). The one remaining real risk this could still pose
+  (disrupting another Supervisor-managed add-on install already running)
+  was never actually covered by this tier mechanism anyway, since an
+  ordinary add-on update is "safe"-tier, exempt from this gate regardless
+  of what tier Supervisor itself sits at. What Supervisor genuinely does
+  require, confirmed against Core's/OS's own real job conditions
+  (JobCondition.SUPERVISOR_UPDATED on both): itself being current before
+  either one can even attempt to update at all, a real, enforced
+  dependency rather than a "least disruptive first" heuristic, held to
+  on our own side too via rollout_manager.py's own
+  _pending_supervisor_entity, which holds a Core/OS request back
+  whenever Supervisor itself still has a real update sitting there
+  uninstalled (dispatching either one anyway would just fail outright
+  against that same job condition). That check is independent of this
+  tier mechanism entirely, so "supervisor" needs no gated-tier membership
+  of its own for it to keep working. Exempt like "os"/"host_firmware".
 - "zha_firmware": device_class == "firmware" *and* the device is on a
   ZHA-managed Zigbee network specifically (see zigbee.py's own
-  is_zha_entity) -- split out from the plain "firmware" tier above, direct
-  user feedback, 2026-11-13: unlike every other firmware-class update
-  listed there, ZHA is a built-in part of Home Assistant Core's own
-  process, not a separate add-on or the device's own onboard flash, so a
-  Core restart lands on it exactly the same way it lands on any other
-  in-process state -- not "another install happening to run at the same
-  moment" (the needless-waiting case "firmware" above is exempted from),
-  a real risk of cutting an in-flight OTA transfer off mid-air. Zigbee2MQTT
-  (its own separate add-on process) is unaffected by this and stays in
-  "firmware" -- this split is ZHA-specific, not "Zigbee" in general.
-- "host_firmware": specifically RaspberryPiFirmwareUpdateEntity (its own
-  _attr_translation_key, "rpi_firmware" -- both the standalone raspberry_pi
-  integration and homeassistant_yellow's own CM4/CM5 module use this exact
-  class). The literal board Home Assistant itself runs on, not a peripheral
-  -- kept isolated from every *other* firmware flash too, not just
-  Supervisor/Core/OS, since a hardware-level hiccup on the host's own EEPROM
-  programmer while something else is also mid-flash isn't something either
-  HA's own source or ours can rule out with confidence. Installing it never
-  triggers an automatic reboot on its own (confirmed against its own real
-  source: "The new firmware only runs after the *next* reboot"), so this
-  isolation is about the flash itself, not a restart.
-- "supervisor": restarts only its own container, not Home Assistant Core
-  itself (confirmed: SupervisorSupervisorUpdateEntity's own docstring) --
-  still enough to disrupt any other Supervisor-managed (add-on) install
-  running at the same moment. Also the one every Core/OS update requires be
-  current first (JobCondition.SUPERVISOR_UPDATED, confirmed in both
-  supervisor/homeassistant/core.py and supervisor/os/manager.py) -- a real,
-  enforced dependency, not just a "least disruptive first" heuristic, and
-  now additionally held to on our own side too: rollout_manager.py's own
-  tier gate (_pending_supervisor_entity) holds a Core/OS request back
-  whenever Supervisor itself still has a real update sitting there
-  uninstalled, direct user feedback, 2026-11-14 -- dispatching either one
-  anyway would just fail outright against that same job condition, a
-  predictable failure this project can hold back instead of letting
-  happen.
-- "core": restarts Home Assistant Core's whole process.
+  is_zha_entity), split out from the plain "firmware" tier above:
+  unlike every other firmware-class update listed there, ZHA is a
+  built-in part of Home Assistant Core's own process, not a separate
+  add-on or the device's own onboard flash, so a Core restart lands on it
+  exactly the same way it lands on any other in-process state, a real
+  risk of cutting an in-flight OTA transfer off mid-air. Zigbee2MQTT (its
+  own separate add-on process) is unaffected by this and stays in
+  "firmware". This split is ZHA-specific, not "Zigbee" in general. Two
+  ZHA transfers at once aren't a concern this tier needs to cover either:
+  rollout_manager.py's own separate Zigbee-network pacing already serializes
+  any two Zigbee devices on the same network, ZHA or Zigbee2MQTT alike,
+  regardless of tier.
+- "core": restarts Home Assistant Core's whole process. The only other
+  tier genuinely at risk from something else running at the same moment
+  is "zha_firmware" above (both share Core's own process). After
+  reconsidering every other pairing against its real, confirmed
+  behavior, none of "os"/"host_firmware"/"supervisor" turned out to
+  share a real resource with Core, or with each other, so "core" and
+  "zha_firmware" are the only two tiers FIRST_GATED_RANK below actually
+  needs to cover.
 """
 from __future__ import annotations
 
@@ -91,19 +110,19 @@ from homeassistant.helpers import entity_registry as er
 from .coordinator import home_assistant_component_for_entity
 from .zigbee import is_zha_entity
 
-TIER_ORDER = ("safe", "firmware", "os", "zha_firmware", "host_firmware", "supervisor", "core")
+TIER_ORDER = ("safe", "firmware", "os", "host_firmware", "supervisor", "zha_firmware", "core")
 TIER_RANK = {tier: rank for rank, tier in enumerate(TIER_ORDER)}
 
-# Only "zha_firmware" and up are genuinely at risk from something else
-# running at the same time (a ZHA OTA transfer cut off mid-air by Core's
-# own restart, the host's own EEPROM programmer, the Supervisor container,
-# Core's own process); see the tier list above for why each of those
-# genuinely needs to wait its turn. "safe"/"firmware"/"os" were never a
-# real risk to each other (see "os"'s own entry above for why it moved
-# here, 2026-11-14), so rollout_manager.py's tier gate exempts all three
-# from ever being held back, however much other work is running -- "os"
-# still waits on Supervisor specifically, just via its own dedicated
-# _pending_supervisor_entity check, not this tier mechanism.
+# "zha_firmware" and "core" are the only two tiers left in the gated
+# group, the only pair confirmed to genuinely share a resource (Core's
+# own process). See each tier's own entry above for the full reasoning
+# behind every other tier, including "os"/"host_firmware"/"supervisor",
+# landing below this cutoff instead, exempt from ever being held back by
+# rollout_manager.py's tier gate, however much other work is running.
+# "os"/"core" still wait on Supervisor specifically when it has a real
+# update pending, and any two Zigbee devices on the same network still
+# pace one at a time, but both of those are separate mechanisms
+# (_pending_supervisor_entity, the Zigbee-network queue), not this one.
 FIRST_GATED_RANK = TIER_RANK["zha_firmware"]
 
 

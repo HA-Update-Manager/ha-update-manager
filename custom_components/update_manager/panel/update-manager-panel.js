@@ -4130,20 +4130,32 @@ class UpdateManagerPanel extends HTMLElement {
   // since a "ready" entity is never skipped/postponed by our own grouping
   // to begin with.
   //
-  // No client-side tiering here anymore. The same disruption-order
-  // (safe/firmware/os/zha_firmware/host_firmware/supervisor/core) is now
-  // enforced server-side, in rollout_manager.py's own tier gate
-  // (install_tiers.py), the exact same shared gate every dispatch path
-  // already goes through regardless of how it was triggered. This method
-  // is back to exactly what it always was before that existed: fire every
-  // entity concurrently,
-  // let the server decide per entity_id whether to actually dispatch now
-  // or hold it back -- see _buildUpdatesList's own "ready" row loop
-  // (this._tierWaiting/this._stuck) for how the panel shows that back.
+  // No real client-side tiering here, just the one Core-first tie-break
+  // sorted in just above. The actual disruption-order decision (only
+  // Core and a ZHA firmware update genuinely wait on each other, see
+  // install_tiers.py's own module docstring for the full, reconsidered
+  // reasoning) is enforced server-side, in rollout_manager.py's own
+  // tier gate, the exact same shared gate every dispatch path already
+  // goes through regardless of how it was triggered. Every request in
+  // the array still fires, let the server decide per entity_id whether
+  // to actually dispatch now or hold it back. See _buildUpdatesList's
+  // own "ready" row loop (this._tierWaiting/this._stuck) for how the
+  // panel shows that back.
   async _updateAllInGroup(group) {
     const entityIds = group.entities
       .filter((u) => !this._isEffectivelyInstalling(u.entity_id))
-      .map((u) => u.entity_id);
+      .map((u) => u.entity_id)
+      // Core moved to the front, not a reintroduction of client-side
+      // tiering (see the comment just below): rollout_manager.py's own
+      // tier gate already decides who actually waits for whom, this
+      // only breaks the tie on who gets there first when both are
+      // requested in the exact same breath. .map(...) below still fires
+      // every request in the array's own order (each callWS call itself
+      // sends synchronously, before Promise.allSettled awaits any of
+      // them), so Core's own request reaches the server, and claims its
+      // own tier-gate slot, before a ZHA firmware request in the same
+      // batch gets the chance to.
+      .sort((a, b) => (a === CORE_UPDATE_ENTITY_ID ? -1 : b === CORE_UPDATE_ENTITY_ID ? 1 : 0));
     if (!entityIds.length) return;
     // Fired immediately, before any of the actual dispatch/reload work
     // below -- clicking Update all otherwise showed nothing happening
