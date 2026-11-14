@@ -50,6 +50,7 @@ from .const import (
     localized_strings,
 )
 from .coordinator import UpdateManagerCoordinator
+from .device_identity import is_hacs_entity
 from .entity_rename import relabel_key
 from .github_auth import GitHubAuthManager
 from .github_release_notes import parse_release_url
@@ -343,8 +344,10 @@ class InstallManager:
         # something confirmed live yet, but the exact same shape of bug
         # staging_skip.py already had to fix once.
         self._lock = asyncio.Lock()
-        # Serializes the actual update.install dispatches from
-        # _async_run_install against each other, distinct from self._lock
+        # Serializes update.install dispatches for HACS/Marketplace-backed
+        # entities specifically against each other (see
+        # async_dispatch_install's own docstring for why it's scoped that
+        # narrowly, and why it wasn't always), distinct from self._lock
         # above (which only serializes whole tick passes, not the installs
         # a single tick's own asyncio.gather fires concurrently). Found
         # live, 2026-11-02: a batch of simultaneous auto-installs (several
@@ -357,11 +360,12 @@ class InstallManager:
         # dispatched via its own hass.async_create_task (not awaited inline
         # by _async_execute), so a slow install still doesn't hold up
         # evaluating the rest of the batch; only the actual service call
-        # itself now waits its turn. Doesn't cover RolloutManager's own
-        # Zigbee-queued dispatches (rollout_manager.py's _async_dispatch,
-        # already paced per Zigbee network) or a manual Update All click
-        # (websocket_api.py, outside this class entirely); neither of
-        # those reproduced the reported race, both deliberately left alone.
+        # itself now waits its turn, and (since async_dispatch_install's own
+        # 2026-11-14 fix) only when it's actually a HACS-backed entity.
+        # Doesn't cover RolloutManager's own Zigbee-queued dispatches
+        # (rollout_manager.py's _async_dispatch, already paced per Zigbee
+        # network): a different resource (the Zigbee radio, not this
+        # directory), already serialized by its own, separate mechanism.
         self._install_lock = asyncio.Lock()
 
     async def async_load(self) -> None:
@@ -1090,18 +1094,33 @@ class InstallManager:
         return context
 
     async def async_dispatch_install(self, service_data: dict[str, Any], context: Context | None = None) -> None:
-        """The actual update.install call, serialized against every other
-        one this exact class dispatches at the same time, via self._install_
-        lock (see its own comment for the HACS shared-/tmp/hacs_backup-dir
-        race this exists to prevent). Public, not folded back into _async_
-        run_install's own try block below, so websocket_api.py's manual-
-        install path can route through this same lock too, found live,
-        2026-11-04: a panel "Update all" click (3 manual installs dispatched
-        at once, none of them going through this class at all until now)
-        reproduced the exact same race this lock was already built for,
-        something self._install_lock's own original comment had explicitly,
-        but wrongly, assumed couldn't happen."""
-        async with self._install_lock:
+        """The actual update.install call, serialized via self._install_lock
+        against every other HACS/Marketplace-backed install this exact
+        class dispatches at the same time (see that field's own comment
+        for the shared /tmp/hacs_backup-dir race this exists to prevent).
+        Only a HACS-backed entity actually touches that shared directory,
+        so only those contend for the lock; anything else (an add-on, a
+        device's own firmware, Home Assistant Core/Supervisor/OS) is never
+        held up by this at all, dispatched exactly as its own tier/rollout
+        status already allows.
+
+        Direct user feedback, 2026-11-14: a real "Update all" batch of
+        ordinary add-ons and HACS integrations installed one at a time,
+        every one of them waiting on the same global lock regardless of
+        what it actually was, defeating the whole point of the tier gate's
+        own "safe"-tier concurrency. This lock's own reach had quietly
+        grown from "the two HACS installs that can actually race" to
+        "literally every update this class ever dispatches" without
+        anyone deciding that on purpose, confirmed against v0.17.0's own
+        released source: the exact same lock-and-blocking-call shape.
+        Public, not folded back into _async_run_install's own try block
+        below, so websocket_api.py's manual-install path can route
+        through this same, now correctly-scoped lock too."""
+        entity_id = service_data.get("entity_id")
+        if isinstance(entity_id, str) and is_hacs_entity(self.hass, entity_id):
+            async with self._install_lock:
+                await self.hass.services.async_call("update", "install", service_data, blocking=True, context=context)
+        else:
             await self.hass.services.async_call("update", "install", service_data, blocking=True, context=context)
 
     async def _async_run_install(self, entity_id: str, to_version: str, service_data: dict[str, Any]) -> None:
