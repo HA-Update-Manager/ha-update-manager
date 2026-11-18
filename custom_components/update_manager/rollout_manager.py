@@ -50,6 +50,7 @@ from homeassistant.util import dt as dt_util
 from .announcer import AutoInstallContext
 from .const import DOMAIN, localized_strings
 from .coordinator import UpdateManagerCoordinator, home_assistant_component_for_entity
+from .device_identity import is_hacs_entity
 from .entity_rename import relabel_key
 from .install_tiers import FIRST_GATED_RANK, TIER_RANK, tier_for_entity
 from .semver import min_ha_version_required
@@ -218,6 +219,23 @@ _RECENTLY_INSTALLING_GRACE = timedelta(minutes=2)
 # _FRONT_GRACE/_RECENTLY_INSTALLING_GRACE above, which both cover
 # unrelated, much longer-lived concerns.
 _DISPATCH_GRACE = timedelta(seconds=5)
+
+# How long Home Assistant Core's own install waits for an already-installing
+# Marketplace-backed entity before giving up on waiting and proceeding
+# anyway (see _pending_marketplace_entity below): a Marketplace install's own
+# download/extract runs inside Core's own process, so a Core restart landing
+# on it mid-air is the same real risk as a ZHA Zigbee OTA transfer, just
+# usually over in seconds rather than minutes. Deliberately capped, unlike
+# the ZHA/Core mutex (which waits however long it takes): a failed
+# Marketplace install can leave its own in_progress stuck true forever
+# (Marketplace's own bug, not this project's, see CHANGELOG.md's 2026-08
+# "installing spinner forever" entry), and _counts_as_blocking has no
+# timeout of its own for that case, only a much later Repair issue a human
+# still has to act on. Blocking Core's own update on that indefinitely would
+# be worse than the rare case this cap trades away: occasionally letting a
+# genuinely slow (not stuck) Marketplace install get cut off by Core's
+# restart after all.
+_CORE_MARKETPLACE_WAIT_CAP = timedelta(minutes=3)
 
 
 def _serialize_context(context: AutoInstallContext | None) -> dict[str, Any] | None:
@@ -982,6 +1000,13 @@ class RolloutManager:
         waits out anything else, than to let a predictable failure happen
         when we already know it's coming.
 
+        Also returns a Marketplace-backed entity's own entity_id for a Core
+        request specifically, whenever that entity is still actively
+        installing (see _pending_marketplace_entity's own docstring for why
+        this runs the other direction from every other check here, Core
+        waiting on a "safe"-tier entity rather than the reverse, and why
+        it's capped rather than open-ended).
+
         A live check, deliberately never cached: re-run on every request
         and every periodic recheck (see _async_periodic_recheck), since
         "what's installing right now" changes continuously and this must
@@ -996,6 +1021,9 @@ class RolloutManager:
         pending_supervisor = self._pending_supervisor_entity(entity_id)
         if pending_supervisor is not None:
             return pending_supervisor
+        pending_marketplace = self._pending_marketplace_entity(entity_id)
+        if pending_marketplace is not None:
+            return pending_marketplace
         my_rank = TIER_RANK[tier_for_entity(self.hass, entity_id)]
         if my_rank < FIRST_GATED_RANK:
             return None
@@ -1031,6 +1059,42 @@ class RolloutManager:
             latest = state.attributes.get("latest_version")
             installed = state.attributes.get("installed_version")
             return other_id if latest and latest != installed else None
+        return None
+
+    def _pending_marketplace_entity(self, entity_id: str) -> str | None:
+        """A Marketplace-backed entity's own entity_id, only when entity_id
+        is Core itself and that entity currently counts as blocking (see
+        _counts_as_blocking) and hasn't been installing longer than
+        _CORE_MARKETPLACE_WAIT_CAP yet (see that constant's own comment for
+        why Core's own wait is capped here, unlike every other wait this
+        gate enforces). None for anything else, including once the cap is
+        reached: this is the one case where "still blocking" stops meaning
+        "still wait" after a point, so Core's own update can never be held
+        up indefinitely by a Marketplace entity's own stuck-forever
+        in_progress bug.
+
+        Runs the opposite direction from the ZHA/Core mutex and
+        _pending_supervisor_entity above: those make a lower-priority
+        entity wait for Core/Supervisor, this makes Core itself wait for a
+        "safe"-tier entity, specifically because here it's the Marketplace
+        install (not Core) whose own in-process work is at risk of being
+        cut off, and Core is the one free to simply hold off starting."""
+        if home_assistant_component_for_entity(self.hass, entity_id) != "core":
+            return None
+        for other_id in self.hass.states.async_entity_ids("update"):
+            if not is_hacs_entity(self.hass, other_id):
+                continue
+            state = self.hass.states.get(other_id)
+            if state is None or not self._counts_as_blocking(other_id, state):
+                continue
+            entry = self._in_flight.get(other_id)
+            if (
+                entry is not None
+                and entry.started_at is not None
+                and dt_util.utcnow() - entry.started_at >= _CORE_MARKETPLACE_WAIT_CAP
+            ):
+                continue
+            return other_id
         return None
 
     async def _async_retry_tier_blocked(self) -> None:
@@ -1090,6 +1154,25 @@ class RolloutManager:
             if entry is None:
                 continue
             my_rank = ranks[entity_id]
+            # Re-checks the exact same thing async_request_install's own
+            # fresh call already does for a brand-new request, found by
+            # review while adding _pending_marketplace_entity above: unlike
+            # the generic tier mutex (TIER_RANK[...] >= FIRST_GATED_RANK),
+            # neither that check nor _pending_supervisor_entity is visible
+            # to blocking_rank's own in_progress-only scan below at all (a
+            # pending-but-not-yet-dispatched Supervisor update, or a
+            # Marketplace install past its own wait cap, is never
+            # "in_progress" either way), so this loop could otherwise
+            # release entity_id here even while one of those two still
+            # genuinely applies. _tier_blocking_entity's own loop still
+            # correctly sees anything this same pass already marked as
+            # dispatching moments ago (via dispatch_requested_at's own
+            # _DISPATCH_GRACE window, read the same way by
+            # _counts_as_blocking either way), so this doesn't reopen the
+            # cross-entry-in-the-same-pass race blocking_rank's own
+            # tracking below exists for.
+            if self._tier_blocking_entity(entity_id) is not None:
+                continue
             if blocking_rank is not None and blocking_rank < my_rank:
                 continue
             del self._tier_blocked[entity_id]

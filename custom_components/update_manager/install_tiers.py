@@ -12,7 +12,14 @@ source (supervisor/homeassistant/core.py, supervisor/os/manager.py -- both
 require SUPERVISOR_UPDATED as a hard job condition), not guessed:
 
 - "safe": everything else, never blocked by anything -- ordinary integration/
-  add-on/card updates, the overwhelming majority.
+  add-on/card updates, the overwhelming majority. A Marketplace-backed
+  entity specifically is still the one exception running the other
+  direction: Core's own install waits briefly for one already installing
+  (its own download/extract shares Core's process, the exact same risk as
+  "zha_firmware" below), via rollout_manager.py's own
+  _pending_marketplace_entity, capped rather than open-ended (see that
+  constant's own comment). The "safe" entity itself is still never held
+  back by anything, only Core's own install defers to it, briefly.
 - "firmware": device_class == "firmware" (HA's own UpdateDeviceClass enum),
   minus ZHA (see "zha_firmware" below). Dozens of real integrations use
   this device_class (WLED, Shelly, ESPHome, UniFi, Zigbee2MQTT, Z-Wave JS,
@@ -100,7 +107,10 @@ require SUPERVISOR_UPDATED as a hard job condition), not guessed:
   behavior, none of "os"/"host_firmware"/"supervisor" turned out to
   share a real resource with Core, or with each other, so "core" and
   "zha_firmware" are the only two tiers FIRST_GATED_RANK below actually
-  needs to cover.
+  needs to cover. A Marketplace-backed entity shares that same resource
+  too, despite sitting in "safe", see that tier's own entry above for why
+  it's handled as its own, separate, capped check instead of a third
+  member of this gated group.
 """
 from __future__ import annotations
 
