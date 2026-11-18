@@ -110,15 +110,19 @@ class InstallLog:
                 # dispatched update.install call whenever the entity's
                 # supported_features includes UpdateEntityFeature.BACKUP, no
                 # other condition -- so for an auto-installed entry this is a
-                # sure fact, not a guess. A manual install has no such
-                # guarantee: it might go through HA's own native dialog
-                # (its own separate backup checkbox, entirely invisible to
-                # us) as easily as our own panel's Install button, so this
-                # stays None there -- same "hide the fact entirely rather
-                # than show an unreliable guess" treatment as
-                # auto_install_reason below. Direct user feedback, 2026-08-01:
-                # nowhere did the panel actually show whether that backup
-                # succeeded
+                # sure fact, not a guess. websocket_api.py's own _handle_install
+                # (our panel's Install/Update all button) does the exact same
+                # check since 2026-11-18, but "manual" here also covers the
+                # rarer case of a recent context.user_id this project didn't
+                # itself dispatch (see __init__.py's own "manual" vs "external"
+                # comment), most plausibly HA's own native install dialog
+                # (its own separate backup checkbox, entirely invisible to us),
+                # which carries no such guarantee. install_method doesn't tell
+                # those two "manual" cases apart, so this stays None for
+                # either, same "hide the fact entirely rather than show an
+                # unreliable guess" treatment as auto_install_reason below.
+                # Direct user feedback, 2026-08-01: nowhere did the panel
+                # actually show whether that backup succeeded
                 # (following up on an earlier request to verify this
                 # actually happens at all) -- this is what makes that
                 # already-verified behaviour visible per install, not just

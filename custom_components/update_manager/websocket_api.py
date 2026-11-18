@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
+from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
@@ -953,7 +954,6 @@ async def _async_run_manual_install(
     {
         vol.Required("type"): "update_manager/install",
         vol.Required("entity_id"): str,
-        vol.Optional("backup"): bool,
     }
 )
 async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
@@ -980,7 +980,15 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     the wrong way around -- a bare async_create_task with no try/except at
     all around it, so a real failure here just vanished into HA's own
     generic unhandled-task-exception log, no Update Manager context, no
-    notification, nothing."""
+    notification, nothing.
+
+    Requests a backup under the exact same condition install_manager.py's
+    own _async_execute does (the entity's own supported_features includes
+    UpdateEntityFeature.BACKUP), not a frontend-supplied flag. Found live,
+    2026-11-18: the panel never actually sent one (update-manager-panel.js's
+    own Update all/Install call only ever passes entity_id), so this always
+    evaluated to no backup at all, for every entity, regardless of what it
+    supports."""
     entity_id = msg["entity_id"]
     data = _get_data(hass)
     if data:
@@ -989,7 +997,8 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     if state is not None and state.attributes.get("skipped_version"):
         await hass.services.async_call("update", "clear_skipped", {"entity_id": entity_id}, blocking=True)
     service_data: dict[str, Any] = {"entity_id": entity_id}
-    if msg.get("backup"):
+    supported_features = state.attributes.get("supported_features", 0) if state else 0
+    if supported_features & UpdateEntityFeature.BACKUP:
         service_data["backup"] = True
 
     # This connection's own user, not the default, fresh, contextless
