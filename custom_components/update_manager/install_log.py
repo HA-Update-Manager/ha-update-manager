@@ -19,6 +19,8 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
+from .firmware_version_discovery import backfill_real_versions_for_entry
+from .firmware_version_registry import FirmwareVersionManager
 from .install_log_retention import DEFAULT_POLICY, apply_release_notes_retention, enforce_byte_backstop
 
 _LOGGER = logging.getLogger(__name__)
@@ -85,6 +87,8 @@ class InstallLog:
         trusted_voter_usernames: list[str] | None = None,
         announced_at: str | None = None,
         available_since: str | None = None,
+        from_version_real: str | None = None,
+        to_version_real: str | None = None,
     ) -> None:
         # "auto_installed" kept as its own bool key too (derived, not a
         # second independent input) -- existing readers (sensor.py,
@@ -136,6 +140,16 @@ class InstallLog:
                 "trusted_voter_usernames": trusted_voter_usernames or [],
                 "announced_at": announced_at,
                 "available_since": available_since,
+                # Whatever was already known at the moment of logging, from
+                # coordinator.cache's own installed_version_real/
+                # latest_version_real -- see __init__.py's own
+                # _async_log_install. May still be None here even when the
+                # real strings become known later; async_backfill_real_versions
+                # below is what catches up an already-logged entry at that
+                # point, direct user feedback, 2026-11-24 ("als we de
+                # versies weten moeten we ze kunnen laten zien").
+                "from_version_real": from_version_real,
+                "to_version_real": to_version_real,
             }
         )
         if len(self._entries) > MAX_ENTRIES:
@@ -144,6 +158,68 @@ class InstallLog:
         apply_release_notes_retention(self._entries, DEFAULT_POLICY, now)
         enforce_byte_backstop(self._entries, now, _MAX_STORE_BYTES)
         await self._store.async_save(self._entries)
+
+    async def async_backfill_real_versions(self, firmware_version_manager: FirmwareVersionManager | None) -> None:
+        """Fills in from_version_real/to_version_real for every already-
+        logged entry still missing one or both, now that the shared table
+        (or the device's own current sw_version) might know a real string
+        that wasn't available yet at the time this entry was first logged
+        -- direct user feedback, 2026-11-24: "als we de versies weten
+        moeten we ze kunnen laten zien". Triggered by the panel's own
+        manual refresh button (see websocket_api.py), not run
+        automatically on every tick: a full sweep (up to MAX_ENTRIES) isn't
+        worth paying on every coordinator cycle for data that, once
+        learned, essentially never changes again.
+
+        Uses backfill_real_versions_for_entry, not real_versions_for_entity
+        -- the latter trusts a live sw_version read as describing whatever
+        raw version it's handed, which only holds for the entity's own
+        *current* state, never a past entry's from_version (the device has
+        since moved past it, by definition) and not even every entry's
+        to_version (not once a later install has superseded it too).
+
+        An entry whose own from_version_real/to_version_real are already
+        both set is normally left alone (nothing left to learn) -- except
+        when they're identical despite from_version != to_version, a sign
+        this entry was filled in before firmware_version_discovery.py's own
+        same-jump-duplicate guard existed (found live, 2026-11-24: entries
+        logged that way can never self-correct otherwise, since they look
+        exactly as "already complete" as a genuinely correct one). Cleared
+        first, then re-derived the normal way below -- which may restore
+        one side, both, or neither, depending on what's actually known now,
+        never just re-applies the same stale guess."""
+        if firmware_version_manager is None:
+            return
+        changed = False
+        for entry in self._entries:
+            from_version_real = entry.get("from_version_real")
+            to_version_real = entry.get("to_version_real")
+            stale_duplicate = (
+                from_version_real
+                and to_version_real
+                and from_version_real == to_version_real
+                and entry.get("from_version") != entry.get("to_version")
+            )
+            if from_version_real and to_version_real and not stale_duplicate:
+                continue
+            if stale_duplicate:
+                entry["from_version_real"] = None
+                entry["to_version_real"] = None
+                changed = True
+            entity_id = entry.get("entity_id")
+            if not entity_id:
+                continue
+            from_real, to_real = backfill_real_versions_for_entry(
+                self._hass, entity_id, entry.get("from_version"), entry.get("to_version"), firmware_version_manager
+            )
+            if from_real and not entry.get("from_version_real"):
+                entry["from_version_real"] = from_real
+                changed = True
+            if to_real and not entry.get("to_version_real"):
+                entry["to_version_real"] = to_real
+                changed = True
+        if changed:
+            await self._store.async_save(self._entries)
 
     async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
         """Relabels every existing entry's entity_id after a live HA entity

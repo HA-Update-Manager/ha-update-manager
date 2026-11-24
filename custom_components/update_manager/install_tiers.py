@@ -12,14 +12,18 @@ source (supervisor/homeassistant/core.py, supervisor/os/manager.py -- both
 require SUPERVISOR_UPDATED as a hard job condition), not guessed:
 
 - "safe": everything else, never blocked by anything -- ordinary integration/
-  add-on/card updates, the overwhelming majority. A Marketplace-backed
-  entity specifically is still the one exception running the other
-  direction: Core's own install waits briefly for one already installing
-  (its own download/extract shares Core's process, the exact same risk as
-  "zha_firmware" below), via rollout_manager.py's own
-  _pending_marketplace_entity, capped rather than open-ended (see that
-  constant's own comment). The "safe" entity itself is still never held
-  back by anything, only Core's own install defers to it, briefly.
+  add-on/card updates, the overwhelming majority. Core's own install still
+  waits briefly for any one of these already installing, running the other
+  direction, via rollout_manager.py's own _pending_safe_tier_entity, capped
+  rather than open-ended (see that constant's own comment). Originally
+  Marketplace-only (its own download/extract genuinely shares Core's
+  process, the same risk as "zha_firmware" below) -- broadened to every
+  "safe"-tier entity, direct user feedback, 2026-11-24, once Home
+  Assistant's own backup-pauses-everything behavior (triggered by Core's
+  own update) was confirmed live to cut an *unrelated* app's install short
+  too, a real risk this tier never shared a process to protect against
+  before. The "safe" entity itself is still never held back by anything,
+  only Core's own install defers to it, briefly.
 - "firmware": device_class == "firmware" (HA's own UpdateDeviceClass enum),
   minus ZHA (see "zha_firmware" below). Dozens of real integrations use
   this device_class (WLED, Shelly, ESPHome, UniFi, Zigbee2MQTT, Z-Wave JS,

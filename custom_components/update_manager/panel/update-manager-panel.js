@@ -250,6 +250,23 @@ const INSTALLING_FLICKER_GRACE_MS = 60000;
 // holding their spot).
 const INSTALLING_SECTION_GRACE_MS = 15000;
 
+// How long _stateWithRememberedPercentage keeps showing an entity's last
+// real update_percentage once a push reports it as null again, while that
+// entity still counts as installing -- bridges only a one-off rendering
+// race (the original 2026-08-11 bug this exists for: a full rebuild
+// landing at the exact unlucky moment a push's own update_percentage was
+// momentarily missing, even though the real install hadn't actually
+// paused). Deliberately short, not "however long this install takes":
+// found live, 2026-11-24, direct user feedback -- a real update entity can
+// legitimately clear update_percentage back to null for a genuine,
+// possibly long "preparing" sub-phase (confirmed against Home Assistant's
+// own real frontend source, more-info-update.ts, which shows its own
+// indeterminate spinner the instant update_percentage is null, no memory
+// of its own at all), and showing a stale, stuck-looking ring (sometimes
+// frozen at 100%) through that whole phase instead would be actively
+// misleading, not just cosmetically late.
+const REMEMBERED_PERCENTAGE_GRACE_MS = 5000;
+
 // The Updates tab's own vote-nudge section (_buildUpdatesEmptyState),
 // shown whenever no actionable update row is on screen: at most this many
 // of the user's own install_log entries are actually probed via
@@ -987,6 +1004,26 @@ function buildKeyValueRows(pairs) {
 // among the plain details instead of under its own "Release notes"
 // heading. null when there's no
 // releaseUrl at all -- callers skip inserting it entirely in that case.
+// "16784654 → 16786436" on its own, or "16784654 (1.93.7) → 16786436 (1.164.2)"
+// once a real, human-readable firmware version is known for either side
+// (crowd-sourced, see firmware_version_registry.py) -- same conditional-
+// parenthetical idiom already used for the size badge and the "(skipped)"
+// suffix elsewhere in this file, not a new one. Falsy fromReal/toReal
+// (missing, undefined, or null alike) degrades gracefully to the plain
+// "from → to" text, never shows "undefined".
+function formatVersionJump(from, to, fromReal, toReal) {
+  // Attached per side, not joined into one shared "(from → to)" suffix at
+  // the end -- direct user feedback, 2026-11-24: the joined form read as
+  // "16784654 → 16786436 (1.122.2 → ?)" even when only the *from* side's
+  // real version was actually known, misleadingly implying the "?" was a
+  // specific missing fact about the *to* side rather than just "not known
+  // yet". Each side now only ever shows its own real version, right next
+  // to itself, and never shows a bare "?" placeholder at all.
+  const fromText = fromReal ? `${from} (${fromReal})` : from;
+  const toText = toReal ? `${to} (${toReal})` : to;
+  return `${fromText} → ${toText}`;
+}
+
 function buildReleaseUrlLinkRow(tr, releaseUrl) {
   if (!releaseUrl) return null;
   const row = document.createElement("div");
@@ -1718,15 +1755,38 @@ function _justFailed(hass, entityId) {
 // has no device at all (hass.entities/hass.devices are always real HA
 // frontend objects, never guessed): callers fall back to the older
 // friendly_name-based guess for that case.
+// Memoized per hass.entities object reference (a new one every time HA's
+// own entity registry actually changes, the same reference otherwise --
+// standard HA frontend convention), not recomputed on every _deviceName
+// call: that used to do a fresh Object.keys(hass.entities).filter(...) scan
+// over *every* entity in the whole instance on every single call, and
+// _deviceName itself is reached once per update entity across many
+// per-row render paths -- an O(total_entities x update_entities) cost on a
+// full Updates-tab render on a large instance. Found by /simplify.
+let _siblingUpdateCountCache = null;
+
+function _siblingUpdateCountMap(hassEntities) {
+  if (_siblingUpdateCountCache && _siblingUpdateCountCache.entities === hassEntities) {
+    return _siblingUpdateCountCache.counts;
+  }
+  const counts = new Map();
+  for (const id of Object.keys(hassEntities)) {
+    if (!id.startsWith("update.")) continue;
+    const deviceId = hassEntities[id].device_id;
+    if (!deviceId) continue;
+    counts.set(deviceId, (counts.get(deviceId) || 0) + 1);
+  }
+  _siblingUpdateCountCache = { entities: hassEntities, counts };
+  return counts;
+}
+
 function _deviceName(hass, entityId) {
   const deviceId = hass && hass.entities && hass.entities[entityId] && hass.entities[entityId].device_id;
   const device = deviceId && hass.devices && hass.devices[deviceId];
   const name = device && (device.name_by_user || device.name);
   if (typeof name !== "string" || !name.trim()) return undefined;
-  const siblingUpdateEntities = Object.keys(hass.entities).filter(
-    (id) => id.startsWith("update.") && hass.entities[id].device_id === deviceId
-  );
-  if (siblingUpdateEntities.length <= 1) return name.trim();
+  const siblingUpdateCount = _siblingUpdateCountMap(hass.entities).get(deviceId) || 0;
+  if (siblingUpdateCount <= 1) return name.trim();
   const rawName = hass.states && hass.states[entityId] && hass.states[entityId].attributes.friendly_name;
   const stripped = typeof rawName === "string" ? rawName.replace(/\s+update(\s+available)?$/i, "").trim() : "";
   return stripped || name.trim();
@@ -1929,6 +1989,26 @@ function installingIndicatorNode(state, tr) {
 function friendlyEntityName(hass, entityId) {
   const state = entityState(hass, entityId);
   return (state && state.attributes && state.attributes.friendly_name) || entityId;
+}
+
+// Whether entityId is specifically Home Assistant's own Backup Manager
+// state sensor -- rollout_manager.py's own _backup_in_progress_entity can
+// return this as the tier-blocking entity_id, for *any* request, whenever
+// a backup is genuinely in progress (see that function's own docstring).
+// Checked here so a "waiting for X" badge can say the plain, real reason
+// (waiting_for_backup_text below) instead of waiting_for_entity's own
+// generic "Waiting for Backup Manager state to finish" phrasing, which
+// would read as technical and unclear about what's actually happening.
+// hass.entities[id].platform (confirmed against home-assistant/frontend's
+// own real source, EntityRegistryDisplayEntry) is this entity's owning
+// integration -- "backup" for several sensors that integration sets up
+// (state, next/last scheduled backup, and more), not just this one, but
+// rollout_manager.py's own _backup_in_progress_entity only ever returns
+// this exact one as a tier-blocking entity_id, so matching by platform
+// alone is already exact here without needing a narrower, per-entity
+// check (unique_id isn't exposed to the frontend at all).
+function isBackupManagerEntity(hass, entityId) {
+  return !!(hass.entities && hass.entities[entityId] && hass.entities[entityId].platform === "backup");
 }
 
 // Shared by the "Installing" section's own stuck row and the detail
@@ -2750,6 +2830,7 @@ class UpdateManagerPanel extends HTMLElement {
     // membership, the same "Waiting for X" treatment the Zigbee rollout
     // queue's own badge already had.
     this._tierWaiting = new Map();
+    this._tierWaitingBackup = new Set();
     this._stuck = new Map();
     // entityId -> Date.now() it was first observed installing=true, purely
     // client-side (distinct from rollout_manager.py's own server-side
@@ -2768,7 +2849,8 @@ class UpdateManagerPanel extends HTMLElement {
     // section for any reason -- feeds INSTALLING_SECTION_GRACE_MS's own
     // tolerance, see that constant's own comment and _buildUpdatesList.
     this._installingSectionLastSeenAt = new Map();
-    // entityId -> the last real (non-null) update_percentage seen -- feeds
+    // entityId -> { percentage, rememberedAt } for the last real
+    // (non-null) update_percentage seen -- feeds
     // _stateWithRememberedPercentage below.
     this._lastKnownPercentage = new Map();
     this._installLog = null;
@@ -3024,6 +3106,14 @@ class UpdateManagerPanel extends HTMLElement {
       // rebuilt into a Map here the same way this._rolloutStatusByEntityId
       // already is.
       this._tierWaiting = new Map(Object.entries(updatesResp.tier_waiting || {}));
+      // Subset of this._tierWaiting's own keys blocked specifically by
+      // Home Assistant's own backup lock (rollout_manager.py's own
+      // tier_blocked_due_to_backup_entity_ids) -- consulted alongside it
+      // to say "waiting for X's own backup to finish" instead of the
+      // more general "waiting for X to finish", direct user feedback,
+      // 2026-11-24 ("alleen de backup hoeft klaar te zijn, niet de
+      // update").
+      this._tierWaitingBackup = new Set(updatesResp.tier_waiting_backup || []);
       // entityIds rollout_manager.py's own periodic tracking has recently
       // (see its own _RECENTLY_INSTALLING_GRACE) observed in_progress true
       // -- consulted by _isEffectivelyInstalling as a source of truth that
@@ -4629,7 +4719,10 @@ class UpdateManagerPanel extends HTMLElement {
         // "installed → latest", matching the main Updates list's own rows
         // right above this card (_buildUpdatesList) and the History tab's
         // own (_buildHistoryList), direct user feedback, 2026-11-05.
-        const supportingText = [deviceAreaName(this._hass, entityId), u ? `${u.installed_version} → ${u.latest_version}` : null]
+        const supportingText = [
+          deviceAreaName(this._hass, entityId),
+          u ? formatVersionJump(u.installed_version, u.latest_version, u.installed_version_real, u.latest_version_real) : null,
+        ]
           .filter(Boolean)
           .join(" ⋅ ");
         let timerBadgeInfo;
@@ -4659,6 +4752,10 @@ class UpdateManagerPanel extends HTMLElement {
           const tierBlockingEntityId = this._tierWaiting.get(entityId);
           if (rolloutStatus) {
             timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.waiting_for_entity(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId)) };
+          } else if (tierBlockingEntityId && isBackupManagerEntity(this._hass, tierBlockingEntityId)) {
+            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.waiting_for_backup_text };
+          } else if (tierBlockingEntityId && this._tierWaitingBackup.has(entityId)) {
+            timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.waiting_for_entity_backup_text(friendlyEntityName(this._hass, tierBlockingEntityId)) };
           } else if (tierBlockingEntityId) {
             timerBadgeInfo = { statusIcon: ICON_CLOCK_OUTLINE, statusText: tr.waiting_for_entity(friendlyEntityName(this._hass, tierBlockingEntityId)) };
           } else {
@@ -4723,7 +4820,7 @@ class UpdateManagerPanel extends HTMLElement {
   _stateWithRememberedPercentage(entityId, state) {
     const live = state && state.attributes && state.attributes.update_percentage;
     if (live != null) {
-      this._lastKnownPercentage.set(entityId, live);
+      this._lastKnownPercentage.set(entityId, { percentage: live, rememberedAt: Date.now() });
       return state;
     }
     if (!this._isEffectivelyInstalling(entityId, state)) {
@@ -4731,9 +4828,10 @@ class UpdateManagerPanel extends HTMLElement {
       return state;
     }
     const remembered = this._lastKnownPercentage.get(entityId);
-    return remembered == null
-      ? state
-      : { ...state, attributes: { ...state.attributes, update_percentage: remembered } };
+    if (remembered == null || Date.now() - remembered.rememberedAt >= REMEMBERED_PERCENTAGE_GRACE_MS) {
+      return state;
+    }
+    return { ...state, attributes: { ...state.attributes, update_percentage: remembered.percentage } };
   }
 
   // Rebuilds this._rolloutStatusByEntityId from this._rolloutGroups --
@@ -5024,7 +5122,7 @@ class UpdateManagerPanel extends HTMLElement {
               u.entity_id,
               [
                 deviceAreaName(this._hass, u.entity_id),
-                `${u.installed_version} → ${u.latest_version}` +
+                formatVersionJump(u.installed_version, u.latest_version, u.installed_version_real, u.latest_version_real) +
                   (u.status === "skipped" && !installingNow ? ` (${tr.status_skipped_suffix})` : ""),
               ]
                 .filter(Boolean)
@@ -5245,27 +5343,30 @@ class UpdateManagerPanel extends HTMLElement {
           version: entry.to_version,
         });
       } catch {
+        // Not marked seen -- a transient failure to resolve this entry
+        // shouldn't permanently exclude it, unlike every outcome below,
+        // which all resolved successfully.
         continue;
       }
-      if (result.identifiable && !result.my_verdict) {
+      // Marked seen for every resolved outcome, not only "identifiable and
+      // not yet voted" -- this entity's own verdict is now a known, stable
+      // fact for this session either way (unidentifiable, already voted,
+      // own_repo, or a genuine new candidate), so none of those should be
+      // re-probed on a later refill either. Found by /code-review: this
+      // used to only mark the two cases below, silently contradicting this
+      // method's own opening comment ("every entity already resolved this
+      // session... excluded here too") for an unidentifiable or
+      // already-voted entry, wasting part of every scan's fixed probe
+      // budget re-querying the same ones indefinitely.
+      _voteNudgeSeenEntityIds.add(entry.entity_id);
+      if (jumpKey) _voteNudgeSeenJumps.add(jumpKey);
+      if (result.identifiable && !result.my_verdict && !result.own_repo) {
         // own_repo (direct user feedback, 2026-11-13: nudging someone to
         // vote on their own release is pointless, that vote is accepted
         // server-side -- see websocket_api.py's own
         // _handle_verdict_for_version -- but never counts toward the
-        // public tally) is a stable fact about this entity, not something
-        // that changes between scans, so it's marked seen the same as a
-        // genuinely voted-on one rather than re-probed on every refill.
-        if (result.own_repo) {
-          _voteNudgeSeenEntityIds.add(entry.entity_id);
-          if (jumpKey) _voteNudgeSeenJumps.add(jumpKey);
-          continue;
-        }
-        // Added the moment it's found, not only once actually voted on --
-        // this entity is now either shown or held in _voteNudgePrefetched,
-        // either way already accounted for, so a later scan has no
-        // reason to probe it again before that changes.
-        _voteNudgeSeenEntityIds.add(entry.entity_id);
-        if (jumpKey) _voteNudgeSeenJumps.add(jumpKey);
+        // public tally) is excluded from `found` here, already marked seen
+        // just above like every other resolved outcome.
         found.push({ entry, counts: result.verdict || { healthy_count: 0, problematic_count: 0 } });
       }
     }
@@ -5336,6 +5437,23 @@ class UpdateManagerPanel extends HTMLElement {
   // so this section never submits one on its own without it;
   // _advanceVoteNudge runs there too, once the report itself actually
   // succeeds.
+  // Shared by every "submit a vote" call site (the vote-nudge card's own
+  // healthy button, _buildVoteControls' healthy button, and
+  // _buildProblematicForm's submit button), which each used to repeat this
+  // exact try/catch by hand -- an earlier, single submitVote helper
+  // covering (at least) two of these was lost somewhere along the way.
+  // Found by /simplify. Raises on failure, same as before: callers each
+  // decide their own post-success behavior (a toast, an onVoted/onSubmitted
+  // callback), only the request + error-toast is shared here.
+  async _submitVote(payload) {
+    try {
+      return await this._hass.callWS({ type: "update_manager/vote", ...payload });
+    } catch (err) {
+      this._showToast(describeLoadError(err));
+      throw err;
+    }
+  }
+
   _renderVoteNudgeCandidate(container, tr, entry, counts) {
     container.innerHTML = "";
 
@@ -5343,8 +5461,10 @@ class UpdateManagerPanel extends HTMLElement {
     card.outlined = true;
     const list = document.createElement("ha-list-base");
     list.appendChild(
-      this._buildListRow(entry.entity_id, `${entry.from_version} → ${entry.to_version}`, () =>
-        this._openDetailDialog(entry.entity_id, entry)
+      this._buildListRow(
+        entry.entity_id,
+        formatVersionJump(entry.from_version, entry.to_version, entry.from_version_real, entry.to_version_real),
+        () => this._openDetailDialog(entry.entity_id, entry)
       )
     );
     card.appendChild(list);
@@ -5375,18 +5495,7 @@ class UpdateManagerPanel extends HTMLElement {
     healthyBtn.setAttribute("aria-label", tr.community_verdict_healthy(counts.healthy_count));
     healthyBtn.addEventListener("click", () =>
       _runProgressAction(healthyBtn, async () => {
-        let result;
-        try {
-          result = await this._hass.callWS({
-            type: "update_manager/vote",
-            entity_id: entry.entity_id,
-            version: entry.to_version,
-            verdict: "healthy",
-          });
-        } catch (err) {
-          this._showToast(describeLoadError(err));
-          throw err;
-        }
+        const result = await this._submitVote({ entity_id: entry.entity_id, version: entry.to_version, verdict: "healthy" });
         this._showToast(tr.community_vote_confirmed_healthy(result.updated, result.own_repo_healthy_vote));
         // 2000ms, matching ha-progress-button's own real built-in
         // success-checkmark window (verified against its real source), so
@@ -5509,10 +5618,9 @@ class UpdateManagerPanel extends HTMLElement {
         // information within a single day). Every other section's own
         // heading already places it roughly in time, so repeating that in
         // every single row under it was redundant. Direct user feedback.
+        const versionJump = formatVersionJump(entry.from_version, entry.to_version, entry.from_version_real, entry.to_version_real);
         const supporting =
-          section.key === "today"
-            ? `${entry.from_version} → ${entry.to_version} ⋅ ${relativeTime(tr, entry.installed_at)}`
-            : `${entry.from_version} → ${entry.to_version}`;
+          section.key === "today" ? `${versionJump} ⋅ ${relativeTime(tr, entry.installed_at)}` : versionJump;
         // Same download-icon pill _buildListRow already renders for the
         // Updates tab's own auto-install countdown (see timerBadge),
         // reused here, not a new mechanism, so this list shows the same
@@ -5658,7 +5766,12 @@ class UpdateManagerPanel extends HTMLElement {
   ) {
     const wrap = document.createElement("div");
     wrap.className = "timeline";
-    const size = tr[`size_${u.version_size}_short`] || u.version_size;
+    // Prefers the real-firmware-version classification over the raw-integer
+    // one whenever it's known (see coordinator.py's own version_size_real):
+    // a genuine "x.y.z" comparison is more accurate than two incomparable
+    // raw OTA integers, which almost always fall back to "large" anyway.
+    const versionSize = u.version_size_real ?? u.version_size;
+    const size = tr[`size_${versionSize}_short`] || versionSize;
     const autoInstallProjected = projectedAutoInstallTime(u, this._settings);
 
     const steps = [];
@@ -5961,7 +6074,7 @@ class UpdateManagerPanel extends HTMLElement {
       // Announcement already being folded into this step silently rather
       // than getting a combined title of its own.
       const step = addStep("var(--success-color)", ICON_CHECK_CIRCLE, tr.group_ready, absoluteWhen(tr, u.available_since, this._hass));
-      addDetail(step, `${u.installed_version} → ${u.latest_version} (${size})`);
+      addDetail(step, `${formatVersionJump(u.installed_version, u.latest_version, u.installed_version_real, u.latest_version_real)} (${size})`);
       addCommunityDetail(step);
       addOtherJumpsDetail(step);
       addReportControls(step);
@@ -5987,7 +6100,7 @@ class UpdateManagerPanel extends HTMLElement {
         tr.dialog_timeline_update_available,
         absoluteWhen(tr, u.available_since, this._hass)
       );
-      addDetail(step1, `${u.installed_version} → ${u.latest_version} (${size})`);
+      addDetail(step1, `${formatVersionJump(u.installed_version, u.latest_version, u.installed_version_real, u.latest_version_real)} (${size})`);
       // Moved here from each individual status branch below (skipped/
       // waiting/ready/postponed each used to carry their own copy).
       // Direct user feedback, 2026-11-02: this is about the version jump
@@ -6261,7 +6374,11 @@ class UpdateManagerPanel extends HTMLElement {
         isQueuedInRollout
           ? tr.waiting_for_entity(friendlyEntityName(this._hass, rolloutStatus.waitingForEntityId))
           : tierBlockingEntityId
-            ? tr.waiting_for_entity(friendlyEntityName(this._hass, tierBlockingEntityId))
+            ? isBackupManagerEntity(this._hass, tierBlockingEntityId)
+              ? tr.waiting_for_backup_text
+              : this._tierWaitingBackup.has(entityId)
+                ? tr.waiting_for_entity_backup_text(friendlyEntityName(this._hass, tierBlockingEntityId))
+                : tr.waiting_for_entity(friendlyEntityName(this._hass, tierBlockingEntityId))
             : tr.tier_waiting_text
       );
       addAction(step, tr.cancel_auto_install, async () => {
@@ -7396,7 +7513,7 @@ class UpdateManagerPanel extends HTMLElement {
         const content = document.createElement("div");
         content.className = "card-content dialog-history-card";
 
-        const versionText = `${entry.from_version} → ${entry.to_version}`;
+        const versionText = formatVersionJump(entry.from_version, entry.to_version, entry.from_version_real, entry.to_version_real);
         const whenText = relativeTime(tr, entry.installed_at);
         const pill = entry.auto_installed
           ? this._buildTimerPill({ icon: ICON_AUTO_DOWNLOAD, title: installMethodText(tr, entry) })
@@ -8834,13 +8951,7 @@ class UpdateManagerPanel extends HTMLElement {
       healthyBtn.label = tr.community_vote_healthy;
       healthyBtn.addEventListener("click", () =>
         _runProgressAction(healthyBtn, async () => {
-          let result;
-          try {
-            result = await this._hass.callWS({ type: "update_manager/vote", entity_id: entityId, version, verdict: "healthy" });
-          } catch (err) {
-            this._showToast(describeLoadError(err));
-            throw err;
-          }
+          const result = await this._submitVote({ entity_id: entityId, version, verdict: "healthy" });
           onVoted?.("healthy", null);
           showConfirmed(tr.community_vote_confirmed_healthy(result.updated, result.own_repo_healthy_vote));
         })
@@ -8978,21 +9089,14 @@ class UpdateManagerPanel extends HTMLElement {
           this._showToast(tr.community_vote_reason_required);
           throw new Error("reason_category required");
         }
-        let result;
-        try {
-          result = await this._hass.callWS({
-            type: "update_manager/vote",
-            entity_id: entityId,
-            version,
-            verdict: "problematic",
-            reason_category: formData.reason_category,
-            notes: formData.notes || undefined,
-            link: formData.link || undefined,
-          });
-        } catch (err) {
-          this._showToast(describeLoadError(err));
-          throw err;
-        }
+        const result = await this._submitVote({
+          entity_id: entityId,
+          version,
+          verdict: "problematic",
+          reason_category: formData.reason_category,
+          notes: formData.notes || undefined,
+          link: formData.link || undefined,
+        });
         onSubmitted(formData, result);
       })
     );
@@ -9067,7 +9171,7 @@ class UpdateManagerPanel extends HTMLElement {
     info.appendChild(nameEl);
     const jumpEl = document.createElement("div");
     jumpEl.className = "dialog-header-identity";
-    jumpEl.textContent = `${entry.from_version} → ${entry.to_version}`;
+    jumpEl.textContent = formatVersionJump(entry.from_version, entry.to_version, entry.from_version_real, entry.to_version_real);
     info.appendChild(jumpEl);
     header.appendChild(info);
     body.appendChild(header);

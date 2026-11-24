@@ -345,3 +345,11 @@ class TestHaCoreVersionSatisfies:
     def test_unparseable_version_fails_open(self):
         assert semver.ha_core_version_satisfies("not-a-version", "2026.11.0")
         assert semver.ha_core_version_satisfies("2026.11.0", "not-a-version")
+
+
+class TestSizeRank:
+    def test_ordering(self):
+        assert semver.size_rank("small") < semver.size_rank("medium") < semver.size_rank("large")
+
+    def test_same_size_equal_rank(self):
+        assert semver.size_rank("medium") == semver.size_rank("medium")

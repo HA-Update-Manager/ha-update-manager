@@ -17,6 +17,7 @@ import asyncio
 import logging
 import re
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -68,6 +69,22 @@ _LOGGER = logging.getLogger(__name__)
 # clearer message than the generic one (see _FAILED_NOTIFICATION_STRINGS's
 # own "item_warning_not_accepted").
 _MARKETPLACE_WARNING_NOT_ACCEPTED_KEY = "warning_not_accepted"
+
+
+def install_service_data(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
+    """The update.install service_data for entity_id, requesting a backup
+    exactly when its own supported_features says it can provide one --
+    never a frontend-supplied flag (found live, 2026-11-18, see
+    websocket_api.py's own _handle_install docstring for the real bug this
+    already fixed once). Shared by this module's own _async_execute and
+    websocket_api.py's _handle_install, which each had their own identical
+    copy of this exact check (found by /code-review)."""
+    state = hass.states.get(entity_id)
+    supported_features = state.attributes.get("supported_features", 0) if state else 0
+    service_data: dict[str, Any] = {"entity_id": entity_id}
+    if supported_features & UpdateEntityFeature.BACKUP:
+        service_data["backup"] = True
+    return service_data
 
 
 def failure_reason_for(exception: BaseException) -> str | None:
@@ -995,11 +1012,7 @@ class InstallManager:
         # installed anyway.
         await self._async_remove(entity_id)
 
-        state = self.hass.states.get(entity_id)
-        supported_features = state.attributes.get("supported_features", 0) if state else 0
-        service_data: dict[str, Any] = {"entity_id": entity_id}
-        if supported_features & UpdateEntityFeature.BACKUP:
-            service_data["backup"] = True
+        service_data = install_service_data(self.hass, entity_id)
 
         # A no-op ("dispatch") for anything that isn't part of an active
         # multi-device Zigbee rollout, see rollout_manager.py's own
@@ -1116,11 +1129,13 @@ class InstallManager:
         Public, not folded back into _async_run_install's own try block
         below, so websocket_api.py's manual-install path can route
         through this same, now correctly-scoped lock too."""
+        # nullcontext supports `async with` since Python 3.10 (bpo-41543),
+        # well below HA Core's own much newer minimum -- found by /simplify:
+        # the actual update.install call used to be written out twice here,
+        # once under the lock and once not, with only the lock varying.
         entity_id = service_data.get("entity_id")
-        if isinstance(entity_id, str) and is_hacs_entity(self.hass, entity_id):
-            async with self._install_lock:
-                await self.hass.services.async_call("update", "install", service_data, blocking=True, context=context)
-        else:
+        lock = self._install_lock if isinstance(entity_id, str) and is_hacs_entity(self.hass, entity_id) else nullcontext()
+        async with lock:
             await self.hass.services.async_call("update", "install", service_data, blocking=True, context=context)
 
     async def _async_run_install(self, entity_id: str, to_version: str, service_data: dict[str, Any]) -> None:

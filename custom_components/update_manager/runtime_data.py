@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from .community_verdict import CommunityVerdictManager
 from .const import DOMAIN
 from .coordinator import UpdateManagerCoordinator
+from .firmware_version_registry import FirmwareVersionManager
 from .github_auth import GitHubAuthManager
 from .install_log import InstallLog
 from .install_manager import InstallManager
@@ -35,6 +36,7 @@ class UpdateManagerData:
     community_verdict_manager: CommunityVerdictManager
     github_auth_manager: GitHubAuthManager
     my_votes_manager: MyVotesManager
+    firmware_version_manager: FirmwareVersionManager
     # manifest.json's own version (str(Integration.version)), fetched once in
     # __init__.py's async_setup_entry -- device.py's own device_info reads
     # this for the device info page's own "Software version" (sw_version),

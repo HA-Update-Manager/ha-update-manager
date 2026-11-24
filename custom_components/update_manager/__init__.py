@@ -28,8 +28,8 @@ from .coordinator import (
     whitelisted_entities_from_options,
 )
 from .device import device_info as update_manager_device_info
+from .firmware_version_registry import FirmwareVersionManager
 from .github_auth import GitHubAuthManager
-from .hacs_identity import corrected_release_url
 from .install_log import InstallLog
 from .install_manager import InstallManager, auto_install_rules_from_options
 from .my_votes import MyVotesManager
@@ -38,6 +38,7 @@ from .rollout_manager import RolloutManager
 from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
 from .services import async_setup_services
 from .staging_skip import StagingSkipManager
+from .vendor_fallback_urls import release_url_for_entity
 from .websocket_api import async_apply_options, async_setup_websocket_api
 
 PLATFORMS: list[str] = ["sensor", "switch"]
@@ -194,6 +195,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # Same reasoning again: needs only hass, read by websocket_api.py's own
     # verdict_for_version handler, written by its vote handler.
     my_votes_manager = MyVotesManager(hass)
+    # Same community_verdict_manager precedent again: needs only hass, the
+    # coordinator takes a reference to it (synchronous peek during its own
+    # bulk scan, same as community_verdict_manager).
+    firmware_version_manager = FirmwareVersionManager(hass)
     coordinator = UpdateManagerCoordinator(
         hass,
         rules,
@@ -201,6 +206,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         community_verdict_manager,
         schedule_from_options(options),
         whitelisted_entities_from_options(options),
+        firmware_version_manager=firmware_version_manager,
+        github_auth_manager=github_auth_manager,
     )
     install_log = InstallLog(hass)
     # Constructed before InstallManager/StagingSkipManager: both take a
@@ -292,12 +299,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # can't just join coordinator.async_start()'s own gather further down):
     # fetching the manifest.json version has no ordering dependency on
     # anything else at all, so it's free to run concurrently with them.
-    _, _, _, integration = await asyncio.gather(
+    # firmware_version_manager joins this same group for the identical
+    # community_verdict_manager reason: coordinator.py's own bulk scan peeks
+    # its cache synchronously too.
+    _, _, _, integration, _ = await asyncio.gather(
         install_log.async_load(),
         community_verdict_manager.async_load(),
         install_manager.async_load(),
         async_get_integration(hass, DOMAIN),
+        firmware_version_manager.async_load(),
     )
+    coordinator.set_integration_version(str(integration.version))
 
     @callback
     def _on_install(entity_id: str, old_version: str, new_version: str, new_state: State, retroactive: bool) -> None:
@@ -400,6 +412,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
             install_method = "manual" if requested or (not retroactive and new_state.context.user_id) else "external"
         cached = coordinator.cache.get(entity_id)
         available_since_from_cache = cached.get("available_since") if cached else None
+        # Same "cache already has the right value, read it synchronously
+        # before the recompute" reasoning as available_since_from_cache just
+        # above -- whatever's already known at this exact moment, never
+        # retroactively backfilled later if a real string becomes known
+        # only afterward (see install_log.py's own docstring for that
+        # scope decision). old_version/new_version are this entity's own
+        # from/to, matching cached's own installed_version_real (the
+        # version just left behind) / latest_version_real (the version just
+        # installed, if its real string happened to already be known).
+        from_version_real = cached.get("installed_version_real") if cached else None
+        to_version_real = cached.get("latest_version_real") if cached else None
 
         async def _async_log_install() -> None:
             # Live transition: coordinator.cache already has the right
@@ -424,18 +447,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
                 old_version,
                 new_version,
                 # Corrected for Core the same way coordinator.py's own cache
-                # already is, see corrected_release_url's own docstring.
+                # already is, see release_url_for_entity's own docstring.
                 # A History entry's own release_url is captured once, right
                 # here, and never revisited, so getting this right at
                 # logging time matters even more than for the live cache:
                 # there's no later recompute to fix a wrong value.
-                release_url=corrected_release_url(entity_id, new_state.attributes.get("release_url"), new_version),
+                release_url=release_url_for_entity(hass, entity_id, new_state.attributes.get("release_url"), new_version),
                 supported_features=new_state.attributes.get("supported_features", 0),
                 install_method=install_method,
                 auto_install_reason=reason,
                 trusted_voter_usernames=trusted_voter_usernames,
                 announced_at=announced_at,
                 available_since=available_since,
+                from_version_real=from_version_real,
+                to_version_real=to_version_real,
             )
 
         hass.async_create_task(_async_log_install())
@@ -470,6 +495,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # async_log_install would append to (and then save) an empty in-memory
     # list, silently wiping out every previously-logged install.
     coordinator.async_add_install_listener(_on_install)
+
+    @callback
+    def _on_install_check_firmware_version(
+        entity_id: str, old_version: str, new_version: str, new_state: State, retroactive: bool
+    ) -> None:
+        # Separate listener, not folded into _on_install above: a genuinely
+        # different concern (community-votes submission, not this
+        # project's own install_log/notifications), same "add a listener,
+        # don't grow the existing one" reasoning async_add_install_listener
+        # already supports several of. Fires for a retroactive (restart-
+        # detected) completion too, same as _on_install itself -- a Zigbee
+        # device's own install never actually needs a restart to finish,
+        # so this case is rare here, but harmless either way.
+        #
+        # Captured synchronously, same "cache already has the right value,
+        # read it before the recompute" reasoning as _on_install's own
+        # from_version_real just above (this listener fires before cache's
+        # own recompute too) -- old_version's own real string, if already
+        # known, passed through so the submission check can tell a
+        # genuinely new real version apart from Zigbee2MQTT's own stuck
+        # sw_version simply repeating what it already reported for
+        # old_version, even on this model's very first-ever submission
+        # (when the shared table alone would have nothing yet to catch
+        # that against, see async_check_firmware_version_submission's own
+        # docstring).
+        cached = coordinator.cache.get(entity_id)
+        old_version_real = cached.get("installed_version_real") if cached else None
+        hass.async_create_task(
+            coordinator.async_check_firmware_version_submission(entity_id, old_version, old_version_real)
+        )
+
+    coordinator.async_add_install_listener(_on_install_check_firmware_version)
 
     async def _async_apply_entity_rename(old_entity_id: str, new_entity_id: str) -> None:
         """Relabels every persisted/live entity_id reference this
@@ -582,6 +639,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         community_verdict_manager=community_verdict_manager,
         github_auth_manager=github_auth_manager,
         my_votes_manager=my_votes_manager,
+        firmware_version_manager=firmware_version_manager,
         integration_version=str(integration.version),
     )
 

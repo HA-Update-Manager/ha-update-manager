@@ -23,6 +23,19 @@ from typing import Literal, NamedTuple
 # call), the same conservative-by-default treatment "unknown" used to get.
 Size = Literal["small", "medium", "large"]
 
+_SIZE_RANK: dict[Size, int] = {"small": 0, "medium": 1, "large": 2}
+
+
+def size_rank(size: Size) -> int:
+    """A plain, comparable ordering for Size -- coordinator.py's own
+    available_since anchor needs to tell "this jump is now a genuinely
+    bigger risk than anything already seen since the last install" apart
+    from "same size, or smaller, as before" (issue #17: a small update
+    already pending shouldn't get a large one's own full wait just
+    because a larger update later supersedes it with barely any of that
+    wait left -- it should start its own, fresh large-size wait instead)."""
+    return _SIZE_RANK[size]
+
 # Strict semver: exactly major.minor.patch, each a plain non-negative
 # integer (no leading zeros other than "0" itself), with an optional
 # pre-release (-foo.1) and/or build metadata (+build.5) suffix that we parse

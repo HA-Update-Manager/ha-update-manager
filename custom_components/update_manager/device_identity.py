@@ -219,6 +219,56 @@ def resolve_device_manufacturer_model(hass: HomeAssistant, device: dr.DeviceEntr
     return device.manufacturer, device.model
 
 
+def resolve_zigbee_manufacturer_model_id(hass: HomeAssistant, device: dr.DeviceEntry) -> tuple[str, str] | None:
+    """(manufacturer, model_id) -- NOT resolve_device_manufacturer_model's
+    own (manufacturer, model). Only ever used by the firmware-version-
+    mapping feature (firmware_version_discovery.py), never by the
+    community-vote "devices" category: that category's own existing,
+    already-shipped keying by plain `model` is left untouched here on
+    purpose (changing it would mean migrating real, already-cast
+    community vote data, a separate, bigger decision).
+
+    `model` is confirmed ambiguous for this specific purpose -- direct user
+    feedback, 2026-11-24, with a real example: two genuinely different Hue
+    motion-sensor hardware models ("9290012607" vs "9290030674", their own
+    real Zigbee model identifiers) both show up under the same generic HA
+    `model` description, which would otherwise make this feature treat two
+    unrelated firmware lines (with their own, separate raw-OTA-version
+    numbering) as if they shared one. `model_id`, not `model`:
+    zigbee.py's own zigbee2mqtt_device_url docstring already established
+    this exact distinction (Zigbee2MQTT publishes the real, unambiguous
+    model as model_id, the human-readable description as model, confirmed
+    against its real source) -- reused here for the same reason, not
+    re-derived. Falls back to `model` only when `model_id` isn't set at
+    all: ZHA's own support for a meaningfully distinct model_id is still
+    an open upstream gap as of this writing (zigpy/zha#216, zigpy/zha#95,
+    both still open), so this degrades to exactly today's existing
+    (ambiguous but no worse than before) behavior for ZHA rather than
+    failing outright."""
+    if zigbee_network_id(hass, device) is None:
+        return None
+    if not device.manufacturer:
+        return None
+    model_id = device.model_id or device.model
+    if not model_id:
+        return None
+    return device.manufacturer, model_id
+
+
+def resolve_zigbee_manufacturer_model_for_entity(hass: HomeAssistant, entity_id: str) -> tuple[str, str] | None:
+    """device_for_entity + resolve_zigbee_manufacturer_model_id in one call
+    -- the entity-to-(manufacturer, model_id) resolution every caller that
+    starts from just an entity_id (rather than an already-looked-up
+    device) needs, shared by coordinator.py's own firmware-version-
+    discovery gate/task and firmware_version_discovery.py's
+    real_versions_for_entity, which used to each independently re-derive
+    this same two-step lookup (found by /simplify)."""
+    device = device_for_entity(hass, entity_id)
+    if device is None:
+        return None
+    return resolve_zigbee_manufacturer_model_id(hass, device)
+
+
 def resolve_app_slug(device: dr.DeviceEntry) -> str | None:
     """The Supervisor add-on slug backing this device, or None if it isn't a
     Supervisor add-on device at all (or is one of hassio's own non-add-on

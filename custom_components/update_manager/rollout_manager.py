@@ -41,7 +41,11 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from homeassistant.components import persistent_notification
+from homeassistant.components.backup import BackupManagerState, async_get_manager
+from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Context, HomeAssistant, State, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -50,7 +54,6 @@ from homeassistant.util import dt as dt_util
 from .announcer import AutoInstallContext
 from .const import DOMAIN, localized_strings
 from .coordinator import UpdateManagerCoordinator, home_assistant_component_for_entity
-from .device_identity import is_hacs_entity
 from .entity_rename import relabel_key
 from .install_tiers import FIRST_GATED_RANK, TIER_RANK, tier_for_entity
 from .semver import min_ha_version_required
@@ -221,21 +224,29 @@ _RECENTLY_INSTALLING_GRACE = timedelta(minutes=2)
 _DISPATCH_GRACE = timedelta(seconds=5)
 
 # How long Home Assistant Core's own install waits for an already-installing
-# Marketplace-backed entity before giving up on waiting and proceeding
-# anyway (see _pending_marketplace_entity below): a Marketplace install's own
-# download/extract runs inside Core's own process, so a Core restart landing
-# on it mid-air is the same real risk as a ZHA Zigbee OTA transfer, just
-# usually over in seconds rather than minutes. Deliberately capped, unlike
-# the ZHA/Core mutex (which waits however long it takes): a failed
-# Marketplace install can leave its own in_progress stuck true forever
-# (Marketplace's own bug, not this project's, see CHANGELOG.md's 2026-08
-# "installing spinner forever" entry), and _counts_as_blocking has no
-# timeout of its own for that case, only a much later Repair issue a human
-# still has to act on. Blocking Core's own update on that indefinitely would
-# be worse than the rare case this cap trades away: occasionally letting a
-# genuinely slow (not stuck) Marketplace install get cut off by Core's
-# restart after all.
-_CORE_MARKETPLACE_WAIT_CAP = timedelta(minutes=3)
+# "safe"-tier entity (ordinary integration/add-on/card updates, Marketplace
+# included) before giving up on waiting and proceeding anyway (see
+# _pending_safe_tier_entity below). Originally Marketplace-only: that
+# install's own download/extract runs inside Core's own process, so a Core
+# restart landing on it mid-air is the same real risk as a ZHA Zigbee OTA
+# transfer, just usually over in seconds rather than minutes. Broadened to
+# every "safe"-tier entity, direct user feedback, 2026-11-24: confirmed
+# live, Home Assistant's own update flow pauses every other install
+# system-wide while a backup is in progress ("Home Assistant is creating a
+# backup, so updates are paused until it finishes"), and Core's own install
+# is exactly what triggers that backup -- so an ordinary app update
+# dispatched right alongside Core, not sharing Core's process at all, still
+# gets cut short by HA's own backup lock, a real, observed failure this
+# tier system didn't cover before. Deliberately capped, unlike the ZHA/Core
+# mutex (which waits however long it takes): a stuck in_progress (a real,
+# confirmed Marketplace bug, see CHANGELOG.md's 2026-08 "installing spinner
+# forever" entry, not ruled out for every other integration either) has no
+# timeout of its own, only a much later Repair issue a human still has to
+# act on. Blocking Core's own update on that indefinitely would be worse
+# than the rare case this cap trades away: occasionally letting a
+# genuinely slow (not stuck) "safe"-tier install get cut off by Core's
+# restart (or HA's own backup pause) after all.
+_CORE_SAFE_TIER_WAIT_CAP = timedelta(minutes=3)
 
 
 def _serialize_context(context: AutoInstallContext | None) -> dict[str, Any] | None:
@@ -1000,12 +1011,18 @@ class RolloutManager:
         waits out anything else, than to let a predictable failure happen
         when we already know it's coming.
 
-        Also returns a Marketplace-backed entity's own entity_id for a Core
+        Also returns a "safe"-tier entity's own entity_id for a Core
         request specifically, whenever that entity is still actively
-        installing (see _pending_marketplace_entity's own docstring for why
+        installing (see _pending_safe_tier_entity's own docstring for why
         this runs the other direction from every other check here, Core
         waiting on a "safe"-tier entity rather than the reverse, and why
-        it's capped rather than open-ended).
+        it's capped rather than open-ended) -- and, for *any* request
+        regardless of tier, whenever Home Assistant's own Backup Manager
+        itself reports a backup actually in progress right now, regardless
+        of who triggered it (see _backup_in_progress_entity below: that
+        native lock pauses every install system-wide, not only Core's own,
+        so a second "safe"-tier app's own concurrent dispatch waits on it
+        too, not just Core).
 
         A live check, deliberately never cached: re-run on every request
         and every periodic recheck (see _async_periodic_recheck), since
@@ -1021,9 +1038,12 @@ class RolloutManager:
         pending_supervisor = self._pending_supervisor_entity(entity_id)
         if pending_supervisor is not None:
             return pending_supervisor
-        pending_marketplace = self._pending_marketplace_entity(entity_id)
-        if pending_marketplace is not None:
-            return pending_marketplace
+        backup_in_progress = self._backup_in_progress_entity(entity_id)
+        if backup_in_progress is not None:
+            return backup_in_progress
+        pending_safe_tier = self._pending_safe_tier_entity(entity_id)
+        if pending_safe_tier is not None:
+            return pending_safe_tier
         my_rank = TIER_RANK[tier_for_entity(self.hass, entity_id)]
         if my_rank < FIRST_GATED_RANK:
             return None
@@ -1061,28 +1081,111 @@ class RolloutManager:
             return other_id if latest and latest != installed else None
         return None
 
-    def _pending_marketplace_entity(self, entity_id: str) -> str | None:
-        """A Marketplace-backed entity's own entity_id, only when entity_id
-        is Core itself and that entity currently counts as blocking (see
+    def _backup_in_progress_entity(self, entity_id: str) -> str | None:
+        """The Backup integration's own "Backup Manager state" sensor
+        entity_id, for *any* request, whenever Home Assistant's own Backup
+        Manager (homeassistant.components.backup, confirmed against its
+        real source: BackupManager.state, a BackupManagerState enum with
+        IDLE/CREATE_BACKUP/RECEIVE_BACKUP/RESTORE_BACKUP/BLOCKED members)
+        reports anything other than idle right now. None once it's idle
+        again, or if the backup integration somehow isn't set up at all
+        (HomeAssistantError -- fails open, nothing to wait for by
+        definition).
+
+        Confirmed live, 2026-11-24, direct user feedback: Home Assistant's
+        own update flow pauses every other install system-wide while a
+        backup is in progress, regardless of who triggered it ("Home
+        Assistant is creating a backup, so updates are paused until it
+        finishes") or which tier it's dispatching into. Originally Core-
+        only (a backup Core's own install triggers), broadened the same
+        day, direct user feedback: a "safe"-tier app's own install can
+        trigger the identical backup (install_manager.py's own `backup`
+        service-data flag, whenever UpdateEntityFeature.BACKUP is
+        supported, not gated on tier at all), which would just as
+        genuinely pause a *second*, unrelated "safe"-tier app's own
+        concurrent dispatch -- not only Core's. Deliberately no cap here,
+        unlike _pending_safe_tier_entity below: this reflects the real
+        backup state directly instead of approximating it from another
+        entity's own in_progress flag, so there's nothing to guess at a
+        fixed duration for -- it clears the instant Home Assistant itself
+        reports idle again, however long that genuinely takes (a real
+        backup's own duration varies widely with recorder database size,
+        add-on data, and more).
+
+        Prefers _entity_likely_causing_backup's own guess (named the same
+        way a real queue already names whatever it's waiting behind, not
+        just "a backup") whenever that's confident enough, direct user
+        feedback, 2026-11-24: "Backup van wat? Vertellen we dat wel gewoon?
+        net zoals in een queue" -- only falls back to the Backup Manager
+        sensor itself, a real block with no specific entity to blame, once
+        that guess can't be narrowed down."""
+        try:
+            manager = async_get_manager(self.hass)
+        except HomeAssistantError:
+            return None
+        if manager.state == BackupManagerState.IDLE:
+            return None
+        attributed = self._entity_likely_causing_backup()
+        if attributed is not None:
+            return attributed
+        registry = er.async_get(self.hass)
+        for entry in registry.entities.values():
+            if entry.platform == "backup" and entry.unique_id == "backup_manager_state":
+                return entry.entity_id
+        # Backup integration present but its own sensor platform somehow
+        # isn't (a disabled entity, or a very old Core version) -- still a
+        # real block, just with no friendly entity to name (see
+        # friendlyEntityName's own raw-id fallback in the panel).
+        return "backup_manager_state"
+
+    def _entity_likely_causing_backup(self) -> str | None:
+        """The one update entity, if exactly one, that's both currently
+        counting as blocking (see _counts_as_blocking) and supports
+        UpdateEntityFeature.BACKUP -- a good-enough, no-new-bookkeeping-
+        needed guess at which install actually triggered the backup
+        _backup_in_progress_entity just confirmed is happening. None
+        whenever this can't be narrowed to exactly one confident
+        candidate: several such entities installing at once (genuinely
+        ambiguous, not worth guessing which), or none at all (the real
+        trigger wasn't any entity this project could ever see installing
+        -- a user-pressed manual backup, or a schedule, which this
+        deliberately doesn't try to name instead of risking a wrong
+        guess)."""
+        candidates = [
+            other_id
+            for other_id in self.hass.states.async_entity_ids("update")
+            if (state := self.hass.states.get(other_id)) is not None
+            and self._counts_as_blocking(other_id, state)
+            and state.attributes.get("supported_features", 0) & UpdateEntityFeature.BACKUP
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _pending_safe_tier_entity(self, entity_id: str) -> str | None:
+        """A "safe"-tier entity's own entity_id, only when entity_id is
+        Core itself and that entity currently counts as blocking (see
         _counts_as_blocking) and hasn't been installing longer than
-        _CORE_MARKETPLACE_WAIT_CAP yet (see that constant's own comment for
+        _CORE_SAFE_TIER_WAIT_CAP yet (see that constant's own comment for
         why Core's own wait is capped here, unlike every other wait this
         gate enforces). None for anything else, including once the cap is
         reached: this is the one case where "still blocking" stops meaning
         "still wait" after a point, so Core's own update can never be held
-        up indefinitely by a Marketplace entity's own stuck-forever
+        up indefinitely by some other entity's own stuck-forever
         in_progress bug.
 
         Runs the opposite direction from the ZHA/Core mutex and
         _pending_supervisor_entity above: those make a lower-priority
         entity wait for Core/Supervisor, this makes Core itself wait for a
-        "safe"-tier entity, specifically because here it's the Marketplace
-        install (not Core) whose own in-process work is at risk of being
-        cut off, and Core is the one free to simply hold off starting."""
+        "safe"-tier entity -- originally Marketplace-only (its own
+        download/extract genuinely shares Core's process), broadened to
+        every "safe"-tier entity once Home Assistant's own backup-pauses-
+        everything behavior (triggered by Core's own update) turned out to
+        cut an *unrelated* app's install short too, direct user feedback,
+        2026-11-24: "ik zou het logischer vinden dat eerst alle apps worden
+        geüpdatet... en daarna pas core"."""
         if home_assistant_component_for_entity(self.hass, entity_id) != "core":
             return None
         for other_id in self.hass.states.async_entity_ids("update"):
-            if not is_hacs_entity(self.hass, other_id):
+            if tier_for_entity(self.hass, other_id) != "safe":
                 continue
             state = self.hass.states.get(other_id)
             if state is None or not self._counts_as_blocking(other_id, state):
@@ -1091,7 +1194,7 @@ class RolloutManager:
             if (
                 entry is not None
                 and entry.started_at is not None
-                and dt_util.utcnow() - entry.started_at >= _CORE_MARKETPLACE_WAIT_CAP
+                and dt_util.utcnow() - entry.started_at >= _CORE_SAFE_TIER_WAIT_CAP
             ):
                 continue
             return other_id
@@ -1156,12 +1259,12 @@ class RolloutManager:
             my_rank = ranks[entity_id]
             # Re-checks the exact same thing async_request_install's own
             # fresh call already does for a brand-new request, found by
-            # review while adding _pending_marketplace_entity above: unlike
+            # review while adding _pending_safe_tier_entity above: unlike
             # the generic tier mutex (TIER_RANK[...] >= FIRST_GATED_RANK),
             # neither that check nor _pending_supervisor_entity is visible
             # to blocking_rank's own in_progress-only scan below at all (a
             # pending-but-not-yet-dispatched Supervisor update, or a
-            # Marketplace install past its own wait cap, is never
+            # "safe"-tier install past its own wait cap, is never
             # "in_progress" either way), so this loop could otherwise
             # release entity_id here even while one of those two still
             # genuinely applies. _tier_blocking_entity's own loop still
@@ -2090,6 +2193,23 @@ class RolloutManager:
         instant this snapshot is taken -- the panel falls back to the old
         generic text only for that case."""
         return {entity_id: self._tier_blocking_entity(entity_id) for entity_id in self._tier_blocked}
+
+    def tier_blocked_due_to_backup_entity_ids(self) -> set[str]:
+        """Subset of tier_blocked_entity_ids' own keys whose blocking
+        reason is specifically Home Assistant's own backup lock
+        (_backup_in_progress_entity returning non-None for it), not just
+        "some other entity happens to still be mid-install" -- read by
+        websocket_api.py's own _handle_updates so the panel can say
+        "waiting for X to finish backing up" specifically, direct user
+        feedback, 2026-11-24 ("alleen de backup hoeft klaar te zijn, niet
+        de update"), rather than its more general "waiting for X to
+        finish" (which reads as X's whole install, not just its own
+        backup step). A plain re-check, not a second source of truth: the
+        same call tier_blocked_entity_ids' own per-entity
+        _tier_blocking_entity already makes internally, just inspected
+        here to tell the two reasons apart after the fact, since that
+        method's own return value alone can't."""
+        return {entity_id for entity_id in self._tier_blocked if self._backup_in_progress_entity(entity_id) is not None}
 
     def stuck_since_snapshot(self) -> dict[str, dict[str, Any]]:
         """Read by websocket_api.py's own _handle_updates -- entity_id ->

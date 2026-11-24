@@ -37,7 +37,6 @@ from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 # async_fetch_verdict_uncached's own empty return: (verdict, other_jumps,
 # trusted_vote, trusted_voters_matched, problematic_reasons, my_reason,
@@ -67,6 +66,7 @@ from .community_verdict_payload import (
     trusted_vote_from_payload,
     verdict_from_payload,
 )
+from .community_votes_api import async_fetch_public_json
 from .const import DOMAIN
 from .device_identity import resolve_full_identity
 from .entity_rename import relabel_key
@@ -83,21 +83,6 @@ VOTES_REPO_RAW_BASE = "https://raw.githubusercontent.com/HA-Update-Manager/commu
 # fresh vote or an updated count is noticed within an hour without refetching
 # on every single ~15-minute coordinator refresh tick either.
 _REFRESH_INTERVAL = timedelta(hours=1)
-
-
-async def _fetch_json(hass: HomeAssistant, url: str) -> dict[str, Any] | None:
-    """Raw fetch, no caching: shared by every read below (found by review:
-    _verdict.json's own fetch and the later per-voter one had copied the
-    same 404/raise_for_status/json(content_type=None) block). None only
-    for a confirmed 404 -- everything else (timeout, 5xx, DNS hiccup) is
-    re-raised, since callers handle a transient failure differently (one
-    falls back to a stale cached value, others just treat it as a miss)."""
-    session = async_get_clientsession(hass)
-    async with session.get(url, timeout=10) as response:
-        if response.status == 404:
-            return None
-        response.raise_for_status()
-        return await response.json(content_type=None)
 
 
 async def _fetch_to_version_json(hass: HomeAssistant, to_version_path: str) -> dict[str, Any] | None:
@@ -121,10 +106,10 @@ async def _fetch_to_version_json(hass: HomeAssistant, to_version_path: str) -> d
     client (this one) picks it up immediately, the next time it fetches."""
     if to_version_path.startswith("hacs/"):
         marketplace_path = "marketplace/" + to_version_path[len("hacs/") :]
-        marketplace_payload = await _fetch_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{marketplace_path}.json")
+        marketplace_payload = await async_fetch_public_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{marketplace_path}.json")
         if marketplace_payload is not None:
             return marketplace_payload
-    return await _fetch_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{to_version_path}.json")
+    return await async_fetch_public_json(hass, f"{VOTES_REPO_RAW_BASE}/votes/{to_version_path}.json")
 
 
 async def async_fetch_vote_for_jump_key(

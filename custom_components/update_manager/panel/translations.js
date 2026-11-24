@@ -439,6 +439,22 @@ export const TRANSLATIONS = {
     // entities at once (every "safe" update in the same batch), so
     // there's no one name to point at.
     tier_waiting_text: "Waiting for other updates to finish first",
+    // Shown instead of waiting_for_entity below specifically when
+    // rollout_manager.py's own tier-blocking entity is Home Assistant's
+    // own Backup Manager sensor (see that module's own
+    // _backup_in_progress_entity) -- naming it via waiting_for_entity's
+    // own generic phrasing would read as "Waiting for Backup Manager
+    // state to finish", technical and unclear about what's actually
+    // happening; this says the real, plain fact instead.
+    waiting_for_backup_text: "Waiting for backup to finish",
+    // Shown instead of the plain waiting_for_backup_text above once
+    // rollout_manager.py's own _entity_likely_causing_backup can confidently
+    // name whose backup it is -- deliberately not waiting_for_entity below
+    // (its own "Waiting for X to finish" phrasing, direct user feedback,
+    // 2026-11-24: that reads as waiting for X's whole *install*, when only
+    // X's own backup step is actually what's being waited on; X itself may
+    // keep installing well after its own backup finishes).
+    waiting_for_entity_backup_text: (name) => `Waiting for ${name} to finish backing up`,
     // Shown once an entity crosses rollout_manager.py's own
     // _STUCK_THRESHOLD (a Repair issue is raised at the same time, see
     // that module's own _async_maybe_raise_stuck_issue) -- deliberately
@@ -772,6 +788,8 @@ export const TRANSLATIONS = {
       count === 1 ? "1 update wordt klaar gemarkeerd…" : `${count} updates worden klaar gemarkeerd…`,
     installing_section_title: "Bezig met installeren",
     tier_waiting_text: "Wacht tot andere updates eerst klaar zijn",
+    waiting_for_backup_text: "Wacht tot back-up klaar is",
+    waiting_for_entity_backup_text: (name) => `Wacht tot ${name} klaar is met back-uppen`,
     stuck_waiting_text: (duration) => `Installeert al ${duration}, langer dan gebruikelijk`,
     duration_hours_minutes: (hours, minutes) => `${hours}u ${minutes}m`,
     duration_minutes: (minutes) => `${minutes}m`,

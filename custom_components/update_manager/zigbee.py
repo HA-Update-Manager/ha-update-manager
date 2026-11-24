@@ -50,6 +50,20 @@ def is_zigbee2mqtt_device(hass: HomeAssistant, device: dr.DeviceEntry) -> bool:
 _Z2M_MODEL_NORMALIZE_RE = re.compile(r"[/| |:]")
 
 
+def slugify_zigbee_model(model_id: str) -> str:
+    """Replicates zigbee2mqtt.io's own docgen/utils.ts normalizeModel()
+    exactly (verified against its real source, Koenkk/zigbee2mqtt.io):
+    "/", "|", a space, or ":" each become "_", nothing else is touched.
+    Shared by zigbee2mqtt_device_url below (that function's own result is
+    the real device-page filename under zigbee2mqtt.io/devices/) and
+    firmware_version_registry.py's own remote-file path (community-votes'
+    own process-firmware-version.yml slugifies a model_id the identical
+    way before using it as a path segment, for the identical reason: some
+    real model_ids contain "/", which would otherwise silently create an
+    unintended nested path instead of one flat file per model)."""
+    return _Z2M_MODEL_NORMALIZE_RE.sub("_", model_id)
+
+
 def zigbee2mqtt_device_url(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None:
     """The real zigbee2mqtt.io device page for device, or None if it isn't a
     Zigbee2MQTT device at all, or Zigbee2MQTT's own MQTT discovery never
@@ -66,8 +80,7 @@ def zigbee2mqtt_device_url(hass: HomeAssistant, device: dr.DeviceEntry) -> str |
     it the way model alone would be ambiguous for this."""
     if not is_zigbee2mqtt_device(hass, device) or not device.model_id:
         return None
-    slug = _Z2M_MODEL_NORMALIZE_RE.sub("_", device.model_id)
-    return f"https://www.zigbee2mqtt.io/devices/{slug}.html"
+    return f"https://www.zigbee2mqtt.io/devices/{slugify_zigbee_model(device.model_id)}.html"
 
 
 def zigbee_network_id(hass: HomeAssistant, device: dr.DeviceEntry) -> str | None:

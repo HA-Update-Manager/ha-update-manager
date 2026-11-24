@@ -23,7 +23,6 @@ from urllib.parse import urlsplit
 
 import voluptuous as vol
 from homeassistant.components import websocket_api
-from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
@@ -78,7 +77,7 @@ from .install_log_retention import DEFAULT_PAGE_POLICY, entries_to_keep_full_not
 from .zigbee import device_for_entity, zigbee2mqtt_device_url
 from .zigbee_ota_index import async_get_zigbee_ota_index
 from .zigbee_ota_release_notes import find_zigbee_ota_release_notes, parse_zigbee_ota_version
-from .install_manager import auto_install_rules_from_options, failure_reason_for
+from .install_manager import auto_install_rules_from_options, failure_reason_for, install_service_data
 from .my_votes import Verdict
 from .runtime_data import UpdateManagerData, get_data as _get_data, get_entry as _get_entry
 from .semver import min_ha_version_required, strip_version_prefix
@@ -221,6 +220,13 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
             # entity_id blocking it, or null), and who's crossed the stuck
             # threshold and now shows the wrench badge instead.
             "tier_waiting": data.rollout_manager.tier_blocked_entity_ids(),
+            # Subset of tier_waiting's own keys blocked specifically by
+            # Home Assistant's own backup lock, not just "some other
+            # entity still mid-install" -- lets the panel say "waiting
+            # for X's own backup to finish" instead of its more general
+            # "waiting for X to finish" (see tier_blocked_due_to_backup_
+            # entity_ids's own docstring).
+            "tier_waiting_backup": list(data.rollout_manager.tier_blocked_due_to_backup_entity_ids()),
             "stuck": data.rollout_manager.stuck_since_snapshot(),
             # Entities recently observed in_progress, per this module's own
             # periodic tracking (see rollout_manager.py's own
@@ -257,6 +263,16 @@ async def _handle_refresh_community_verdicts(
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
     await data.coordinator.async_force_refresh_community_verdicts()
+    # Same "a manual refresh should do both kinds of refresh" intent as the
+    # community-verdicts call just above -- the shared firmware-version
+    # table and an immediate re-check of whether anything newly-observed is
+    # worth submitting, not waiting for the next natural coordinator cycle.
+    await data.coordinator.async_force_refresh_firmware_versions()
+    # Catches up any already-logged History entry whose from/to real
+    # version wasn't known yet at the time it was first logged, now that
+    # the refresh above may have just learned it -- direct user feedback,
+    # 2026-11-24.
+    await data.install_log.async_backfill_real_versions(data.firmware_version_manager)
     await _async_reconcile_my_votes(hass, data)
     await data.install_manager.async_force_reevaluate()
     connection.send_result(msg["id"])
@@ -951,10 +967,33 @@ async def _async_run_manual_install(
 @websocket_api.require_admin
 @websocket_api.async_response
 @websocket_api.websocket_command(
-    {
-        vol.Required("type"): "update_manager/install",
-        vol.Required("entity_id"): str,
-    }
+    vol.All(
+        vol.Schema(
+            {
+                vol.Required("type"): "update_manager/install",
+                vol.Required("entity_id"): str,
+            },
+            # A `backup` flag used to be a real, accepted (if ignored, see
+            # this handler's own docstring) field here, removed 2026-11-18
+            # once this was found to always decide the real value itself.
+            # Without extra=vol.REMOVE_EXTRA, any caller still sending one
+            # (a stale cached panel.js bundle, or a script/automation
+            # calling this websocket command directly, it's require_admin
+            # but otherwise unrestricted) now gets a hard validation
+            # failure on a call that used to succeed -- found by
+            # /code-review. Quietly dropped instead, same as
+            # save_settings' own established precedent just below for an
+            # unknown settings key. The outer vol.All(...) isn't optional
+            # here (unlike a bare vol.Schema(...)) -- HA's own
+            # websocket_command decorator reads schema.validators[0] to
+            # find the command's own "type", which only a vol.All wrapper
+            # exposes; a bare vol.Schema has no such attribute and breaks
+            # this integration's own import entirely (found live,
+            # 2026-11-24, confirmed via the real traceback: AttributeError,
+            # 'Schema' object has no attribute 'validators').
+            extra=vol.REMOVE_EXTRA,
+        )
+    )
 )
 async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
     """Explicit, user-initiated install (the panel's own Install button) --
@@ -996,10 +1035,7 @@ async def _handle_install(hass: HomeAssistant, connection: websocket_api.ActiveC
     state = hass.states.get(entity_id)
     if state is not None and state.attributes.get("skipped_version"):
         await hass.services.async_call("update", "clear_skipped", {"entity_id": entity_id}, blocking=True)
-    service_data: dict[str, Any] = {"entity_id": entity_id}
-    supported_features = state.attributes.get("supported_features", 0) if state else 0
-    if supported_features & UpdateEntityFeature.BACKUP:
-        service_data["backup"] = True
+    service_data = install_service_data(hass, entity_id)
 
     # This connection's own user, not the default, fresh, contextless
     # Context HA would otherwise create for a service call made from backend
