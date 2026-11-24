@@ -5262,6 +5262,11 @@ class UpdateManagerPanel extends HTMLElement {
     heading.textContent = tr.vote_nudge_heading;
     nudgeSection.appendChild(heading);
     const nudgeBody = document.createElement("div");
+    // Named so _advanceVoteNudge can re-find this exact element fresh from
+    // the live DOM later, instead of trusting a reference that a full
+    // _renderContent() rebuild (a background refresh, while a vote's own
+    // report dialog was still open) may have already detached.
+    nudgeBody.className = "vote-nudge-body";
     nudgeSection.appendChild(nudgeBody);
     this._renderVoteNudgeCandidate(nudgeBody, tr, outcome.entry, outcome.counts);
     return nudgeSection;
@@ -5405,7 +5410,19 @@ class UpdateManagerPanel extends HTMLElement {
   // _scanVoteNudgeCandidates' own local, instant device-identity dedup
   // (_voteNudgeSeenJumps) -- no vote, no propagation, no round trip
   // needed to tell two identical devices apart from one already shown.
-  _advanceVoteNudge(container, tr) {
+  // Re-finds the live .vote-nudge-body fresh from this._contentEl rather
+  // than taking one as an argument -- confirmed live, 2026-11-24: voting
+  // from the full report dialog (_openReportDialog, which can stay open
+  // for as long as filling in a reason takes) left the nudge showing its
+  // old candidate, since a background refresh in the meantime (any
+  // _renderContent() rebuild, e.g. a routine _updates refresh) replaces
+  // the whole Updates tab's DOM, detaching whatever container a caller
+  // captured earlier. Bails out quietly if the Updates tab isn't even
+  // showing, or that refresh already removed the section on its own.
+  _advanceVoteNudge(tr) {
+    if (this._tab !== "updates") return;
+    const container = this._contentEl?.querySelector(".vote-nudge-body");
+    if (!container) return;
     if (_voteNudgePrefetched) {
       const { entry, counts } = _voteNudgePrefetched;
       _voteNudgePrefetched = null;
@@ -5503,7 +5520,7 @@ class UpdateManagerPanel extends HTMLElement {
         // the already-prefetched one, no spinner) doesn't replace this
         // one out from under that checkmark before the user actually
         // sees it.
-        setTimeout(() => this._advanceVoteNudge(container, tr), 2000);
+        setTimeout(() => this._advanceVoteNudge(tr), 2000);
       })
     );
     actions.appendChild(healthyBtn);
@@ -5519,9 +5536,13 @@ class UpdateManagerPanel extends HTMLElement {
     const reportIcon = document.createElement("ha-svg-icon");
     reportIcon.slot = "start";
     reportIcon.path = verdictIcon(true);
+    // Same size override _buildVoteControls' own toggleIcon needs and
+    // explains in full: ha-button only auto-sizes a slotted start icon at
+    // size="xs", not "s", unlike ha-progress-button (healthyBtn above).
+    reportIcon.style.setProperty("--mdc-icon-size", "16px");
     reportBtn.appendChild(reportIcon);
     reportBtn.addEventListener("click", () =>
-      this._openReportDialog(entry.entity_id, entry, () => this._advanceVoteNudge(container, tr))
+      this._openReportDialog(entry.entity_id, entry, () => this._advanceVoteNudge(tr))
     );
     actions.appendChild(reportBtn);
 
@@ -5534,7 +5555,7 @@ class UpdateManagerPanel extends HTMLElement {
     skipBtn.size = "s";
     skipBtn.className = "vote-nudge-skip";
     skipBtn.textContent = tr.vote_nudge_skip;
-    skipBtn.addEventListener("click", () => this._advanceVoteNudge(container, tr));
+    skipBtn.addEventListener("click", () => this._advanceVoteNudge(tr));
     card.appendChild(skipBtn);
   }
 
@@ -9010,6 +9031,13 @@ class UpdateManagerPanel extends HTMLElement {
     const toggleIcon = document.createElement("ha-svg-icon");
     toggleIcon.slot = "start";
     toggleIcon.path = verdictIcon(true);
+    // ha-button's own stylesheet only auto-sizes a slotted start icon to
+    // 16px at size="xs", not "s" (confirmed against its real source) --
+    // ha-progress-button (healthyBtn right next to this) forces that same
+    // 16px at "s" too, but only inside its own shadow root, so this one
+    // needs the same override by hand or its icon (and so its label) reads
+    // visibly larger/offset next to healthyBtn's.
+    toggleIcon.style.setProperty("--mdc-icon-size", "16px");
     toggleBtn.appendChild(toggleIcon);
     toggleBtn.addEventListener("click", () => {
       formContainer.hidden = !formContainer.hidden;
