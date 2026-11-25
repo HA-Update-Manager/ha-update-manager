@@ -41,7 +41,10 @@ from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from homeassistant.components import persistent_notification
-from homeassistant.components.backup import BackupManagerState, async_get_manager
+from homeassistant.components.backup import async_get_manager
+# BackupManagerState is never re-exported from the package root (confirmed
+# against both dev and master), only async_get_manager is.
+from homeassistant.components.backup.manager import BackupManagerState
 from homeassistant.components.update import UpdateEntityFeature
 from homeassistant.core import Context, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError

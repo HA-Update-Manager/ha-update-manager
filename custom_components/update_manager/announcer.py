@@ -285,8 +285,8 @@ def decide_action(
     reading those two settings would expect.
 
     `instant` (True only for a whitelisted entity, see
-    effective_auto_install_state's own `auto_install_whitelisted`) is the
-    one deliberate exception to the normal announce-then-wait sequencing:
+    effective_auto_install_state's own `auto_install_whitelisted`) is one
+    deliberate exception to the normal announce-then-wait sequencing:
     skips straight to "execute" once ready/enabled/installable and not
     explicitly cancelled, with no announcement to begin with -- the entire
     point of naming an entity "always auto-update" is installing it the
@@ -299,6 +299,13 @@ def decide_action(
     own backoff after a hard failure already put a record there -- a
     whitelisted entity backs off exactly like a normal one once it's
     actually failed once, it just never announces *before* a first attempt.
+
+    `announce_wait <= timedelta(0)` is the other exception, same
+    "execute" skip as `instant` and checked alongside it: issue #19's own
+    request, a user who wants no cancel-window notification at all, not
+    just a shorter one. Both schemas below this module used to reject 0
+    outright (min=1); this is the one spot that actually gives it a
+    distinct meaning now that they allow it through.
 
     master_enabled (the global pause switch, const.py's CONF_ENABLED) is
     deliberately its own parameter, not folded into auto_install_enabled --
@@ -352,7 +359,7 @@ def decide_action(
             return "remove"
         return "execute" if now >= existing.execute_at else "none"
 
-    if instant:
+    if instant or announce_wait <= timedelta(0):
         return "execute"
 
     if (

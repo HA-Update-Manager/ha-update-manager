@@ -456,6 +456,28 @@ class TestDecideAction:
         )
         assert action == "execute"
 
+    def test_zero_wait_executes_directly_without_ever_announcing(self):
+        # issue #19: announce_wait=0 is the other way to skip straight to
+        # "execute", same as instant, for a user who wants no cancel-window
+        # notification at all for this size, not just a shorter one.
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=None, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=timedelta(0),
+        )
+        assert action == "execute"
+
+    def test_zero_wait_respects_a_failure_backoff_record_instead_of_reexecuting(self):
+        backoff = announcer.PendingAnnouncement(
+            entity_id="update.thing", to_version="2.0.0", announced_at=NOW, execute_at=NOW + timedelta(minutes=5)
+        )
+        action = announcer.decide_action(
+            is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,
+            existing=backoff, cancelled_to_version=None, current_to_version="2.0.0",
+            now=NOW, announce_wait=timedelta(0),
+        )
+        assert action == "none"
+
     def test_existing_announcement_not_yet_due_does_nothing(self):
         action = announcer.decide_action(
             is_ready=True, auto_install_enabled=True, master_enabled=True, installable=True,

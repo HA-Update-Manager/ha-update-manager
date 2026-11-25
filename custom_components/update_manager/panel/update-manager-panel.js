@@ -9544,7 +9544,9 @@ class UpdateManagerPanel extends HTMLElement {
       this._buildSettingsRow(tr, {
         headingText: tr.announce_hours_label,
         descriptionText: tr.announce_hours_helper,
-        selector: { number: { min: 1, max: 336, mode: "box", unit_of_measurement: tr.announce_hours_unit } },
+        // min: 0, not 1: issue #19, 0 skips the notice and installs as
+        // soon as it's otherwise allowed (announcer.py's own decide_action).
+        selector: { number: { min: 0, max: 336, mode: "box", unit_of_measurement: tr.announce_hours_unit } },
         key: "announce_hours",
       })
     );

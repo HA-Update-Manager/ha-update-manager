@@ -1186,7 +1186,10 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
                 vol.Required(CONF_MEDIUM_AUTO_INSTALL): bool,
                 vol.Required(CONF_LARGE_WAIT_DAYS): vol.All(vol.Coerce(int), vol.Range(min=0, max=365)),
                 vol.Required(CONF_LARGE_AUTO_INSTALL): bool,
-                vol.Required(CONF_ANNOUNCE_HOURS): vol.All(vol.Coerce(int), vol.Range(min=1, max=336)),
+                # min=0, not 1: issue #19, 0 means skip the notice and
+                # install as soon as it's otherwise allowed (announcer.py's
+                # own decide_action).
+                vol.Required(CONF_ANNOUNCE_HOURS): vol.All(vol.Coerce(int), vol.Range(min=0, max=336)),
                 vol.Required(CONF_EXCLUDED_ENTITIES): [str],
                 vol.Required(CONF_WHITELISTED_ENTITIES): [str],
                 vol.Required(CONF_HIDE_POSTPONED): bool,
