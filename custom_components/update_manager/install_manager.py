@@ -261,16 +261,17 @@ class InstallManager:
         # one), or the AI safety check's own short explanation when that's
         # what cancelled it (async_cancel's own reason parameter).
         self._cancelled: dict[str, tuple[str, str | None]] = {}
-        # entity_id -> (to_version, status, reason) for the AI safety
-        # check's own non-cancelling outcomes ("passed"/"failed"). The
-        # cancelling outcome already lives in self._cancelled above, no
-        # second place needed for that one. Not persisted, same "meaningful
-        # only for a live process" reasoning as self._failed below: purely
-        # for the timeline's own display, nothing here ever gates a
-        # decision, so losing it on a restart is an accepted, low-stakes gap.
-        # to_version, status, reason, reason_code, notable (see
-        # ai_safety_check.py's own AiSafetyCheckResult comment for what
-        # each one is).
+        # entity_id -> (to_version, status, reason, reason_code, notable)
+        # for the AI safety check's own non-cancelling outcomes ("passed"/
+        # "failed", see ai_safety_check.py's own AiSafetyCheckResult
+        # comment for what each one is). The cancelling outcome already
+        # lives in self._cancelled above, no second place needed for that
+        # one. Persisted the same way that dict already is, direct user
+        # feedback, 2026-11-28: originally left out (purely for the
+        # timeline's own display, nothing here ever gates a decision), but
+        # losing it on every restart meant re-running a real AI-task call
+        # for every already-checked update, just to reproduce a result that
+        # already existed.
         self._ai_check_results: dict[str, tuple[str, str, str | None, str | None, bool]] = {}
         # Set by _async_announce/_async_remove/the stale-cancellation prune
         # during a tick, so _async_tick can save once at the end instead of
@@ -425,6 +426,16 @@ class InstallManager:
             entity_id: (entry["to_version"], entry["required_version"])
             for entity_id, entry in data.get("postponed", {}).items()
         }
+        self._ai_check_results = {
+            entity_id: (
+                entry["to_version"],
+                entry["status"],
+                entry["reason"],
+                entry["reason_code"],
+                entry["notable"],
+            )
+            for entity_id, entry in data.get("ai_check_results", {}).items()
+        }
 
     async def _async_save(self) -> None:
         await self._store.async_save(
@@ -444,6 +455,16 @@ class InstallManager:
                 "postponed": {
                     entity_id: {"to_version": to_version, "required_version": required_version}
                     for entity_id, (to_version, required_version) in self._postponed.items()
+                },
+                "ai_check_results": {
+                    entity_id: {
+                        "to_version": to_version,
+                        "status": status,
+                        "reason": reason,
+                        "reason_code": reason_code,
+                        "notable": notable,
+                    }
+                    for entity_id, (to_version, status, reason, reason_code, notable) in self._ai_check_results.items()
                 },
             }
         )
@@ -756,7 +777,11 @@ class InstallManager:
         # restart (storage still had it under old_entity_id, which no
         # longer resolves to anything after the rename).
         postponed_moved = relabel_key(self._postponed, old_entity_id, new_entity_id) is not None
-        if pending is not None or cancelled_moved or postponed_moved:
+        # self._ai_check_results is persisted too, same as the three
+        # above (see its own comment): joins this same save condition for
+        # the identical reason postponed_moved was added to it.
+        ai_check_results_moved = relabel_key(self._ai_check_results, old_entity_id, new_entity_id) is not None
+        if pending is not None or cancelled_moved or postponed_moved or ai_check_results_moved:
             await self._async_save()
         # AutoInstallContext carries no entity_id field of its own (only
         # ever looked up via this dict's own key) -- just move it.
@@ -764,7 +789,6 @@ class InstallManager:
         if relabel_key(self._failed, old_entity_id, new_entity_id) is not None:
             self._refresh_failed_notification()
         relabel_key(self._failure_counts, old_entity_id, new_entity_id)
-        relabel_key(self._ai_check_results, old_entity_id, new_entity_id)
 
     async def _async_tick(self, now: datetime) -> None:
         # Every entity the coordinator currently tracks, plus any entity
@@ -798,7 +822,21 @@ class InstallManager:
             # would otherwise never be visited again, leaving a stale
             # postponed marker in memory forever. Found by code review,
             # 2026-11-02.
-            entity_ids = set(self._coordinator.cache) | set(self._pending) | set(self._postponed)
+            #
+            # self._cancelled/self._ai_check_results included the same way,
+            # found by review, 2026-11-28: once an entity is fully removed
+            # (async_prune_removed_entities pops it out of coordinator.cache,
+            # and it was never in self._pending/self._postponed either),
+            # it would otherwise drop out of this set entirely and never
+            # reach _async_evaluate_one's own stale-entry pruning below
+            # again, leaking both dicts' entries for that entity forever.
+            entity_ids = (
+                set(self._coordinator.cache)
+                | set(self._pending)
+                | set(self._postponed)
+                | set(self._cancelled)
+                | set(self._ai_check_results)
+            )
             self._dirty = False
             # Reset once per tick, under the same lock, see
             # self._announce_fire_count's own comment.
@@ -974,13 +1012,13 @@ class InstallManager:
             cancelled_to_version = None
             self._dirty = True
         # Same pruning for the AI safety check's own non-cancelling result,
-        # same "no longer the relevant version" reasoning. Not persisted
-        # (see self._ai_check_results's own comment), so this doesn't set
-        # self._dirty, same as self._failed/self._recently_announced never
-        # do either.
+        # same "no longer the relevant version" reasoning, now persisted
+        # the same way self._cancelled's own pruning just above already
+        # is (see self._ai_check_results's own comment for why).
         ai_check_entry = self._ai_check_results.get(entity_id)
         if ai_check_entry is not None and ai_check_entry[0] != current_to_version:
             del self._ai_check_results[entity_id]
+            self._dirty = True
 
         # cached["auto_install_excluded"] (coordinator.py's own
         # _is_excluded_from_auto_install) covers Core/Supervisor/HAOS too --
@@ -1174,6 +1212,10 @@ class InstallManager:
                 result.reason_code,
                 result.notable,
             )
+            # Own save, not folded into _async_tick's own end-of-tick one:
+            # this runs from a detached background task _fire_announced
+            # creates, outside that tick's own lock/save cycle entirely.
+            await self._async_save()
             return
         cached = self._coordinator.cache.get(entity_id)
         if cached is None or cached["latest_version"] != to_version:

@@ -1053,6 +1053,27 @@ class UpdateManagerCoordinator:
             if state is not None:
                 cached["native_auto_update"] = has_native_auto_update(state)
 
+    async def async_prune_removed_entities(self) -> None:
+        """An entity genuinely gone (its own integration/app removed) used
+        to rely entirely on _handle_state_changed's own live event to
+        notice and clean up self.cache (install_manager.py's own
+        _pending/_postponed entries following along via its own next
+        tick, see _async_evaluate_one's own cached-is-None handling). If
+        that one event was ever missed, nothing else ever asked again,
+        found live, 2026-11-28 (issue #20): a removed app's own entity
+        kept showing "Postponed" on the Updates tab indefinitely.
+
+        Shared by _async_periodic_recheck's own self-healing sweep below
+        and the manual refresh button (websocket_api.py's own
+        refresh_community_verdicts handler), same "a manual refresh
+        should also retry what's stale" intent every other call that
+        handler already makes has. _async_refresh_one's own None-state
+        branch is exactly the cleanup needed here, reused directly rather
+        than a second copy of it."""
+        for entity_id in list(self.cache):
+            if self.hass.states.get(entity_id) is None:
+                await self._async_refresh_one(entity_id)
+
     async def _async_periodic_recheck(self, now: datetime) -> None:
         # Self-healing safety net (added 2026-08-18): re-derives the
         # restart-recovery baseline from live state for every currently-
@@ -1064,6 +1085,7 @@ class UpdateManagerCoordinator:
         # same modest amount async_start's own startup sweep already uses
         # to stay gentle on a large instance, even though this now repeats
         # every _RECHECK_INTERVAL rather than running once.
+        await self.async_prune_removed_entities()
         for entity_id in list(self.cache):
             state = self.hass.states.get(entity_id)
             if state is not None:
@@ -1314,6 +1336,8 @@ class UpdateManagerCoordinator:
                 await self._available_since_store.async_save(self._available_since)
             if self._last_installed_version.pop(key, None) is not None:
                 self._last_installed_store.async_delay_save(lambda: self._last_installed_version, 1.0)
+            if self._force_ready.pop(key, None) is not None:
+                await self._force_ready_store.async_save(self._force_ready)
             return
 
         # Restart-recovery baseline advance + self-healing install

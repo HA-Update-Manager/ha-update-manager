@@ -496,6 +496,54 @@ function _normalizeTrustedVoterUsername(raw) {
   return stripped.split("/")[0] || trimmed;
 }
 
+// Ported from home-assistant/frontend's own real copyToClipboard
+// (src/common/util/copy-clipboard.ts, confirmed against stable tag
+// 20261125.1, not guessed): navigator.clipboard itself is only ever
+// available in a secure context, which plain HTTP Home Assistant (the
+// common case on a local network, no reverse-proxy TLS) isn't, confirmed
+// live, 2026-11-28, "Couldn't copy settings to clipboard" on exactly such
+// an instance. The same hidden-textarea + execCommand("copy") fallback
+// HA's own frontend already relies on for this. Appended to document.body
+// (not this component's own shadowRoot, tried first, confirmed live,
+// 2026-11-28: a success toast shown with nothing actually landing on the
+// clipboard, execCommand's own return value silently coming back false),
+// unlike that file's own rootEl/deepActiveElement handling, which exists
+// specifically for a dialog that traps focus inside a shadow root. This
+// is a plain button on the main panel page, nothing trapping focus here
+// to begin with, so the classic, document-level behavior execCommand was
+// always actually built for is the more reliable choice, not a reason to
+// reach for that same shadow-root exception.
+async function _copyTextToClipboard(text) {
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (err) {
+      // Logged (not the only diagnostic, see _copySettingsToClipboard's
+      // own catch too), then falls through to the textarea fallback
+      // below: whether the Clipboard API even existed is one thing,
+      // whether it rejected and why is a separate, worth-seeing fact,
+      // especially for telling a missing secure context apart from a
+      // genuine permission denial.
+      console.error("Update Manager: navigator.clipboard.writeText failed, trying the execCommand fallback", err);
+    }
+  }
+  const el = document.createElement("textarea");
+  el.value = text;
+  el.setAttribute("readonly", "");
+  el.style.position = "fixed";
+  el.style.top = "0";
+  el.style.left = "0";
+  el.style.opacity = "0";
+  document.body.appendChild(el);
+  el.select();
+  // execCommand's own return value, not assumed true, same reasoning as
+  // this function's own comment above.
+  const copied = document.execCommand("copy");
+  document.body.removeChild(el);
+  if (!copied) throw new Error("execCommand('copy') returned false");
+}
+
 function pickKnownSettings(data) {
   const known = knownSettingsFields();
   const result = {};
@@ -3685,7 +3733,7 @@ class UpdateManagerPanel extends HTMLElement {
       // that later await -- this only silences the premature warning.
       verdictRefresh.catch(() => {});
       if (updateEntityIds.length) {
-        this._showToast(this._tr.checking_updates_toast);
+        this._showToast(this._tr.refreshing_toast);
         await this._hass.callService("homeassistant", "update_entity", { entity_id: updateEntityIds });
         // There's no reliable way to know when every one of those polls has
         // actually finished (same reasoning HA's own checkForEntityUpdates
@@ -8783,10 +8831,83 @@ class UpdateManagerPanel extends HTMLElement {
     // this project's own sibling Lovelace cards already put at the bottom
     // of their editor, direct user feedback: that same versioned GitHub
     // link belongs at the very bottom of Update Manager's own Settings
-    // page too.
-    wrap.appendChild(this._buildVersionLink());
+    // page too. Now a row, not just that one link: "Copy settings" sits
+    // to its left, same footer, so both end up in the one spot someone
+    // scrolling to "the bottom of Settings" already expects to check.
+    wrap.appendChild(this._buildSettingsFooter(tr));
 
     return wrap;
+  }
+
+  _buildSettingsFooter(tr) {
+    const footer = document.createElement("div");
+    footer.className = "settings-footer";
+
+    // A plain <button>, not ha-button, direct user feedback, 2026-11-28:
+    // this is a debug aid, not something that should stand out next to
+    // the version link it now sits beside, same muted, unobtrusive
+    // treatment as that link, not a real call-to-action's own visual
+    // weight.
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "version-link settings-footer-copy-btn";
+    copyBtn.textContent = tr.copy_settings_button;
+    copyBtn.addEventListener("click", () => this._copySettingsToClipboard(tr));
+    footer.appendChild(copyBtn);
+
+    const separator = document.createElement("span");
+    separator.className = "settings-footer-separator";
+    separator.textContent = "·";
+    footer.appendChild(separator);
+
+    footer.appendChild(this._buildVersionLink());
+    return footer;
+  }
+
+  // For pasting into a GitHub issue, direct user feedback, 2026-11-28: a
+  // bug report's own back-and-forth usually needs the exact same settings
+  // questions asked every time, this skips that round trip. Plain
+  // pickKnownSettings (the same filtered shape save_settings itself
+  // sends), not a prettier, hand-built shape of its own: no second form to
+  // keep in sync with the real settings, and this is already exactly what
+  // a later "paste to import" would need to read back in too. No access
+  // token in here (that lives entirely in github_auth_manager, never in
+  // entry.options/_formData at all), only the plain linked username, the
+  // one part of that genuinely worth knowing for a bug report (an expired
+  // link still counts as "linked" here, same as the Settings card itself
+  // still shows that username rather than treating it as unlinked).
+  //
+  // this._linkedGithubUsername read directly here, not a fresh
+  // update_manager/github_link_status call: confirmed live, 2026-11-28,
+  // failing specifically in Safari (both the Companion App's own webview
+  // and plain mobile Safari) even after the execCommand fix. Safari is
+  // markedly stricter than Chrome about "this click still counts as a
+  // trusted user gesture". An await before the actual clipboard call,
+  // even a single fast local round trip, was enough to lose it there,
+  // where Chrome tolerated the exact same gap without issue. This method
+  // now does nothing async at all before _copyTextToClipboard itself, so
+  // that call is the first (and only) await in the whole chain, same
+  // "right at the click, nothing in between" shape _buildCommunityCard's
+  // own renderLinked/renderNotLinked/renderExpired already keep this
+  // field updated for.
+  async _copySettingsToClipboard(tr) {
+    const settings = pickKnownSettings(this._formData);
+    const payload = { ...settings, github_username: this._linkedGithubUsername || null };
+    try {
+      await _copyTextToClipboard(JSON.stringify(payload, null, 2));
+      this._showToast(tr.copy_settings_toast);
+    } catch (err) {
+      // Logged, not just toasted: a generic "couldn't copy" toast alone
+      // gave no way to tell why, found live, 2026-11-28, repeated failures
+      // across a reload and a full restart with no clearer picture either
+      // time. This is the one thing that actually says what the real
+      // browser/webview did (navigator.clipboard missing entirely,
+      // writeText's own rejection reason, or execCommand genuinely
+      // returning false), console-visible for whoever's debugging this
+      // live rather than guessed at blind from the outside.
+      console.error("Update Manager: couldn't copy settings to clipboard", err);
+      this._showToast(tr.copy_settings_failed_toast);
+    }
   }
 
   _buildVersionLink() {
@@ -8847,6 +8968,10 @@ class UpdateManagerPanel extends HTMLElement {
     card.appendChild(actionsContainer);
 
     const renderNotLinked = () => {
+      // Kept in sync here, not fetched fresh at copy time: see
+      // _copySettingsToClipboard's own comment for why that fetch has to
+      // stay out of its own call path entirely.
+      this._linkedGithubUsername = null;
       if (this._communityLinkPollTimer) {
         clearInterval(this._communityLinkPollTimer);
         this._communityLinkPollTimer = null;
@@ -8871,6 +8996,7 @@ class UpdateManagerPanel extends HTMLElement {
     };
 
     const renderLinked = (username) => {
+      this._linkedGithubUsername = username;
       // The card's own intro (`hint`, still in scope) otherwise kept
       // saying "link your GitHub account" even once already linked --
       // direct user feedback, 2026-11-27, a stale call-to-action for
@@ -8928,6 +9054,7 @@ class UpdateManagerPanel extends HTMLElement {
     // link (renderPending below), just from an already-linked-but-broken
     // starting point instead of never-linked.
     const renderExpired = (username) => {
+      this._linkedGithubUsername = username;
       statusContainer.innerHTML = "";
       actionsContainer.innerHTML = "";
       const expiredText = document.createElement("p");
@@ -10215,18 +10342,29 @@ class UpdateManagerPanel extends HTMLElement {
          .page-header shares this exact rule too (2026-08-12) -- it's not
          a card, but it sits in this same flex column above them and reads
          oddly wider than every card underneath it otherwise. */
-      .settings-cards ha-card, .settings-cards .page-header { width: 100%; max-width: 600px; margin: 0 auto; }
-      /* Same "Update Manager vX.Y.Z" link this project's own sibling
-         Lovelace cards already put at the bottom of their editor --
+      .settings-cards ha-card, .settings-cards .page-header, .settings-cards .settings-footer {
+        width: 100%; max-width: 600px; margin: 0 auto;
+      }
+      /* "Copy settings" and the same "Update Manager vX.Y.Z" link this
+         project's own sibling Lovelace cards already put at the bottom of
+         their editor, centered side by side with a plain dot between
+         them, direct user feedback, 2026-11-28 (not left/right split: a
+         debug aid, not something meant to stand out from that link).
          .settings-cards' own flex gap above already gives this the same
          24px breathing room from the last card as every other section, so
-         unlike the compact editor version this doesn't need its own
-         border-top divider on top of that. */
-      .settings-cards .version-link {
-        display: block; text-align: center; text-decoration: none;
-        font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color);
+         this doesn't need its own border-top divider on top of that. */
+      .settings-footer { display: flex; align-items: center; justify-content: center; gap: 8px; }
+      .settings-footer-separator { font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color); }
+      .settings-cards .version-link, .settings-footer-copy-btn {
+        text-decoration: none; font-size: var(--ha-font-size-s, 13px); color: var(--secondary-text-color);
       }
-      .settings-cards .version-link:hover { text-decoration: underline; }
+      .settings-cards .version-link:hover, .settings-footer-copy-btn:hover { text-decoration: underline; }
+      /* Same muted text, not a real <button>'s own default chrome, see
+         _buildSettingsFooter's own comment for why this reuses
+         .version-link's look instead of ha-button's. */
+      .settings-footer-copy-btn {
+        background: none; border: none; padding: 0; margin: 0; font-family: inherit; cursor: pointer;
+      }
       ha-card { margin: 0; }
       .card-content { padding: 0 16px 16px; display: flex; flex-direction: column; }
       .card-content > *:not(:first-child) { margin-top: 16px; }

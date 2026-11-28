@@ -289,11 +289,19 @@ async def _handle_refresh_community_verdicts(
     install_manager.py's own async_force_reevaluate), found live,
     2026-11-04: without it, this button looked like it refreshed
     everything, but a stale "Scheduled updates" entry still waited for the
-    next periodic timer or unrelated coordinator recompute to clear."""
+    next periodic timer or unrelated coordinator recompute to clear.
+
+    First prunes any entity whose own integration/app has been removed
+    entirely (coordinator.py's own async_prune_removed_entities), found
+    live, 2026-11-28 (issue #20): the reevaluation two calls below reads
+    coordinator.cache as-is, so a stale entry there for an entity that no
+    longer exists at all would otherwise still look perfectly normal to
+    it, pending/postponed state included."""
     data = _get_data(hass)
     if not data:
         connection.send_error(msg["id"], "not_found", "Update Manager isn't set up")
         return
+    await data.coordinator.async_prune_removed_entities()
     await data.coordinator.async_force_refresh_community_verdicts()
     # Same "a manual refresh should do both kinds of refresh" intent as the
     # community-verdicts call just above -- the shared firmware-version

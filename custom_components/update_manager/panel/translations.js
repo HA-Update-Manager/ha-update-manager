@@ -53,8 +53,17 @@ export const TRANSLATIONS = {
     tab_history: "History",
     tab_settings: "Settings",
     refresh: "Refresh",
-    checking_updates_toast: "Checking for updates…",
+    // "Checking for updates" (its own name until now) undersold what this
+    // button's own single click actually triggers these days: community
+    // verdicts, firmware versions, pruning a removed entity's own stale
+    // record, AI-check retries, and more, not just a fresh update poll.
+    refreshing_toast: "Refreshing Update Manager…",
     refreshed_toast: "Update Manager refreshed",
+    // Settings' own footer, for pasting into a GitHub issue (see
+    // _copySettingsToClipboard's own comment).
+    copy_settings_button: "Copy settings",
+    copy_settings_toast: "Settings copied to clipboard",
+    copy_settings_failed_toast: "Couldn't copy settings to clipboard",
     // "Update all" button's own click confirmation (see _updateAllInGroup)
     // -- fired immediately, before the actual dispatch/reload work, direct
     // user feedback: clicking it didn't show anything happening right away.
@@ -674,8 +683,11 @@ export const TRANSLATIONS = {
     tab_history: "Historie",
     tab_settings: "Instellingen",
     refresh: "Vernieuwen",
-    checking_updates_toast: "Bezig met controleren op updates…",
+    refreshing_toast: "Update Manager wordt ververst…",
     refreshed_toast: "Update Manager ververst",
+    copy_settings_button: "Instellingen kopiëren",
+    copy_settings_toast: "Instellingen gekopieerd naar klembord",
+    copy_settings_failed_toast: "Kopiëren naar klembord mislukt",
     update_all_started_toast: (count) => (count === 1 ? "1 update wordt geïnstalleerd…" : `${count} updates worden geïnstalleerd…`),
     menu_show_skipped_updates: "Overgeslagen updates tonen",
     menu_show_not_installable_updates: "Niet-installeerbare updates tonen",
