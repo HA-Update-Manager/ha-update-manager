@@ -38,13 +38,16 @@ def size_rank(size: Size) -> int:
 
 # Strict semver: exactly major.minor.patch, each a plain non-negative
 # integer (no leading zeros other than "0" itself), with an optional
-# pre-release (-foo.1) and/or build metadata (+build.5) suffix that we parse
-# but deliberately ignore for size classification -- a pre-release of a new
-# major is still "large", not something in between.
+# pre-release (-foo.1) and/or build metadata (+build.5, or an underscore in
+# place of the "+", confirmed against the deCONZ wiki's own firmware-
+# version table, 2026-11-25: Signify/Hue's own OTA images carry a build hash
+# this way, e.g. "2.44.0_hBB3C188", no other vendor there uses "_" this way)
+# suffix that we parse but deliberately ignore for size classification, a
+# pre-release of a new major is still "large", not something in between.
 _SEMVER_RE = re.compile(
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    r"(?:[+_][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
 # Calendar-style versioning, e.g. "2026.7.1" (year.month.patch) -- the
@@ -81,7 +84,7 @@ _GIT_COMMIT_RE = re.compile(r"^(?=.*[a-fA-F])[0-9a-fA-F]{6,40}$")
 _SHORT_SEMVER_RE = re.compile(
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    r"(?:[+_][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
 
 # Exactly major.minor.patch.hotfix, a fourth, non-standard component some
@@ -95,8 +98,55 @@ _SHORT_SEMVER_RE = re.compile(
 _EXTENDED_SEMVER_RE = re.compile(
     r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
-    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+    r"(?:[+_][0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
+
+
+# issue #19's own self-update discussion, 2026-11-25: a pre-release target
+# version deserves the same conservative "large" default as anything else
+# genuinely less certain, regardless of how small the numeric jump looks,
+# since it hasn't had the same community-verdict exposure a real release gets.
+# Specific, known words, not a bare hyphen suffix: some repos use one for
+# something that isn't actually less-tested (e.g. "-hotfix.1"), so matching
+# any suffix at all would flag those too.
+_PRERELEASE_KEYWORDS = frozenset({"alpha", "beta", "rc", "dev", "pre", "preview", "nightly", "test"})
+
+# "test" added 2026-11-25, confirmed live: community-votes' own real vote
+# history has a genuine HACS repo using it this exact way ("6.0.10-test8"),
+# not a hypothetical. Originally left out over a false-positive worry
+# ("testing"/"tested"), already moot by the time this got added: the exact-
+# match check below (not a prefix check) only ever matches the identifier's
+# own leading letters exactly, so "-testing8" still doesn't match "test",
+# same as "premium"/"development" already don't match "pre"/"dev".
+
+# Found by review: a plain str.startswith(_PRERELEASE_KEYWORDS) check
+# against the identifier also matched ordinary words that merely begin with
+# one of these short keywords ("premium", "development", "precompiled",
+# "devkit"), none of which are actually pre-releases. is_prerelease_version
+# below instead matches this against only the identifier's own leading run
+# of letters, exactly, once any trailing digits (the common "beta1"/"rc2"
+# counter suffix) are stripped off first.
+_LEADING_LETTERS_RE = re.compile(r"^[a-z]+")
+
+
+def is_prerelease_version(version: str) -> bool:
+    """True if version's own semver pre-release identifier (the segment
+    right after the first "-", before any "+build" metadata, and only its
+    first dot-separated part) has a leading run of letters that is, exactly,
+    case-insensitively, one of _PRERELEASE_KEYWORDS: "beta.2"/"beta1"/"RC1"
+    all match, but "hotfix.1" (not a known keyword at all) and
+    "premium.1"/"devkit.3" (only sharing a prefix with one) don't.
+    Only catches what the version string itself hints at; a GitHub release
+    flagged prerelease with no such hint in its tag at all is invisible to
+    this, see classify_version_size's own known_prerelease parameter for
+    the other, opportunistic way that gets caught."""
+    candidate = strip_version_prefix(str(version))
+    _, _, suffix = candidate.partition("-")
+    if not suffix:
+        return False
+    identifier = suffix.split("+", 1)[0].split(".", 1)[0].lower()
+    match = _LEADING_LETTERS_RE.match(identifier)
+    return match is not None and match.group(0) in _PRERELEASE_KEYWORDS
 
 
 class ParsedVersion(NamedTuple):
@@ -130,6 +180,17 @@ def strip_version_prefix(version: str) -> str:
     return match.group(1) if match else candidate
 
 
+_BUILD_METADATA_SPLIT_RE = re.compile(r"[+_]")
+
+
+def _strip_build_metadata(core: str) -> str:
+    """The numeric core with any build-metadata suffix (after a "+" or,
+    same treatment, a "_", see _SEMVER_RE's own comment on why) cut off.
+    Shared by every parser below so the "+"/"_" equivalence only needs to
+    be expressed once."""
+    return _BUILD_METADATA_SPLIT_RE.split(core, maxsplit=1)[0]
+
+
 def parse_semver(version: str) -> ParsedVersion | None:
     """Parse a strict semver core (major.minor.patch), ignoring any
     pre-release/build suffix. Returns None -- never a best-effort guess --
@@ -140,7 +201,7 @@ def parse_semver(version: str) -> ParsedVersion | None:
     candidate = strip_version_prefix(version)
     if not _SEMVER_RE.match(candidate):
         return None
-    core = candidate.split("-", 1)[0].split("+", 1)[0]
+    core = _strip_build_metadata(candidate.split("-", 1)[0])
     major, minor, patch = (int(part) for part in core.split("."))
     return ParsedVersion(major, minor, patch)
 
@@ -199,7 +260,7 @@ def _parse_short_semver(version: str) -> ParsedVersion:
     meaningful once is_short_semver_version has already confirmed the
     shape -- this doesn't re-validate it."""
     candidate = strip_version_prefix(version)
-    core = candidate.split("-", 1)[0].split("+", 1)[0]
+    core = _strip_build_metadata(candidate.split("-", 1)[0])
     major, minor = (int(part) for part in core.split("."))
     return ParsedVersion(major, minor, 0)
 
@@ -237,13 +298,26 @@ def _parse_major_minor_patch_hotfix(version: str) -> ParsedVersion | None:
     if not is_extended_semver_version(version):
         return None
     candidate = strip_version_prefix(version)
-    core = candidate.split("-", 1)[0].split("+", 1)[0]
+    core = _strip_build_metadata(candidate.split("-", 1)[0])
     major, minor, patch, hotfix = (int(part) for part in core.split("."))
     return ParsedVersion(major, minor, patch, hotfix)
 
 
-def classify_version_size(previous: str, current: str) -> Size:
+def classify_version_size(previous: str, current: str, *, known_prerelease: bool = False) -> Size:
     """Classify how big a change the jump from `previous` to `current` is.
+
+    `current` being a pre-release is checked first, before any shape-
+    specific comparison below: always "large", regardless of how small the
+    numeric jump itself looks. Two ways that's known: is_prerelease_version
+    recognizes it from `current`'s own string (a "-beta"/"-rc"/etc.
+    identifier); `known_prerelease` lets a caller pass in a second, opportunistic
+    signal gained for free elsewhere (coordinator.py's own release-notes
+    fetch already sees GitHub's real `prerelease` flag for an unrelated
+    reason) for the case the string itself gives no hint at all. Neither is
+    exhaustive on its own; together they still miss a prerelease tagged with
+    neither a recognizable suffix nor ever looked up that way, which then
+    falls back to being classified purely on its numeric jump like before,
+    an accepted, documented gap, not a regression.
 
     HA Core's calendar versioning (year.month.patch) is handled on its own
     terms when *both* sides use it: the month is what "medium" means here
@@ -289,6 +363,8 @@ def classify_version_size(previous: str, current: str) -> Size:
     rollback or a re-announced identical version)."""
     previous = str(previous)
     current = str(current)
+    if known_prerelease or is_prerelease_version(current):
+        return "large"
     prev_is_calendar = is_calendar_version(previous)
     curr_is_calendar = is_calendar_version(current)
     if prev_is_calendar and curr_is_calendar:

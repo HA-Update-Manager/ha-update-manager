@@ -251,6 +251,12 @@ _DISPATCH_GRACE = timedelta(seconds=5)
 # restart (or HA's own backup pause) after all.
 _CORE_SAFE_TIER_WAIT_CAP = timedelta(minutes=3)
 
+# How often async_wait_for_backup_clear re-checks Home Assistant's own
+# backup lock while it's actively waiting. Cheap (a local state read, no
+# network), so a short interval costs nothing and keeps the wait feeling
+# responsive once the backup actually clears.
+_LATE_BACKUP_WAIT_POLL = timedelta(seconds=2)
+
 
 def _serialize_context(context: AutoInstallContext | None) -> dict[str, Any] | None:
     if context is None:
@@ -418,6 +424,25 @@ class RolloutManager:
         # instead once the tier gate actually clears (see
         # _async_dispatch_past_tier_gate).
         self._tier_blocked: dict[str, _QueuedEntry] = {}
+        # entity_id currently inside async_wait_for_backup_clear's own wait
+        # loop, a *second*, later backup-lock check, right before
+        # install_manager.py's own async_dispatch_install actually calls
+        # update.install, closing the race a same-instant batch (e.g.
+        # "Update all") opens: every entity's own earlier tier-gate check
+        # (_tier_blocking_entity, feeding self._tier_blocked above) can run
+        # before any of them has actually started, so none of them yet see
+        # the backup the first one is about to trigger. Deliberately not a
+        # _QueuedEntry/self._tier_blocked entry, this runs well past this
+        # module's own queueing/dedup bookkeeping (to_version/context
+        # aren't even available this deep in the dispatch funnel), so a
+        # plain, unpersisted set is simplest; not persisted across a
+        # restart either, same reasoning as self._in_flight below (the
+        # dispatch task doing the actual waiting is gone too, in that
+        # case, nothing left to resume). Joined into tier_blocked_entity_ids/
+        # tier_blocked_due_to_backup_entity_ids below so the panel shows
+        # the exact same "Waiting for X to finish backing up" wording for
+        # this later check, no separate panel wiring needed.
+        self._late_backup_wait: set[str] = set()
         # entity_id -> _InFlightInstall, this module's own consolidated
         # per-entity bookkeeping for a currently (or recently) attempted
         # install -- see that dataclass's own docstring. Deliberately not
@@ -828,22 +853,37 @@ class RolloutManager:
             return None
         return record
 
-    def was_manually_requested(self, entity_id: str, to_version: str) -> tuple[bool, str | None]:
+    def was_manually_requested(self, entity_id: str, to_version: str) -> tuple[bool, str | None, bool]:
         """Consumed once by __init__.py's install-listener callback, the
         manual-attribution counterpart to install_manager.py's own
-        was_auto_installed. Returns (True, user_id) once a matching record
-        for this exact (entity_id, to_version) install is found, or
-        (False, None) otherwise. user_id can still be None on a real match:
-        note_external_install_request below records a match whenever a real
-        update.install call is observed, whether or not it carried an
-        attributable user, and the caller needs to tell that apart from no
-        match at all. Only pops the record on an actual match, same
-        reasoning as was_auto_installed's own docstring: a still-pending
-        record for a different, later request must survive an unrelated
-        version change on the same entity landing first."""
+        was_auto_installed. Returns (True, user_id, dispatched_via_panel)
+        once a matching record for this exact (entity_id, to_version)
+        install is found, or (False, None, False) otherwise. user_id can
+        still be None on a real match: note_external_install_request below
+        records a match whenever a real update.install call is observed,
+        whether or not it carried an attributable user, and the caller
+        needs to tell that apart from no match at all.
+
+        dispatched_via_panel is True only for a record async_request_install
+        itself created (a real to_version, this module's own dispatch),
+        never for one note_external_install_request's own wildcard
+        (to_version=None) entry created instead: that one matches *any*
+        update.install call this module didn't dispatch itself (Home
+        Assistant's own native more-info dialog among them, see that
+        method's own docstring), so a caller that treated every match here
+        as "our own panel dispatched this, so we know backup:True was
+        requested" would be wrong for exactly that external case, found
+        by code review, confirmed against note_external_install_request's
+        own wildcard matching. install_log.py's own backup_used field is
+        the one caller that actually needs this distinction.
+
+        Only pops the record on an actual match, same reasoning as
+        was_auto_installed's own docstring: a still-pending record for a
+        different, later request must survive an unrelated version change
+        on the same entity landing first."""
         record = self._matching_manual_record(entity_id, to_version)
         if record is None:
-            return False, None
+            return False, None, False
         del self._recently_manual[entity_id]
         # Fire-and-forget: this method is sync (called synchronously from
         # __init__.py's own install-listener, same reasoning as reading
@@ -851,7 +891,7 @@ class RolloutManager:
         # reach disk, or a restart before the next save would resurrect
         # this exact already-consumed record from its last-saved copy.
         self.hass.async_create_task(self._async_save())
-        return True, record[1]
+        return True, record[1], record[0] is not None
 
     def note_external_install_request(self, entity_id: str, user_id: str | None) -> None:
         """Called by __init__.py's own global EVENT_CALL_SERVICE listener
@@ -1140,6 +1180,43 @@ class RolloutManager:
         # real block, just with no friendly entity to name (see
         # friendlyEntityName's own raw-id fallback in the panel).
         return "backup_manager_state"
+
+    async def async_wait_for_backup_clear(self, entity_id: str) -> None:
+        """Called from install_manager.py's own async_dispatch_install,
+        right before the actual update.install call, the last possible
+        moment left to catch a backup that's only just started, after
+        entity_id's own earlier tier-gate check (_tier_blocking_entity)
+        already cleared it. Direct user feedback, 2026-11-25: a real
+        "Update all" batch of 3 apps fired every one of them at once
+        (update-manager-panel.js's own Promise.allSettled), so all three
+        passed that earlier check before any of them had actually reached
+        Home Assistant Core yet, none of them could have seen the
+        backup the first one's own install was about to trigger. The
+        other two went "Installing" briefly, then silently back to ready,
+        cut short by HA's own backup pause with nothing of this module's
+        own to catch or explain it.
+
+        No cap, same reasoning _backup_in_progress_entity's own docstring
+        already gives for why that check itself isn't capped either
+        (unlike _pending_safe_tier_entity's own _CORE_SAFE_TIER_WAIT_CAP):
+        this reflects Home Assistant's own real, authoritative backup
+        state directly, not an approximation that could get stuck the way
+        a buggy in_progress attribute could. It clears the instant
+        Home Assistant itself reports idle again, however long that
+        genuinely takes.
+
+        A no-op, immediately, for the overwhelming majority of dispatches
+        (no backup in progress at all); this module stays invisible
+        until there's actually something to wait for, same spirit as
+        async_request_install's own docstring."""
+        if self._backup_in_progress_entity(entity_id) is None:
+            return
+        self._late_backup_wait.add(entity_id)
+        try:
+            while self._backup_in_progress_entity(entity_id) is not None:
+                await asyncio.sleep(_LATE_BACKUP_WAIT_POLL.total_seconds())
+        finally:
+            self._late_backup_wait.discard(entity_id)
 
     def _entity_likely_causing_backup(self) -> str | None:
         """The one update entity, if exactly one, that's both currently
@@ -2194,8 +2271,15 @@ class RolloutManager:
         already settles for. None (rather than the key being absent) for
         the rare case nothing currently blocks it anymore by the exact
         instant this snapshot is taken -- the panel falls back to the old
-        generic text only for that case."""
-        return {entity_id: self._tier_blocking_entity(entity_id) for entity_id in self._tier_blocked}
+        generic text only for that case. Joined with self._late_backup_wait
+        (async_wait_for_backup_clear's own, later check) the same way
+        tier_blocked_due_to_backup_entity_ids below is: the panel shows
+        the exact same wording for either, it has no reason to tell them
+        apart."""
+        result = {entity_id: self._tier_blocking_entity(entity_id) for entity_id in self._tier_blocked}
+        for entity_id in self._late_backup_wait:
+            result.setdefault(entity_id, self._backup_in_progress_entity(entity_id))
+        return result
 
     def tier_blocked_due_to_backup_entity_ids(self) -> set[str]:
         """Subset of tier_blocked_entity_ids' own keys whose blocking
@@ -2211,8 +2295,16 @@ class RolloutManager:
         same call tier_blocked_entity_ids' own per-entity
         _tier_blocking_entity already makes internally, just inspected
         here to tell the two reasons apart after the fact, since that
-        method's own return value alone can't."""
-        return {entity_id for entity_id in self._tier_blocked if self._backup_in_progress_entity(entity_id) is not None}
+        method's own return value alone can't.
+
+        self._late_backup_wait's own entries are always backup-caused by
+        construction (async_wait_for_backup_clear never adds one for any
+        other reason), included here too so the panel's "waiting for
+        backup" wording covers that later check the same way it already
+        covers the earlier one."""
+        return self._late_backup_wait | {
+            entity_id for entity_id in self._tier_blocked if self._backup_in_progress_entity(entity_id) is not None
+        }
 
     def stuck_since_snapshot(self) -> dict[str, dict[str, Any]]:
         """Read by websocket_api.py's own _handle_updates -- entity_id ->

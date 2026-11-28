@@ -18,7 +18,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import DOMAIN, SERVICE_GET_RELEASE_NOTES
 from .firmware_version_discovery import backfill_real_versions_for_entry
 from .firmware_version_registry import FirmwareVersionManager
 from .install_log_retention import DEFAULT_POLICY, apply_release_notes_retention, enforce_byte_backstop
@@ -40,25 +40,32 @@ MAX_ENTRIES = 1000
 _MAX_STORE_BYTES = 8 * 1024 * 1024
 
 
-async def _async_release_notes(hass: HomeAssistant, entity_id: str, supported_features: int) -> str | None:
-    """Best-effort: the entity's full release notes, if it supports fetching
-    them. Unlike release_url/release_summary, the long-form (often markdown)
-    notes aren't a plain state attribute -- they're fetched on demand, the
-    same way HA's own more-info dialog and its `update/release_notes`
-    websocket command do, via the update entity's own async_release_notes()."""
-    if not supported_features & UpdateEntityFeature.RELEASE_NOTES:
-        return None
+async def _async_release_notes(hass: HomeAssistant, entity_id: str, to_version: str) -> str | None:
+    """Best-effort: the same full release notes the live dialog and the
+    get_release_notes service action already show, not just the native
+    update entity's own async_release_notes() in isolation. Confirmed
+    live, 2026-11-27: a HACS integration with no native release-notes
+    support of its own (arjenhiemstra/ithowifi) showed full notes on the
+    Updates tab (services.py's own full native/GitHub-compiled/zigbee-OTA
+    fallback chain) but nothing at all once logged here to History, back
+    when this only ever tried the bare native call, with none of that
+    fallback. Routed through the real get_release_notes service
+    (hass.services.async_call), same reasoning ai_safety_check.py already
+    uses this exact service for: services.py's own handler is a closure,
+    not a separately importable function, and this way both callers of
+    that one real pipeline can never quietly drift apart again."""
     try:
-        component = hass.data.get("update")
-        if component is None:
-            return None
-        entity = component.get_entity(entity_id)
-        if entity is None:
-            return None
-        return await entity.async_release_notes()
+        result = await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GET_RELEASE_NOTES,
+            {"entity_id": entity_id, "to_version": to_version},
+            blocking=True,
+            return_response=True,
+        )
     except Exception:
         _LOGGER.debug("Couldn't fetch release notes for %s", entity_id, exc_info=True)
         return None
+    return (result or {}).get("notes")
 
 
 class InstallLog:
@@ -74,6 +81,28 @@ class InstallLog:
     def entries(self) -> list[dict[str, Any]]:
         return self._entries
 
+    def entity_ids_installed_since(self, cutoff: Any) -> set[str]:
+        """Every entity_id with at least one logged install at or after
+        cutoff (a real datetime, same tz-aware shape dt_util.utcnow()
+        returns). Read by websocket_api.py's own manual-refresh handler to
+        scope coordinator.py's own firmware-version submission retry to
+        genuinely recent installs only, direct user feedback, 2026-11-25:
+        a real refresh click submitted three unrelated devices at once,
+        each one installed weeks earlier, simply because nothing had ever
+        checked them before, the exact "every pre-existing device
+        submits at once" risk this feature was always meant to stay away
+        from (see coordinator.py's own _async_refresh_firmware_version_
+        display docstring), just reached a different way than the one
+        already guarded against. A malformed/missing installed_at on an
+        old entry (logged before that field existed) is simply excluded,
+        not an error."""
+        result = set()
+        for entry in self._entries:
+            installed_at = dt_util.parse_datetime(entry.get("installed_at", ""))
+            if installed_at is not None and installed_at >= cutoff:
+                result.add(entry["entity_id"])
+        return result
+
     async def async_log_install(
         self,
         entity_id: str,
@@ -83,6 +112,7 @@ class InstallLog:
         release_url: str | None,
         supported_features: int,
         install_method: str,
+        dispatched_via_panel: bool = False,
         auto_install_reason: str | None = None,
         trusted_voter_usernames: list[str] | None = None,
         announced_at: str | None = None,
@@ -98,7 +128,7 @@ class InstallLog:
         # source of truth callers pass in -- see __init__.py's own
         # _on_install for how "auto"/"manual"/"external" gets decided.
         auto_installed = install_method == "auto"
-        release_notes = await _async_release_notes(self._hass, entity_id, supported_features)
+        release_notes = await _async_release_notes(self._hass, entity_id, to_version)
         self._entries.append(
             {
                 "entity_id": entity_id,
@@ -109,29 +139,38 @@ class InstallLog:
                 "release_notes": release_notes,
                 "auto_installed": auto_installed,
                 "install_method": install_method,
-                # Only ever set for an auto-install: install_manager.py's own
-                # _async_execute unconditionally sets `backup: True` on the
-                # dispatched update.install call whenever the entity's
-                # supported_features includes UpdateEntityFeature.BACKUP, no
-                # other condition -- so for an auto-installed entry this is a
-                # sure fact, not a guess. websocket_api.py's own _handle_install
-                # (our panel's Install/Update all button) does the exact same
-                # check since 2026-11-18, but "manual" here also covers the
-                # rarer case of a recent context.user_id this project didn't
-                # itself dispatch (see __init__.py's own "manual" vs "external"
-                # comment), most plausibly HA's own native install dialog
-                # (its own separate backup checkbox, entirely invisible to us),
-                # which carries no such guarantee. install_method doesn't tell
-                # those two "manual" cases apart, so this stays None for
-                # either, same "hide the fact entirely rather than show an
-                # unreliable guess" treatment as auto_install_reason below.
+                # True for an auto-install, or a manual one this project's
+                # own panel genuinely dispatched itself (dispatched_via_panel,
+                # __init__.py's own rollout_manager.was_manually_requested
+                # check): install_manager.py's own _async_execute, and
+                # websocket_api.py's own _handle_install (our panel's
+                # Install/Update all button, confirmed doing the identical
+                # check since 2026-11-18) both unconditionally set
+                # `backup: True` on the dispatched update.install call
+                # whenever the entity's supported_features includes
+                # UpdateEntityFeature.BACKUP, no other condition, so for
+                # either of those this is a sure fact, not a guess.
+                # Found live, 2026-11-25: install_method alone couldn't
+                # distinguish that case from the OTHER thing "manual" also
+                # covers, a recent context.user_id this project didn't
+                # itself dispatch, most plausibly HA's own native install
+                # dialog (its own separate backup checkbox, entirely
+                # invisible to us), so a real, panel-dispatched "Update
+                # all" batch silently showed nothing here at all, the exact
+                # same "hide the fact entirely rather than show an
+                # unreliable guess" treatment auto_install_reason below
+                # still correctly gets for a case that's genuinely unknown.
                 # Direct user feedback, 2026-08-01: nowhere did the panel
                 # actually show whether that backup succeeded
                 # (following up on an earlier request to verify this
                 # actually happens at all) -- this is what makes that
                 # already-verified behaviour visible per install, not just
                 # true in the code.
-                "backup_used": bool(supported_features & UpdateEntityFeature.BACKUP) if auto_installed else None,
+                "backup_used": (
+                    bool(supported_features & UpdateEntityFeature.BACKUP)
+                    if auto_installed or dispatched_via_panel
+                    else None
+                ),
                 # None on a manual install, or on any entry logged before
                 # this field existed at all -- the panel hides these facts
                 # entirely rather than showing "unknown" when they're None,

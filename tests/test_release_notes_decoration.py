@@ -62,6 +62,46 @@ class TestLinkifyGithubReferences:
         assert "[[#177201]" not in result
 
 
+class TestStripImageDimensions:
+    def test_strips_width_and_height_from_a_real_github_image_tag(self):
+        """Real confirmed shape, frenck/spook v5.12.0: a drag-and-dropped
+        screenshot's own raw <img> tag, written by GitHub's release editor."""
+        text = (
+            '<img width="1600" height="947" alt="image" '
+            'src="https://github.com/user-attachments/assets/5cd6daae-51ba-4557-b087-ef9101a920b1" />'
+        )
+        result = release_notes_decoration.strip_image_dimensions(text)
+        assert "width=" not in result
+        assert "height=" not in result
+        assert 'alt="image"' in result
+        assert 'src="https://github.com/user-attachments/assets/5cd6daae-51ba-4557-b087-ef9101a920b1"' in result
+
+    def test_leaves_text_without_an_img_tag_unchanged(self):
+        text = "Plain text with a width=100 word that isn't a real attribute at all."
+        assert release_notes_decoration.strip_image_dimensions(text) == text
+
+    def test_handles_multiple_image_tags(self):
+        text = '<img width="900" height="500" src="a.png"><img width="800" height="400" src="b.png">'
+        result = release_notes_decoration.strip_image_dimensions(text)
+        assert result == '<img src="a.png"><img src="b.png">'
+
+    def test_leaves_a_small_icon_sized_image_alone(self):
+        """Real confirmed shape, frenck/spook v5.12.0: its own row of
+        social-media icon links, GitHub's own README-badge convention.
+        Stripping broke these live, 2026-11-27: an SVG icon like this
+        often has no other natural size to fall back on, and unlike the
+        screenshot case, it's never wide enough for max-width:100% to
+        ever shrink it in the first place, so nothing here was ever
+        mismatched to begin with."""
+        text = '<img src="linkedin.svg" width="18" height="18">'
+        assert release_notes_decoration.strip_image_dimensions(text) == text
+
+    def test_strips_when_only_one_dimension_is_small(self):
+        text = '<img width="1600" src="a.png">'
+        result = release_notes_decoration.strip_image_dimensions(text)
+        assert result == '<img src="a.png">'
+
+
 class TestDecorateReleaseNotes:
     def test_returns_none_for_no_notes(self):
         assert release_notes_decoration.decorate_release_notes(None, "acme", "widget") is None
@@ -69,3 +109,9 @@ class TestDecorateReleaseNotes:
     def test_applies_both_decorations(self):
         result = release_notes_decoration.decorate_release_notes("Thanks @someone :bow: (#1234)", "acme", "widget")
         assert result == "Thanks [@someone](https://github.com/someone) \U0001f647 ([#1234](https://github.com/acme/widget/issues/1234))"
+
+    def test_also_strips_image_dimensions(self):
+        result = release_notes_decoration.decorate_release_notes(
+            '<img width="1600" height="947" src="a.png">', "acme", "widget"
+        )
+        assert result == '<img src="a.png">'

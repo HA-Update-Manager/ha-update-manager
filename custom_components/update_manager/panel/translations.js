@@ -105,8 +105,8 @@ export const TRANSLATIONS = {
       return ["1.0.0 → 1.1.0", `${year}.${month}.0 → ${nextYear}.${nextMonth}.0`, "7sg82tw → 8dhw8wg"];
     },
     size_large_short: "Large",
-    size_large_lead: "A major release, or a jump too different to classify.",
-    size_large_examples: () => ["1.0.0 → 2.0.0"],
+    size_large_lead: "A major release, a recognized pre-release, or a jump too different to classify.",
+    size_large_examples: () => ["1.0.0 → 2.0.0", "1.2.3 → 1.3.0-beta.1"],
     // Used in the detail dialog's status alert (see statusText/
     // _openDetailDialog) -- no emoji prefix here, the alert's own color and
     // icon (a real ha-alert, success/info/warning) already carry that, an
@@ -177,6 +177,7 @@ export const TRANSLATIONS = {
       "Installs the instant a new version is available, skipping the wait and the community vote check entirely, regardless of your other auto-update settings.",
     entity_list_configured_count: (count) => (count === 1 ? "1 entity" : `${count} entities`),
     save: "Save",
+    close: "Close",
     field_wait_days_unit: "days",
     field_auto_install: "Update automatically",
     auto_install_section_title: "Auto-update",
@@ -197,14 +198,46 @@ export const TRANSLATIONS = {
     weekday_sunday_short: "Sunday",
     field_trusted_voters: "Trusted voters",
     field_trusted_voters_helper:
-      "GitHub usernames you trust more than your own rules. A healthy vote from any of them overrides your rules above and auto-installs that jump immediately, even over someone else's problematic report.",
-    // _buildListSummary's own countText override: usernames, not entities.
-    // See its own comment for why entity_list_configured_count doesn't fit
-    // here.
-    trusted_voters_configured_count: (count) => (count === 1 ? "1 trusted voter" : `${count} trusted voters`),
+      "GitHub usernames you trust more than your own rules. A healthy vote from any of them auto-installs that jump immediately, even over someone else's problematic report.",
+    // _buildListSummary's own countText override: the row's own heading
+    // already says "Trusted voters", so this just counts usernames
+    // instead of repeating it.
+    trusted_voters_configured_count: (count) => (count === 1 ? "1 username" : `${count} usernames`),
     announce_hours_label: "Announcement notice",
     announce_hours_unit: "hours",
-    announce_hours_helper: "How long you still have to cancel a scheduled automatic install.",
+    // "That window" (direct user feedback, 2026-11-26): echoes
+    // announcement_section_intro's own wording on purpose, the two rows
+    // below it build on the concept it introduces rather than each
+    // re-explaining the whole idea from scratch.
+    announce_hours_helper: "How long that window lasts.",
+    // New "Announcement" subsection label (2026-11-26), grouping
+    // announce_hours with the new AI entity-picker below it.
+    announcement_section_label: "Announcement",
+    // Direct user feedback, 2026-11-26: "ready" on its own reads as "the
+    // update already happened", not "eligible, about to auto-install".
+    // "Ready to install automatically" (echoing this project's own real
+    // status_ready/group_ready label, "Ready to update") plus "still waits
+    // before it actually does" rules that misreading out. Deliberately
+    // doesn't also spell out "by hand or with the AI check below" here
+    // (dropped after a second round of this same feedback): the two rows
+    // right underneath already say that themselves, repeating it here was
+    // redundant.
+    announcement_section_intro:
+      "An update that's ready to install automatically still waits before it actually does. This is your window to step in.",
+    // Shortened (direct user feedback, 2026-11-26): the original, longer
+    // helper text overlapped the entity selector on a narrow/phone screen,
+    // a real ha-settings-row layout issue this row was the first to
+    // trigger (every other row through _buildSettingsRow so far has
+    // either a short helper or a narrow control, never both this wide a
+    // control with this much text at once).
+    ai_safety_check_entity_label: "AI safety check (optional)",
+    ai_safety_check_entity_helper: "Reviews the release notes during that window and cancels the install if it finds a concrete reason to.",
+    ai_safety_check_entity_disabled_reason: "Needs an announcement notice above 0 hours to have time to run.",
+    ai_safety_check_no_entity_hint: "No ai_task entity exists in this Home Assistant yet.",
+    // The "why" info button next to a "Passed" timeline detail, and its
+    // modal (direct user feedback, 2026-11-26).
+    ai_safety_check_reason_button_label: "AI safety check details",
+    ai_safety_check_reason_title: "AI safety check",
     // Timeline steps (_buildTimeline) -- Ready to update/Installing reuse
     // group_ready/installing_section_title below verbatim (must match the
     // Updates tab's own card names exactly), these two are the only step
@@ -215,6 +248,29 @@ export const TRANSLATIONS = {
     // a restatement of it -- shown on the Auto-install step whenever
     // heldBackByCommunity is true.
     dialog_timeline_held_back_pointer: "Held back by the community verdict.",
+    // AI safety check outcomes on the Auto-install step (2026-11-26).
+    // Passed/failed stay short and neutral on purpose, shown right next to
+    // a countdown that's still proceeding either way; cancelled is its own
+    // step further down (see u.auto_install_cancelled), reason-less for a
+    // plain manual cancel.
+    // "found no breaking changes", not the vaguer "Passed the AI safety
+    // check" this used to say: direct user feedback, 2026-11-27, a
+    // standard/known case can just say what happened directly. The AI's
+    // own actual stated reason (which can differ from this default, e.g.
+    // "no breaking changes, but note the deprecation warning") is still
+    // one tap away via the info button when it exists, unchanged.
+    dialog_timeline_ai_check_passed: "AI safety check found no breaking changes.",
+    // Fallback only, for the one "failed" case with no known, standard
+    // shape (an ai_task call itself failing after retries: a raw,
+    // unpredictable provider error), still paired with the info button.
+    // The two standard failures below show their own sentence directly
+    // instead, no button needed (ai_check_reason_code picks which, see
+    // websocket_api.py's own comment).
+    dialog_timeline_ai_check_failed: "AI safety check failed, update proceeds as scheduled.",
+    dialog_timeline_ai_check_failed_no_release_notes: "AI safety check failed because no release notes were available.",
+    dialog_timeline_ai_check_failed_fetch_error: "AI safety check failed because the release notes could not be fetched.",
+    dialog_timeline_cancelled: "Cancelled.",
+    dialog_timeline_cancelled_reason: (reason) => `Cancelled by AI safety check: ${reason}`,
     // Its own step (see Step 3b in the dialog's own build method), title
     // kept short, the actual explanation (with the version comparison)
     // lives in dialog_timeline_postponed_detail below.
@@ -298,19 +354,22 @@ export const TRANSLATIONS = {
     // content.
     dialog_release_announcement: "Open release announcement",
     dialog_history_heading: "History",
+    // Shortened to the same "Auto-update (...)" shape as the other three
+    // below, direct user feedback, 2026-11-27. "Install method" already
+    // says this is about installation, repeating "Automatic"/"Automatically"
+    // in every value was no longer pulling its weight.
     // No reason recorded at all: an entry logged before this field existed
-    // (2026-07-23) -- the generic fallback, not "unknown".
-    dialog_history_auto: "Automatically updated",
+    // (2026-07-23), the generic fallback, not "unknown".
+    dialog_history_auto: "Auto-update",
     dialog_history_changelog: "View changelog",
     dialog_history_installed_at: "Installed",
     dialog_history_method_label: "Install method",
     dialog_history_method_manual: "Manual",
-    dialog_history_method_rules: "Automatic, your own rules",
-    dialog_history_method_trusted: (names) => `Automatic, trusted vote from ${names}`,
-    dialog_history_method_whitelist: "Automatic, always auto-update list",
+    dialog_history_method_rules: "Auto-update (your rules)",
+    dialog_history_method_trusted: (names) => `Auto-update (trusted vote from ${names})`,
+    dialog_history_method_whitelist: "Auto-update (always)",
     dialog_history_backup_label: "Backup",
     dialog_history_backup_yes: "Taken before installing",
-    dialog_history_backup_no: "Not supported by this entity",
     dialog_release_notes_heading: "Release notes",
     // toVersion spelled out, once known. See insertReleaseNotesSection's own
     // comment; the download-count suffix is built separately, right next
@@ -358,9 +417,14 @@ export const TRANSLATIONS = {
     community_section_title: "Help others",
     community_section_desc:
       "Become part of the community: link your GitHub account to vote on whether an update turned out healthy or problematic.",
+    // Shown instead of community_section_desc once already linked (direct
+    // user feedback, 2026-11-27): the original kept saying "link your
+    // GitHub account" even after already doing exactly that.
+    community_section_desc_linked: "Thanks for being part of the community. Vote on whether an update turned out healthy or problematic whenever you get the chance.",
     community_link: "Link GitHub account",
     community_unlink: "Unlink",
     community_linked_as: (username) => `Linked as @${username}`,
+    voter_stats_summary: (count) => (count === 1 ? "1 vote cast so far" : `${count} votes cast so far`),
     community_relink: "Re-link",
     community_link_expired_as: (username) =>
       `Your GitHub link (@${username}) is no longer valid. Re-link your account to keep voting.`,
@@ -629,8 +693,8 @@ export const TRANSLATIONS = {
       return ["1.0.0 → 1.1.0", `${year}.${month}.0 → ${nextYear}.${nextMonth}.0`, "7sg82tw → 8dhw8wg"];
     },
     size_large_short: "Groot",
-    size_large_lead: "Een major-release, of een sprong die niet te classificeren is.",
-    size_large_examples: () => ["1.0.0 → 2.0.0"],
+    size_large_lead: "Een major-release, een herkende pre-release, of een sprong die niet te classificeren is.",
+    size_large_examples: () => ["1.0.0 → 2.0.0", "1.2.3 → 1.3.0-beta.1"],
     status_ready: "Klaar om te updaten",
     status_waiting_manual: (when) => `Klaar om te updaten ${when}`,
     status_waiting_soon: "Uitgesteld (bijna zo ver)",
@@ -654,14 +718,15 @@ export const TRANSLATIONS = {
       "Installeert direct zodra er een nieuwe versie beschikbaar is, en slaat daarbij de wachttijd en de community-stemcontrole helemaal over, ongeacht je overige auto-update-instellingen.",
     entity_list_configured_count: (count) => (count === 1 ? "1 entiteit" : `${count} entiteiten`),
     save: "Opslaan",
+    close: "Sluiten",
     field_wait_days_unit: "dagen",
     field_auto_install: "Automatisch updaten",
     auto_install_section_title: "Auto-update",
     auto_install_sizes_label: "Welke groottes installeer je automatisch?",
     field_trusted_voters: "Vertrouwde stemmers",
     field_trusted_voters_helper:
-      "GitHub-gebruikersnamen die je meer vertrouwt dan je eigen regels. Een probleemloze stem van een van hen overrult je eigen regels hierboven en installeert die sprong meteen automatisch, ook als iemand anders 'm als problematisch meldde.",
-    trusted_voters_configured_count: (count) => (count === 1 ? "1 vertrouwde stemmer" : `${count} vertrouwde stemmers`),
+      "GitHub-gebruikersnamen die je meer vertrouwt dan je eigen regels. Een probleemloze stem van een van hen installeert die sprong meteen automatisch, ook als iemand anders 'm als problematisch meldde.",
+    trusted_voters_configured_count: (count) => (count === 1 ? "1 gebruikersnaam" : `${count} gebruikersnamen`),
     field_hide_postponed: "Uitgestelde updates verbergen",
     field_hide_postponed_helper: "Verbergt 'm uit Home Assistants eigen update-telling tot 'ie klaar is.",
     field_ready_days_add: "Dag toevoegen",
@@ -676,10 +741,25 @@ export const TRANSLATIONS = {
     weekday_sunday_short: "Zondag",
     announce_hours_label: "Aankondigingstermijn",
     announce_hours_unit: "uur",
-    announce_hours_helper: "Hoelang je nog hebt om een geplande automatische installatie te annuleren.",
+    announce_hours_helper: "Hoelang dat venster duurt.",
+    announcement_section_label: "Aankondiging",
+    announcement_section_intro:
+      "Een update die klaarstaat om automatisch te installeren, wacht nog even voordat dat echt gebeurt. Dit is je venster om in te grijpen.",
+    ai_safety_check_entity_label: "AI-veiligheidscheck (optioneel)",
+    ai_safety_check_entity_helper: "Beoordeelt de release notes binnen dat venster en annuleert de installatie als daar een concrete reden voor is.",
+    ai_safety_check_entity_disabled_reason: "Vereist een aankondigingstermijn hoger dan 0 uur om tijd te hebben om te draaien.",
+    ai_safety_check_no_entity_hint: "Er bestaat nog geen ai_task-entity in deze Home Assistant.",
+    ai_safety_check_reason_button_label: "Details AI-veiligheidscheck",
+    ai_safety_check_reason_title: "AI-veiligheidscheck",
     dialog_timeline_update_available: "Update beschikbaar",
     dialog_timeline_auto_install: "Auto-install",
     dialog_timeline_held_back_pointer: "Tegengehouden door het communityoordeel.",
+    dialog_timeline_ai_check_passed: "AI-veiligheidscheck vond geen breaking changes.",
+    dialog_timeline_ai_check_failed: "AI-veiligheidscheck mislukt, update gaat door zoals gepland.",
+    dialog_timeline_ai_check_failed_no_release_notes: "AI-veiligheidscheck mislukt: er waren geen release notes beschikbaar.",
+    dialog_timeline_ai_check_failed_fetch_error: "AI-veiligheidscheck mislukt: de release notes konden niet worden opgehaald.",
+    dialog_timeline_cancelled: "Geannuleerd.",
+    dialog_timeline_cancelled_reason: (reason) => `Geannuleerd door AI-veiligheidscheck: ${reason}`,
     dialog_timeline_postponed: "Uitgesteld",
     dialog_timeline_postponed_detail: (required, current) =>
       `Vereist Home Assistant ${required}. Jij hebt nu ${current}.`,
@@ -721,17 +801,16 @@ export const TRANSLATIONS = {
     vote_reason_other: "Anders",
     dialog_release_announcement: "Release-aankondiging openen",
     dialog_history_heading: "Geschiedenis",
-    dialog_history_auto: "Automatisch geüpdatet",
+    dialog_history_auto: "Auto-update",
     dialog_history_changelog: "Changelog bekijken",
     dialog_history_installed_at: "Geïnstalleerd",
     dialog_history_method_label: "Installatiemethode",
     dialog_history_method_manual: "Handmatig",
-    dialog_history_method_rules: "Automatisch, je eigen regels",
-    dialog_history_method_trusted: (names) => `Automatisch, vertrouwde stem van ${names}`,
-    dialog_history_method_whitelist: "Automatisch, altijd-updaten-lijst",
+    dialog_history_method_rules: "Auto-update (eigen regels)",
+    dialog_history_method_trusted: (names) => `Auto-update (vertrouwde stem van ${names})`,
+    dialog_history_method_whitelist: "Auto-update (altijd)",
     dialog_history_backup_label: "Back-up",
     dialog_history_backup_yes: "Gemaakt voor het installeren",
-    dialog_history_backup_no: "Niet ondersteund door deze entiteit",
     dialog_release_notes_heading: "Release notes",
     dialog_release_notes_heading_version: (v) => `Release notes ${v}`,
     dialog_upstream_release_notes: (repo) => `Eigen release notes van ${repo}:`,
@@ -751,9 +830,11 @@ export const TRANSLATIONS = {
     community_section_title: "Help anderen",
     community_section_desc:
       "Word onderdeel van de community: koppel je GitHub-account om te stemmen of een update probleemloos of problematisch bleek.",
+    community_section_desc_linked: "Bedankt dat je deel uitmaakt van de community. Stem zo nu en dan of een update probleemloos of problematisch bleek.",
     community_link: "GitHub-account koppelen",
     community_unlink: "Ontkoppelen",
     community_linked_as: (username) => `Gekoppeld als @${username}`,
+    voter_stats_summary: (count) => (count === 1 ? "1 stem uitgebracht tot nu toe" : `${count} stemmen uitgebracht tot nu toe`),
     community_relink: "Opnieuw koppelen",
     community_link_expired_as: (username) =>
       `Je GitHub-koppeling (@${username}) is niet meer geldig. Koppel je account opnieuw om te kunnen blijven stemmen.`,

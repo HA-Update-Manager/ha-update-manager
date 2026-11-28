@@ -51,8 +51,15 @@ from .firmware_version_registry import FirmwareVersionManager
 from .zigbee import device_for_entity, is_zigbee2mqtt_device
 from .zigbee_ota_release_notes import parse_zigbee_ota_version
 
-# (manufacturer, model_id, raw_version, real_version)
-SubmissionCandidate = tuple[str, str, int, str]
+# (manufacturer, model_id, raw_version, real_version, model_name). model_name
+# (device.model, HA's own human-readable description, e.g. "Hue dimmer
+# switch gen 2") rides along purely for a submitted issue's own readability
+# (direct user feedback, 2026-11-25: a bare manufacturer/model_id pair like
+# "Philips/929002477901" told nobody which real product that was without
+# looking it up by hand), never used for matching/conflict-checking, that
+# stays model_id alone, see resolve_zigbee_manufacturer_model_id's own
+# docstring for why model_id, not model, is the one unambiguous key.
+SubmissionCandidate = tuple[str, str, int, str, str | None]
 
 # Kept in sync, by hand, with community-votes' own process-firmware-version.yml
 # shape check (2-4 numeric components, optional suffix -- deliberately not
@@ -61,7 +68,15 @@ SubmissionCandidate = tuple[str, str, int, str]
 # 2026-11-24 ("als we er niks mee kunnen moet het niet eens op GitHub
 # belanden") -- a submission this integration can already tell would be
 # rejected shouldn't ever be sent at all, not sent-then-rejected.
-_REAL_VERSION_RE = re.compile(r"^\d+(\.\d+){1,3}(-.+)?$")
+#
+# The suffix accepts "_" as well as "-", confirmed live 2026-11-25:
+# Signify/Hue's own OTA firmware strings carry a build hash after an
+# underscore instead of a standard semver "-prerelease" (e.g.
+# "2.44.0_hBB3C188", same convention semver.py's own classify_version_size
+# already learned to treat as build metadata), stored and shown as-is,
+# the full string, same as every other vendor's own real version already
+# is, no stripping.
+_REAL_VERSION_RE = re.compile(r"^\d+(\.\d+){1,3}([-_].+)?$")
 
 
 def _looks_like_real_version(value: str, raw_version: int) -> bool:
@@ -237,7 +252,7 @@ def real_versions_for_entity(
         installed_version_real = sw_version
 
     submission_candidate = (
-        (manufacturer, model_id, installed_raw, sw_version)
+        (manufacturer, model_id, installed_raw, sw_version, device.model)
         if sw_version_valid and str(installed_raw) not in cached_table
         else None
     )

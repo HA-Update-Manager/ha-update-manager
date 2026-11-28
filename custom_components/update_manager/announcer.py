@@ -40,6 +40,10 @@ class AutoInstallRules(NamedTuple):
     medium_auto_install: bool
     large_auto_install: bool
     announce_wait: timedelta
+    # None = feature off entirely (the default). Only ever consulted once
+    # EVENT_ANNOUNCED has actually fired, same window a person gets to
+    # cancel by hand. decide_action itself has no notion of this at all.
+    ai_safety_check_entity_id: str | None = None
 
 
 class AutoInstallContext(NamedTuple):

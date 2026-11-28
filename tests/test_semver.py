@@ -48,6 +48,11 @@ class TestParseSemver:
         assert semver.parse_semver("1.2.3+build.5") == (1, 2, 3, 0)
         assert semver.parse_semver("1.2.3-beta.1+build.5") == (1, 2, 3, 0)
 
+    def test_underscore_build_metadata_ignored_for_core(self):
+        # Signify/Hue's own OTA firmware-version format, confirmed live
+        # 2026-11-25: a build hash after "_" instead of "+".
+        assert semver.parse_semver("2.44.0_hBB3C188") == (2, 44, 0, 0)
+
     def test_rejects_leading_zeros(self):
         # Strict semver: a numeric component with a leading zero (other
         # than a bare "0") is invalid, not "helpfully" reinterpreted.
@@ -153,6 +158,7 @@ class TestIsShortSemverVersion:
     def test_prerelease_and_build_metadata_ignored(self):
         assert semver.is_short_semver_version("18.1-beta.1")
         assert semver.is_short_semver_version("18.1+build.5")
+        assert semver.is_short_semver_version("18.1_hBB3C188")
 
 
 class TestIsExtendedSemverVersion:
@@ -172,6 +178,7 @@ class TestIsExtendedSemverVersion:
     def test_prerelease_and_build_metadata_ignored(self):
         assert semver.is_extended_semver_version("0.5.9.1-beta.1")
         assert semver.is_extended_semver_version("0.5.9.1+build.5")
+        assert semver.is_extended_semver_version("0.5.9.1_hBB3C188")
 
 
 class TestClassifyVersionSize:
@@ -197,6 +204,15 @@ class TestClassifyVersionSize:
     def test_downgrade_is_large(self):
         assert semver.classify_version_size("1.2.3", "1.2.0") == "large"
         assert semver.classify_version_size("2.0.0", "1.9.9") == "large"
+
+    def test_hue_underscore_build_suffix_compares_on_its_real_core(self):
+        # Real device, found live 2026-11-25: Signify/Hue's own OTA
+        # firmware-version string, e.g. "2.44.0_hBB3C188". Before the "_"
+        # was recognized as build metadata, neither side of this matched
+        # any shape at all, so this always fell back to "large" even for
+        # an ordinary minor bump.
+        assert semver.classify_version_size("2.44.0_hBB3C188", "2.46.0_h1A2B3C4") == "medium"
+        assert semver.classify_version_size("2.44.0_hBB3C188", "2.44.1_h1A2B3C4") == "small"
 
     def test_non_semver_previous_is_large(self):
         assert semver.classify_version_size("not-a-version", "1.2.3") == "large"
@@ -298,6 +314,52 @@ class TestClassifyVersionSize:
     def test_extended_semver_not_actually_newer_is_large(self):
         assert semver.classify_version_size("0.5.9.2", "0.5.9.1") == "large"
         assert semver.classify_version_size("0.5.9.1", "0.5.9.1") == "large"
+
+    def test_prerelease_target_is_large_regardless_of_numeric_jump(self):
+        # issue #19: a pre-release target is always "large", even though
+        # the numeric jump alone (minor-only, here) would otherwise be
+        # "medium".
+        assert semver.classify_version_size("0.16.0", "0.18.0-beta.2") == "large"
+        assert semver.classify_version_size("0.18.0", "0.18.1-rc.1") == "large"
+
+    def test_known_prerelease_flag_is_large_even_without_a_string_hint(self):
+        # The opportunistic, GitHub-flag-based signal: a plain tag with no
+        # recognizable suffix at all, but the caller already happens to
+        # know (from elsewhere) that this exact release was flagged
+        # prerelease.
+        assert semver.classify_version_size("1.0.0", "1.1.0") == "medium"
+        assert semver.classify_version_size("1.0.0", "1.1.0", known_prerelease=True) == "large"
+
+
+class TestIsPrereleaseVersion:
+    def test_recognizes_the_known_keywords(self):
+        for version in ("1.0.0-beta.1", "1.0.0-beta1", "1.0.0-RC1", "1.0.0-rc.2", "1.0.0-alpha", "1.0.0-dev.3", "1.0.0-pre.1", "1.0.0-preview.1", "1.0.0-nightly.20261125", "1.0.0-test.1"):
+            assert semver.is_prerelease_version(version), version
+
+    def test_recognizes_a_real_hacs_repo_using_test(self):
+        # Found live, 2026-11-25, via a real community-votes vote:
+        # PalmManiac/battery-smartflow-ai's own 6.0.10-test8 -> 6.0.11.
+        assert semver.is_prerelease_version("6.0.10-test8")
+
+    def test_a_plain_version_is_not_a_prerelease(self):
+        assert not semver.is_prerelease_version("1.0.0")
+
+    def test_an_unrecognized_suffix_is_not_a_prerelease(self):
+        # A hyphen suffix some repos use for something that isn't actually
+        # less-tested, not in the known-keyword list, so left alone.
+        assert not semver.is_prerelease_version("1.0.0-hotfix.1")
+
+    def test_a_word_merely_starting_with_a_keyword_is_not_a_prerelease(self):
+        # Found by review: a plain prefix check against the keywords also
+        # matched these, none of which are actual pre-releases.
+        for version in ("1.0.0-premium.1", "1.0.0-development.2", "1.0.0-precompiled.1", "1.0.0-devkit.3", "1.0.0-testing.4", "1.0.0-tested.5"):
+            assert not semver.is_prerelease_version(version), version
+
+    def test_build_metadata_after_a_real_identifier_is_still_recognized(self):
+        assert semver.is_prerelease_version("1.0.0-beta.1+build.5")
+
+    def test_v_prefix_is_stripped_first(self):
+        assert semver.is_prerelease_version("v1.0.0-beta.1")
 
 
 class TestNonStringVersionInput:

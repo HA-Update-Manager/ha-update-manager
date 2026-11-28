@@ -45,15 +45,27 @@ pipeline. Mirrors every step, in the same order:
      GitHub releases tag link, same as withCoreAnnouncement.
 An automation gets the identical text (and link) a person would see there,
 not a separately-maintained approximation of it.
+
+Also returns `messages` (_async_release_notes_messages), same reasoning:
+HA Core 2026.12 lets an entity attach its own warning/info/error message
+above its release notes (e.g. "do not unplug the device while updating"),
+which the dialog now shows as its own ha-alert per message (see
+update-manager-panel.js's own _fetchNativeReleaseNotes comment), an
+automation gets those too, translated the same way Core's own (private,
+ported here from its real source) release-notes-messages translation does.
 """
 from __future__ import annotations
 
+from contextlib import suppress
+
 import voluptuous as vol
 from homeassistant.components.update import DATA_COMPONENT, UpdateEntityFeature
+from homeassistant.components.update import DOMAIN as UPDATE_DOMAIN
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.translation import async_get_translations
 
 from .changelog_trim import trim_changelog_to_version
 from .const import ATTR_TO_VERSION, DOMAIN, SERVICE_CANCEL_SCHEDULED_INSTALL, SERVICE_GET_RELEASE_NOTES
@@ -152,6 +164,79 @@ def async_setup_services(hass: HomeAssistant) -> None:
         # try/except already applies to the exact same call.
         except Exception:  # noqa: BLE001
             return None
+
+    async def _async_release_notes_messages(entity_id: str) -> list[dict[str, str]]:
+        """Mirrors update-manager-panel.js's own appendReleaseNotesSection
+        (its own messages param, see _fetchNativeReleaseNotes's own
+        comment for the HA 2026.12 feature this exists for at all): the
+        same per-message warning/info/error that would show as its own
+        ha-alert in the dialog, now also in this service's own response,
+        same "exact match, not an approximation" reasoning as every other
+        piece of this pipeline.
+
+        A faithful port of homeassistant.components.update's own (private,
+        never exported, confirmed against its real dev-branch source)
+        _async_translate_release_notes_messages, built entirely out of its
+        own public pieces (UpdateReleaseNotesMessage/Severity,
+        async_get_translations, entity.release_notes_messages/has_update),
+        nothing here reaches into anything actually private, that
+        function just never got re-exported as a reusable one of its own.
+        Same supports_release_notes gate as _async_main_notes above (this
+        feature is never computed at all, Core-side, for an entity without
+        it, see websocket_release_notes's own ERR_NOT_SUPPORTED branch),
+        and the exact same "already installed, or no real update at all"
+        live-entity gate Core's own websocket handler applies, both
+        checked fresh here rather than threaded through from
+        _async_main_notes, which has no reason to know this exists at
+        all."""
+        state = hass.states.get(entity_id)
+        supports_release_notes = bool(state) and bool(
+            (state.attributes.get("supported_features") or 0) & UpdateEntityFeature.RELEASE_NOTES
+        )
+        if not supports_release_notes:
+            return []
+        entity = hass.data.get(DATA_COMPONENT)
+        entity = entity.get_entity(entity_id) if entity else None
+        if entity is None or entity.available is False:
+            return []
+        if entity.latest_version == entity.installed_version or not entity.has_update:
+            return []
+        # getattr, not a plain attribute read: release_notes_messages is
+        # itself only a real UpdateEntity property since HA Core 2026.12
+        # (see this method's own docstring), so an older Core's real entity
+        # object has no such attribute at all, confirmed live, 2026-11-27
+        # ("'RepositoryUpdateEntity' object has no attribute
+        # 'release_notes_messages'"), not merely an always-empty one. Falls
+        # through to the exact same "nothing to show" path below either way.
+        messages = getattr(entity, "release_notes_messages", None)
+        if not messages:
+            return []
+        language = hass.config.language
+        entity_component_translations = await async_get_translations(hass, language, "entity_component", {UPDATE_DOMAIN})
+        entity_translations = await async_get_translations(
+            hass,
+            language,
+            "entity",
+            {message.translation_domain for message in messages if message.translation_domain != UPDATE_DOMAIN},
+        )
+        translated_messages: list[dict[str, str]] = []
+        for message in messages:
+            if message.translation_domain == UPDATE_DOMAIN:
+                translation = entity_component_translations.get(
+                    f"component.update.entity_component.release_notes_messages.{message.translation_key}"
+                )
+            else:
+                translation = entity_translations.get(
+                    f"component.{message.translation_domain}.entity.update."
+                    f"release_notes_messages.{message.translation_key}"
+                )
+            if translation is None:
+                continue
+            if message.translation_placeholders is not None:
+                with suppress(KeyError):
+                    translation = translation.format(**message.translation_placeholders)
+            translated_messages.append({"severity": message.severity, "message": translation})
+        return translated_messages
 
     async def _async_with_upstream_addendum(
         notes: str | None,
@@ -295,6 +380,7 @@ def async_setup_services(hass: HomeAssistant) -> None:
 
         return {
             "notes": notes,
+            "messages": await _async_release_notes_messages(entity_id),
             "owner": owner,
             "repo": repo,
             "release_url": final_release_url,

@@ -74,6 +74,17 @@ CONF_LARGE_AUTO_INSTALL = "large_auto_install"
 CONF_ANNOUNCE_HOURS = "announce_hours"
 DEFAULT_ANNOUNCE_HOURS = 24
 
+# Optional, off by default (None/absent = feature off entirely): the
+# ai_task entity whose generate_data result gets to cancel an announced
+# auto-install, same window a person has to cancel it by hand
+# (CONF_ANNOUNCE_HOURS above), so this is never read on its own, only ever
+# alongside that setting. Not in DEFAULT_WAIT_DAYS: that dict is
+# specifically the wait/auto-install values a fresh config entry reads as,
+# not a catch-all for every optional setting, so read with a plain
+# .get(CONF_AI_SAFETY_CHECK_ENTITY_ID, None), same ad hoc default pattern
+# the list-valued settings below already use.
+CONF_AI_SAFETY_CHECK_ENTITY_ID = "ai_safety_check_entity_id"
+
 # Optional, shared (not per-size) schedule of allowed weekdays/times an
 # update is permitted to become "ready" on -- issue #4, layered on top of the
 # wait/auto-install settings above, not a replacement for them (see

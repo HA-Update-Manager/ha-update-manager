@@ -33,10 +33,13 @@ firmware_version_issue_body = _load("firmware_version_issue_body")
 
 class TestBuildIssueBody:
     def test_builds_every_field_in_order(self):
-        body = firmware_version_issue_body.build_issue_body("Philips", "LCT024", 16786436, "1.164.2", "3.4.0")
+        body = firmware_version_issue_body.build_issue_body(
+            "Philips", "LCT024", 16786436, "1.164.2", "3.4.0", model_name="Hue white and color ambiance A19"
+        )
         assert body == (
             "### Manufacturer\n\nPhilips\n\n"
             "### Model\n\nLCT024\n\n"
+            "### Model name\n\nHue white and color ambiance A19\n\n"
             "### Raw OTA version\n\n16786436\n\n"
             "### Real firmware version\n\n1.164.2\n\n"
             "### Reported by Update Manager version\n\n3.4.0\n"
@@ -45,3 +48,7 @@ class TestBuildIssueBody:
     def test_raw_version_rendered_as_plain_integer_text(self):
         body = firmware_version_issue_body.build_issue_body("IKEA of Sweden", "TRADFRI bulb E27", 16788224, "2.3.0", "3.4.0")
         assert "### Raw OTA version\n\n16788224\n" in body
+
+    def test_model_name_defaults_to_no_response(self):
+        body = firmware_version_issue_body.build_issue_body("Philips", "LCT024", 16786436, "1.164.2", "3.4.0")
+        assert "### Model name\n\n_No response_\n" in body

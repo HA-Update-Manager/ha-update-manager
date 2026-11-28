@@ -2,14 +2,19 @@
 update-manager-panel.js's own _decorateReleaseNotes does: GitHub's own
 renderer turns bare #1234 (issue/PR references) and @username mentions into
 real links automatically, and recognizes gitmoji-style :shortcode: text as
-an emoji -- ha-markdown (and, for this project's own get_release_notes
-service, whatever reads the plain response text) has no idea either of
-these repo-relative conventions exist and just shows the literal text
-otherwise.
+an emoji, and strips a raw <img>'s own width/height attributes (GitHub's
+own release editor writes these for a drag-and-dropped screenshot, but
+ha-markdown's real CSS has no matching height: auto, distorting the image
+once its width shrinks to fit a narrow dialog). ha-markdown (and, for this
+project's own get_release_notes service, whatever reads the plain response
+text) has no idea either of these repo-relative conventions exist and just
+shows the literal text (or the GitHub-declared, wrong-once-scaled image
+box) otherwise.
 
 A faithful port of _linkifyGithubReferences/_replaceGithubEmojiShortcodes/
-_GITHUB_EMOJI_SHORTCODES, kept pure and HA-independent, same reasoning as
-changelog_trim.py -- see that module's own docstring.
+_GITHUB_EMOJI_SHORTCODES/_stripImageDimensions, kept pure and
+HA-independent, same reasoning as changelog_trim.py, see that module's own
+docstring.
 """
 from __future__ import annotations
 
@@ -68,6 +73,55 @@ _ISSUE_REF_RE = re.compile(r"(?<![\w#\[])#(\d+)\b")
 # github.com/apps/{name}, not github.com/{name} (that 404s for most bots).
 _MENTION_RE = re.compile(r"(?<![\w@.\[])@([a-zA-Z0-9][a-zA-Z0-9-]{0,38})(\[bot\])?")
 
+# A faithful port of update-manager-panel.js's own _stripImageDimensions.
+# Confirmed live, 2026-11-27, against a real release (frenck/spook
+# v5.12.0): GitHub's own release editor writes a raw <img width="1600"
+# height="947" ...> tag for a drag-and-dropped screenshot. ha-markdown's
+# own real CSS (confirmed against its actual source) only ever sets
+# max-width: 100% on img, no height: auto alongside it. The width/height
+# attributes pass through the sanitizer untouched and still map to a
+# real, if low-priority, CSS width/height (the standard HTML
+# "presentational hint" mechanism), so the browser shrinks the image's
+# width to fit a narrow dialog while its height stays pinned at the
+# attribute's own original, unscaled value, stretching/cropping it
+# instead of scaling proportionally. Stripped here instead of patching
+# ha-markdown's own shadow-DOM CSS (which outside CSS can't reach at all,
+# confirmed): with no declared width/height left at all, the image falls
+# back to its own real, correct intrinsic aspect ratio once loaded, and
+# max-width alone already scales that down correctly.
+#
+# Only above _LARGE_ENOUGH_TO_SHRINK px (either dimension): confirmed
+# live, 2026-11-27, stripping unconditionally broke a different, real
+# case in that exact same release body. Its own row of small social-media
+# icons (GitHub's own README-badge convention, <img width="18"
+# height="18">) rendered unconstrained-huge once their only sizing hint
+# was removed. A small image like that is never actually wide enough for
+# max-width:100% to ever shrink it in the first place, so its declared
+# size never mismatches anything, there's nothing to fix there, and it's
+# the one sizing hint it has (an SVG icon often has no meaningful
+# "natural" pixel size of its own to fall back on). 100 is comfortably
+# above any real icon convention (GitHub's own badges top out well under
+# that) and comfortably below any real screenshot's own typical width.
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+_IMG_WIDTH_ATTR_RE = re.compile(r"""\swidth=["'](\d+)["']""", re.IGNORECASE)
+_IMG_HEIGHT_ATTR_RE = re.compile(r"""\sheight=["'](\d+)["']""", re.IGNORECASE)
+_IMG_DIMENSION_ATTR_RE = re.compile(r"""\s+(?:width|height)=["'][^"']*["']""", re.IGNORECASE)
+_LARGE_ENOUGH_TO_SHRINK = 100
+
+
+def strip_image_dimensions(text: str) -> str:
+    def _strip_if_large(match: re.Match[str]) -> str:
+        tag = match.group(0)
+        width_match = _IMG_WIDTH_ATTR_RE.search(tag)
+        height_match = _IMG_HEIGHT_ATTR_RE.search(tag)
+        width = int(width_match.group(1)) if width_match else 0
+        height = int(height_match.group(1)) if height_match else 0
+        if width <= _LARGE_ENOUGH_TO_SHRINK and height <= _LARGE_ENOUGH_TO_SHRINK:
+            return tag
+        return _IMG_DIMENSION_ATTR_RE.sub("", tag)
+
+    return _IMG_TAG_RE.sub(_strip_if_large, text)
+
 
 def replace_github_emoji_shortcodes(text: str) -> str:
     return _EMOJI_SHORTCODE_RE.sub(lambda m: _GITHUB_EMOJI_SHORTCODES.get(m.group(1), m.group(0)), text)
@@ -94,4 +148,4 @@ def decorate_release_notes(notes: str | None, owner: str | None, repo: str | Non
     happen to collide with real GitHub path segments today)."""
     if not notes:
         return notes
-    return replace_github_emoji_shortcodes(linkify_github_references(notes, owner, repo))
+    return strip_image_dimensions(replace_github_emoji_shortcodes(linkify_github_references(notes, owner, repo)))

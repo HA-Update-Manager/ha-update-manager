@@ -39,7 +39,9 @@ from .announcer import (
     size_auto_install_enabled,
     start_announcement,
 )
+from .ai_safety_check import async_run_ai_safety_check
 from .const import (
+    CONF_AI_SAFETY_CHECK_ENTITY_ID,
     CONF_ANNOUNCE_HOURS,
     CONF_LARGE_AUTO_INSTALL,
     CONF_MEDIUM_AUTO_INSTALL,
@@ -216,6 +218,7 @@ def auto_install_rules_from_options(options: dict) -> AutoInstallRules:
         medium_auto_install=bool(options.get(CONF_MEDIUM_AUTO_INSTALL, False)),
         large_auto_install=bool(options.get(CONF_LARGE_AUTO_INSTALL, False)),
         announce_wait=timedelta(hours=options.get(CONF_ANNOUNCE_HOURS, DEFAULT_ANNOUNCE_HOURS)),
+        ai_safety_check_entity_id=options.get(CONF_AI_SAFETY_CHECK_ENTITY_ID) or None,
     )
 
 
@@ -251,9 +254,24 @@ class InstallManager:
         self._rollout_manager = rollout_manager
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._pending: dict[str, PendingAnnouncement] = {}
-        # entity_id -> the to_version the user explicitly cancelled -- stays
-        # quiet for that exact target, a newer version is free to announce.
-        self._cancelled: dict[str, str] = {}
+        # entity_id -> (to_version, reason) the install was cancelled for --
+        # stays quiet for that exact target, a newer version is free to
+        # announce. reason is None for a plain, manual cancel (the websocket
+        # handler/cancel_scheduled_install service, neither of which passes
+        # one), or the AI safety check's own short explanation when that's
+        # what cancelled it (async_cancel's own reason parameter).
+        self._cancelled: dict[str, tuple[str, str | None]] = {}
+        # entity_id -> (to_version, status, reason) for the AI safety
+        # check's own non-cancelling outcomes ("passed"/"failed"). The
+        # cancelling outcome already lives in self._cancelled above, no
+        # second place needed for that one. Not persisted, same "meaningful
+        # only for a live process" reasoning as self._failed below: purely
+        # for the timeline's own display, nothing here ever gates a
+        # decision, so losing it on a restart is an accepted, low-stakes gap.
+        # to_version, status, reason, reason_code, notable (see
+        # ai_safety_check.py's own AiSafetyCheckResult comment for what
+        # each one is).
+        self._ai_check_results: dict[str, tuple[str, str, str | None, str | None, bool]] = {}
         # Set by _async_announce/_async_remove/the stale-cancellation prune
         # during a tick, so _async_tick can save once at the end instead of
         # once per changed entity -- see _async_tick's own comment.
@@ -396,7 +414,13 @@ class InstallManager:
             )
             for entity_id, entry in data.get("pending", {}).items()
         }
-        self._cancelled = dict(data.get("cancelled", {}))
+        # Backward-compatible: an older install wrote a bare to_version
+        # string per entity_id, before a reason was ever recorded alongside
+        # it. Read as (value, None) same as a reason-less cancel always was.
+        self._cancelled = {
+            entity_id: (entry, None) if isinstance(entry, str) else (entry["to_version"], entry.get("reason"))
+            for entity_id, entry in data.get("cancelled", {}).items()
+        }
         self._postponed = {
             entity_id: (entry["to_version"], entry["required_version"])
             for entity_id, entry in data.get("postponed", {}).items()
@@ -413,7 +437,10 @@ class InstallManager:
                     }
                     for entity_id, p in self._pending.items()
                 },
-                "cancelled": self._cancelled,
+                "cancelled": {
+                    entity_id: {"to_version": to_version, "reason": reason}
+                    for entity_id, (to_version, reason) in self._cancelled.items()
+                },
                 "postponed": {
                     entity_id: {"to_version": to_version, "required_version": required_version}
                     for entity_id, (to_version, required_version) in self._postponed.items()
@@ -445,7 +472,31 @@ class InstallManager:
         the dialog right after clicking Cancel showed the exact same
         projection and Cancel button back again, reading as if cancelling
         had done nothing even though it silently already had."""
-        return self._cancelled.get(entity_id) == to_version
+        cancelled = self._cancelled.get(entity_id)
+        return cancelled is not None and cancelled[0] == to_version
+
+    def cancelled_reason(self, entity_id: str, to_version: str) -> str | None:
+        """The AI safety check's own short reason this exact cancellation
+        happened for, or None for a plain, reason-less manual cancel --
+        read by the coordinator alongside is_cancelled above, for the
+        panel's own "Cancelled: <reason>" timeline step."""
+        cancelled = self._cancelled.get(entity_id)
+        return cancelled[1] if cancelled is not None and cancelled[0] == to_version else None
+
+    def ai_check_result(self, entity_id: str, to_version: str) -> tuple[str, str | None, str | None, bool] | None:
+        """The AI safety check's own non-cancelling outcome ("passed"/
+        "failed") for this exact entity/version, or None if it never ran
+        (no ai_task configured, or to_version has since moved on). Mirrors
+        is_cancelled/cancelled_reason above, read by the coordinator the
+        same way. The third item is reason_code (see ai_safety_check.py's
+        own AiSafetyCheckReasonCode), None for a "passed" result or a
+        "failed" one with no standard, UI-displayable shape. The fourth is
+        notable (see AiSafetyCheckResult's own comment): whether reason is
+        actually worth showing a person, not just logging."""
+        result = self._ai_check_results.get(entity_id)
+        if result is None or result[0] != to_version:
+            return None
+        return result[1], result[2], result[3], result[4]
 
     @property
     def all_pending(self) -> list[PendingAnnouncement]:
@@ -517,6 +568,103 @@ class InstallManager:
         visible until one of those happened to fire on its own."""
         await self._async_tick(dt_util.utcnow())
 
+    def async_retry_missing_ai_checks(self) -> None:
+        """Called by coordinator.py's own periodic self-healing recheck
+        (every 15 minutes, no human involved), deliberately narrower
+        than async_retry_missing_or_failed_ai_checks below. Direct user
+        feedback, 2026-11-27: endlessly re-running an already-failed check
+        on a timer, forever, isn't "self-healing" for a failure reason
+        that's an established fact about this exact release (no release
+        notes exist for it, say), not a transient glitch. That would
+        just hammer the same ai_task entity every 15 minutes for no
+        reason, indefinitely. Only ever retries an entity that's never
+        been checked at all (see the shared method's own point 2), which
+        a periodic timer catching up on its own is genuinely reasonable
+        for. A genuine past failure is still retried, just only by the
+        manual refresh button, an explicit, one-off human action, not an
+        automatic loop that never stops asking."""
+        self._async_retry_ai_checks(include_previously_failed=False)
+
+    def async_retry_missing_or_failed_ai_checks(self) -> None:
+        """Called by the panel's own manual refresh button (websocket_api.py's
+        refresh_community_verdicts handler), same "a manual refresh should
+        also retry what's stale" intent as its other calls. Direct user
+        feedback, 2026-11-27, two distinct gaps, both funneled into the
+        same sequential retry below:
+
+        1. A real, now-fixed bug left several entities' own AI safety
+           check marked "failed" with no way to ever get a fresh attempt.
+           Deliberately only retried here, not by the periodic recheck
+           too, see async_retry_missing_ai_checks's own comment for why.
+        2. An entity already pending/announced *before* an ai_task entity
+           was ever configured (or before this feature even existed) never
+           got a first attempt at all, not just a failed one. The check
+           only ever runs once, at the moment of a fresh announcement (see
+           _fire_announced), so a still-pending entity from before that
+           moment existed has no entry in self._ai_check_results/
+           self._cancelled whatsoever, not even a "failed" one to notice
+           and retry. Confirmed live, 2026-11-27: several already-pending
+           entities showed no AI-check detail at all in the timeline."""
+        self._async_retry_ai_checks(include_previously_failed=True)
+
+    def _async_retry_ai_checks(self, *, include_previously_failed: bool) -> None:
+        """Re-running for the exact same still-pending to_version, not
+        waiting for a newer version to come along naturally.
+
+        One detached task overall, not one per entity: direct user
+        feedback, 2026-11-27, firing every retry at once would hit the
+        exact same configured ai_task entity simultaneously, worsening the
+        provider-side "high demand" overload this is meant to recover
+        from, not just working around it. Processed one at a time instead
+        (see _async_retry_ai_checks_sequential below), same "never
+        block on an ai_task call" reasoning _fire_announced's own comment
+        already gives for why this whole thing is a detached task at all.
+        This method itself still returns immediately either way, its two
+        public callers' own response doesn't wait for any of this."""
+        ai_task_entity_id = self._rules.ai_safety_check_entity_id
+        if not ai_task_entity_id:
+            return
+        candidates: list[tuple[str, str, str]] = []
+        retried_entity_ids: set[str] = set()
+        if include_previously_failed:
+            for entity_id, (to_version, status, _reason, _reason_code, _notable) in list(
+                self._ai_check_results.items()
+            ):
+                if status != "failed":
+                    continue
+                cached = self._coordinator.cache.get(entity_id)
+                from_version = cached.get("installed_version") if cached else None
+                if from_version is None:
+                    continue
+                candidates.append((entity_id, from_version, to_version))
+                retried_entity_ids.add(entity_id)
+        # Whitelisted/instant entities never reach self._pending at all
+        # (decide_action sends those straight to "execute", see
+        # announcer.py's own docstring), so iterating this dict already
+        # excludes exactly the entities this feature deliberately never
+        # checks in the first place (announce_hours=0/instant means no
+        # cancel-window for anyone, the AI included), with no extra
+        # filtering needed.
+        for entity_id, pending in self._pending.items():
+            if entity_id in retried_entity_ids:
+                continue
+            existing = self._ai_check_results.get(entity_id)
+            if existing is not None and existing[0] == pending.to_version:
+                continue  # already has a real, current-version result
+            cached = self._coordinator.cache.get(entity_id)
+            from_version = cached.get("installed_version") if cached else None
+            if from_version is None:
+                continue
+            candidates.append((entity_id, from_version, pending.to_version))
+        if candidates:
+            self.hass.async_create_task(self._async_retry_ai_checks_sequential(candidates, ai_task_entity_id))
+
+    async def _async_retry_ai_checks_sequential(
+        self, candidates: list[tuple[str, str, str]], ai_task_entity_id: str
+    ) -> None:
+        for entity_id, from_version, to_version in candidates:
+            await self._async_handle_ai_safety_check(entity_id, from_version, to_version, ai_task_entity_id)
+
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
         """Registers a callback fired whenever self._pending/self._failed
         change (see _fire_listeners below), for sensor.py's own
@@ -566,7 +714,7 @@ class InstallManager:
             self._unsub_coordinator_listener()
             self._unsub_coordinator_listener = None
 
-    async def async_cancel(self, entity_id: str, to_version: str) -> None:
+    async def async_cancel(self, entity_id: str, to_version: str, *, reason: str | None = None) -> None:
         """Cancels auto-install for this exact target version -- callable
         even before a real announcement exists yet (still "waiting", only
         projected, see the panel's own projectedAutoInstallTime), not just
@@ -579,8 +727,10 @@ class InstallManager:
         -- no other change needed for that half of it. `to_version` comes
         from the caller (the version currently shown in the UI), not
         necessarily from an existing PendingAnnouncement, since one might
-        not exist yet."""
-        self._cancelled[entity_id] = to_version
+        not exist yet. `reason` stays None for a plain, manual cancel (the
+        websocket handler/cancel_scheduled_install service both still call
+        this with no reason); only the AI safety check passes one."""
+        self._cancelled[entity_id] = (to_version, reason)
         await self._async_remove(entity_id)
         await self._async_save()
 
@@ -614,6 +764,7 @@ class InstallManager:
         if relabel_key(self._failed, old_entity_id, new_entity_id) is not None:
             self._refresh_failed_notification()
         relabel_key(self._failure_counts, old_entity_id, new_entity_id)
+        relabel_key(self._ai_check_results, old_entity_id, new_entity_id)
 
     async def _async_tick(self, now: datetime) -> None:
         # Every entity the coordinator currently tracks, plus any entity
@@ -816,11 +967,20 @@ class InstallManager:
         # A stale cancellation (the entity has since moved to a different
         # target version) has no effect either way -- prune it so it
         # doesn't linger in storage forever.
-        cancelled_to_version = self._cancelled.get(entity_id)
+        cancelled_entry = self._cancelled.get(entity_id)
+        cancelled_to_version = cancelled_entry[0] if cancelled_entry is not None else None
         if cancelled_to_version is not None and cancelled_to_version != current_to_version:
             del self._cancelled[entity_id]
             cancelled_to_version = None
             self._dirty = True
+        # Same pruning for the AI safety check's own non-cancelling result,
+        # same "no longer the relevant version" reasoning. Not persisted
+        # (see self._ai_check_results's own comment), so this doesn't set
+        # self._dirty, same as self._failed/self._recently_announced never
+        # do either.
+        ai_check_entry = self._ai_check_results.get(entity_id)
+        if ai_check_entry is not None and ai_check_entry[0] != current_to_version:
+            del self._ai_check_results[entity_id]
 
         # cached["auto_install_excluded"] (coordinator.py's own
         # _is_excluded_from_auto_install) covers Core/Supervisor/HAOS too --
@@ -947,14 +1107,78 @@ class InstallManager:
         if stagger_delay:
             self.hass.async_create_task(self._async_fire_announced_after_delay(stagger_delay, event_data))
         else:
-            self.hass.bus.async_fire(EVENT_ANNOUNCED, event_data)
+            self._fire_announced(event_data)
 
     async def _async_fire_announced_after_delay(self, delay: float, event_data: dict[str, Any]) -> None:
         """The staggered half of _async_announce's own EVENT_ANNOUNCED fire,
         split into its own detached task so the delay never blocks
         _async_tick's own lock (see _async_announce's own comment)."""
         await asyncio.sleep(delay)
+        self._fire_announced(event_data)
+
+    def _fire_announced(self, event_data: dict[str, Any]) -> None:
+        """Fires EVENT_ANNOUNCED itself, then, if an ai_task entity is
+        configured, schedules the AI safety check for the exact same
+        announcement, same window a person gets to cancel by hand
+        (self._rules.announce_wait), on the theory the AI needs exactly
+        that same window and no more. Scheduled as its own detached task,
+        never awaited here: an ai_task call can take several seconds, and
+        this runs from the same places _async_announce itself already
+        can't block (see that method's own lock comment)."""
         self.hass.bus.async_fire(EVENT_ANNOUNCED, event_data)
+        ai_task_entity_id = self._rules.ai_safety_check_entity_id
+        if ai_task_entity_id and event_data["from_version"] is not None:
+            self.hass.async_create_task(
+                self._async_handle_ai_safety_check(
+                    event_data["entity_id"], event_data["from_version"], event_data["to_version"], ai_task_entity_id
+                )
+            )
+
+    async def _async_handle_ai_safety_check(
+        self, entity_id: str, from_version: str, to_version: str, ai_task_entity_id: str
+    ) -> None:
+        """Runs the AI safety check and reacts to its verdict, scheduled
+        by _fire_announced, never awaited inline there. A "blocked" verdict
+        cancels the install exactly like a manual cancel does (same
+        async_cancel), just with a reason attached; "passed"/"failed" are
+        purely informational, kept only for the timeline's own "Passed the
+        AI safety check"/"AI safety check failed" step (see
+        self._ai_check_results's own comment).
+
+        No deadline of its own tied to the announcement countdown, by
+        design (same fail-open treatment a human who never got around to
+        clicking Cancel in time already gets, nothing AI-specific here).
+        But a "blocked" verdict that only comes back after to_version has
+        already stopped being this entity's own live pending target (the
+        countdown already elapsed and the install ran before the AI
+        finished, or a newer update superseded it in the meantime) is
+        skipped below instead of still calling async_cancel, found by code
+        review: that call has no notion of "too late" on its own, so it
+        would otherwise still record (and briefly show) a "Cancelled by AI
+        safety check" result for a version that's already installed, before
+        _async_evaluate_one's own next-tick pruning (self._cancelled's own
+        comment) quietly removed it again."""
+        result = await async_run_ai_safety_check(
+            self.hass,
+            entity_id=entity_id,
+            update_name=_friendly_name(self.hass, entity_id),
+            from_version=from_version,
+            to_version=to_version,
+            ai_task_entity_id=ai_task_entity_id,
+        )
+        if result.status != "blocked":
+            self._ai_check_results[entity_id] = (
+                to_version,
+                result.status,
+                result.reason,
+                result.reason_code,
+                result.notable,
+            )
+            return
+        cached = self._coordinator.cache.get(entity_id)
+        if cached is None or cached["latest_version"] != to_version:
+            return
+        await self.async_cancel(entity_id, to_version, reason=result.reason)
 
     @callback
     def _refresh_pending_notification(self) -> None:
@@ -1128,12 +1352,46 @@ class InstallManager:
         released source: the exact same lock-and-blocking-call shape.
         Public, not folded back into _async_run_install's own try block
         below, so websocket_api.py's manual-install path can route
-        through this same, now correctly-scoped lock too."""
+        through this same, now correctly-scoped lock too.
+
+        Also the one real funnel every install path (manual, auto, queued
+        rollout) shares at all, exactly why this is also where the
+        firmware-version-table submission for the version about to be left
+        behind gets captured, right before the service call actually
+        changes anything, then submitted as its own background task. See
+        coordinator.py's own snapshot_firmware_version_submission_candidate
+        for why the state read itself can't be part of that background
+        task (found by code review: a detached task could run its own
+        state read at any point during or after the install it was
+        supposed to precede); a no-op for anything that isn't a Zigbee
+        update entity, so unconditionally calling it here for every
+        install costs nothing in practice.
+
+        Being that one funnel is also why rollout_manager.py's own
+        async_wait_for_backup_clear is awaited right here too, found live
+        2026-11-25: a real "Update all" batch fired every entity's own
+        dispatch at once, so each one's own earlier tier-gate check
+        (async_request_install) already cleared before any of them had
+        actually reached Home Assistant Core; none could have seen the
+        backup the first one's install was about to trigger. This is the
+        last point left in the whole dispatch path to catch that."""
         # nullcontext supports `async with` since Python 3.10 (bpo-41543),
         # well below HA Core's own much newer minimum -- found by /simplify:
         # the actual update.install call used to be written out twice here,
         # once under the lock and once not, with only the lock varying.
         entity_id = service_data.get("entity_id")
+        if isinstance(entity_id, str):
+            firmware_snapshot = self._coordinator.snapshot_firmware_version_submission_candidate(entity_id)
+            if firmware_snapshot is not None:
+                self.hass.async_create_task(
+                    self._coordinator.async_submit_firmware_version_submission_candidate(entity_id, firmware_snapshot)
+                )
+            # One more backup-lock check, right here, right before the
+            # call that actually matters. See
+            # rollout_manager.py's own async_wait_for_backup_clear for why
+            # the earlier tier-gate check alone isn't enough for a same-
+            # instant batch like "Update all".
+            await self._rollout_manager.async_wait_for_backup_clear(entity_id)
         lock = self._install_lock if isinstance(entity_id, str) and is_hacs_entity(self.hass, entity_id) else nullcontext()
         async with lock:
             await self.hass.services.async_call("update", "install", service_data, blocking=True, context=context)

@@ -32,10 +32,17 @@ async def async_submit_firmware_version(
     raw_version: int,
     real_version: str,
     integration_version: str,
+    model_name: str | None = None,
 ) -> None:
     """Raises on failure (a non-2xx response, a network error) -- the caller
-    decides how to treat that, see this module's own docstring."""
-    body = build_issue_body(manufacturer, model, raw_version, real_version, integration_version)
+    decides how to treat that, see this module's own docstring.
+
+    model_name (device.model, HA's own human-readable description, e.g.
+    "Hue dimmer switch gen 2") is purely a readability label for whoever
+    looks at the issue list later, direct user feedback, 2026-11-25, see
+    firmware_version_issue_body.py's own docstring. Never the model_id
+    every match/conflict check actually keys on."""
+    body = build_issue_body(manufacturer, model, raw_version, real_version, integration_version, model_name=model_name)
     await async_post_community_votes_issue(hass, access_token, "[firmware-version]", body)
 
 

@@ -24,6 +24,7 @@ from .install_manager import InstallManager
 from .my_votes import MyVotesManager
 from .rollout_manager import RolloutManager
 from .staging_skip import StagingSkipManager
+from .voter_stats import VoterStatsManager
 
 
 @dataclass
@@ -37,6 +38,7 @@ class UpdateManagerData:
     github_auth_manager: GitHubAuthManager
     my_votes_manager: MyVotesManager
     firmware_version_manager: FirmwareVersionManager
+    voter_stats_manager: VoterStatsManager
     # manifest.json's own version (str(Integration.version)), fetched once in
     # __init__.py's async_setup_entry -- device.py's own device_info reads
     # this for the device info page's own "Software version" (sw_version),

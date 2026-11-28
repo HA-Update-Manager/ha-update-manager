@@ -7,6 +7,7 @@ from homeassistant.core import Event, HomeAssistant, State, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.loader import async_get_integration
+from homeassistant.util import dt as dt_util
 
 from .community_verdict import CommunityVerdictManager
 from .const import (
@@ -20,6 +21,7 @@ from .const import (
     EVENT_INSTALLED,
 )
 from .coordinator import (
+    FIRMWARE_SUBMISSION_RECENT_INSTALL_WINDOW,
     UpdateManagerCoordinator,
     excluded_entities_from_options,
     rules_from_options,
@@ -39,6 +41,7 @@ from .runtime_data import UpdateManagerConfigEntry, UpdateManagerData
 from .services import async_setup_services
 from .staging_skip import StagingSkipManager
 from .vendor_fallback_urls import release_url_for_entity
+from .voter_stats import VoterStatsManager
 from .websocket_api import async_apply_options, async_setup_websocket_api
 
 PLATFORMS: list[str] = ["sensor", "switch"]
@@ -195,10 +198,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # Same reasoning again: needs only hass, read by websocket_api.py's own
     # verdict_for_version handler, written by its vote handler.
     my_votes_manager = MyVotesManager(hass)
+    # Same reasoning again: needs only hass, read by websocket_api.py's own
+    # new voter_stats handler, direct user feedback, 2026-11-27.
+    voter_stats_manager = VoterStatsManager(hass)
     # Same community_verdict_manager precedent again: needs only hass, the
     # coordinator takes a reference to it (synchronous peek during its own
     # bulk scan, same as community_verdict_manager).
     firmware_version_manager = FirmwareVersionManager(hass)
+    # Constructed before the coordinator below (moved up from right after
+    # it, 2026-11-25): the coordinator's own periodic self-healing retry
+    # for a firmware-version submission needs a way to ask "which entities
+    # installed something recently", and install_log.py's own
+    # entity_ids_installed_since is the only place that fact lives at all.
+    install_log = InstallLog(hass)
     coordinator = UpdateManagerCoordinator(
         hass,
         rules,
@@ -208,8 +220,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         whitelisted_entities_from_options(options),
         firmware_version_manager=firmware_version_manager,
         github_auth_manager=github_auth_manager,
+        recent_install_entity_ids_provider=lambda: install_log.entity_ids_installed_since(
+            dt_util.utcnow() - FIRMWARE_SUBMISSION_RECENT_INSTALL_WINDOW
+        ),
     )
-    install_log = InstallLog(hass)
     # Constructed before InstallManager/StagingSkipManager: both take a
     # reference to it (see rollout_manager.py's own docstring: gates every
     # install dispatch, and staging_skip.py hides a queued entry the same
@@ -224,6 +238,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
     # why this is a setter/callback rather than a constructor argument on
     # either side (avoids an import cycle between the two modules).
     rollout_manager.set_recently_executed_setter(install_manager.mark_recently_executed)
+    # Same reasoning again: coordinator.py's own periodic self-healing
+    # recheck retries a "failed" AI safety check too now (direct user
+    # feedback, 2026-11-27), see its own set_retry_failed_ai_checks
+    # docstring.
+    coordinator.set_retry_failed_ai_checks(install_manager.async_retry_missing_ai_checks)
     # Same reasoning, see rollout_manager.py's own set_failure_handler
     # docstring: a queued entry's install can fail too, once this module is
     # the one dispatching it, and it needs the exact same cleanup/
@@ -393,6 +412,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         # (2026-11-09, see this function's own comment on "manual" vs
         # "external" below). Used to default to "manual" instead, back when
         # "external" still carried that stronger, wrong implication.
+        # Whether this is a dispatch this project's own panel genuinely
+        # requested, not just one install_method happens to label "manual"
+        # via the looser, unconfirmed context.user_id fallback, nor even
+        # one was_manually_requested itself found a record for: that record
+        # also matches an install Home Assistant's own native more-info
+        # dialog dispatched (note_external_install_request's own wildcard
+        # entry, see was_manually_requested's own docstring), which this
+        # project never actually controlled the backup flag for. See
+        # install_log.py's own backup_used docstring for why that
+        # distinction matters.
+        dispatched_via_panel = False
         if context is not None:
             install_method = "auto"
         else:
@@ -408,7 +438,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
             # guaranteed relationship to when the install actually
             # happened can't tell a genuine recent context from a stale
             # leftover one.
-            requested, _ = rollout_manager.was_manually_requested(entity_id, new_version)
+            requested, _, dispatched_via_panel = rollout_manager.was_manually_requested(entity_id, new_version)
             install_method = "manual" if requested or (not retroactive and new_state.context.user_id) else "external"
         cached = coordinator.cache.get(entity_id)
         available_since_from_cache = cached.get("available_since") if cached else None
@@ -455,6 +485,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
                 release_url=release_url_for_entity(hass, entity_id, new_state.attributes.get("release_url"), new_version),
                 supported_features=new_state.attributes.get("supported_features", 0),
                 install_method=install_method,
+                dispatched_via_panel=dispatched_via_panel,
                 auto_install_reason=reason,
                 trusted_voter_usernames=trusted_voter_usernames,
                 announced_at=announced_at,
@@ -625,6 +656,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         rollout_manager.async_load(),
         github_auth_manager.async_load(),
         my_votes_manager.async_load(),
+        voter_stats_manager.async_load(),
     )
     install_manager.async_start()
     staging_skip_manager.async_start(bool(options.get(CONF_HIDE_POSTPONED, True)))
@@ -640,6 +672,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: UpdateManagerConfigEntry
         github_auth_manager=github_auth_manager,
         my_votes_manager=my_votes_manager,
         firmware_version_manager=firmware_version_manager,
+        voter_stats_manager=voter_stats_manager,
         integration_version=str(integration.version),
     )
 

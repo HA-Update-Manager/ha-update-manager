@@ -43,10 +43,11 @@ from .firmware_version_discovery import real_versions_for_entity, same_value_for
 from .firmware_version_registry import FirmwareVersionManager
 from .firmware_version_submit import async_has_pending_submission, async_submit_firmware_version
 from .github_auth import GitHubAuthManager
+from .github_release_notes import parse_release_url
 from .postponement_schedule import DayRule, EMPTY_SCHEDULE, PostponementSchedule, next_allowed_ready
 from .zigbee import slugify_zigbee_model
 from .zigbee_ota_release_notes import parse_zigbee_ota_version
-from .semver import Size, classify_version_size, size_rank
+from .semver import Size, classify_version_size, size_rank, strip_version_prefix
 from .staging import StagingRules, StagingResult, evaluate_staging, wait_for_size
 from .vendor_fallback_urls import release_url_for_entity
 
@@ -69,6 +70,17 @@ _FORCE_READY_STORAGE_KEY = f"{DOMAIN}_force_ready"
 # retry loop: missing this window just means this one occurrence goes
 # unlearned, the same as today's status quo before this feature existed.
 _FIRMWARE_SUBMISSION_INTERVIEW_GRACE = timedelta(seconds=30)
+
+# How far back "recently installed" reaches for the firmware-version
+# submission retry, both the manual refresh click (websocket_api.py's own
+# _handle_refresh_community_verdicts, which imports this same constant)
+# and _async_periodic_recheck's own automatic sweep below. Matches
+# History's own "This week" bucket (update-manager-panel.js's own
+# historySections), not an arbitrary new window of its own. Found live,
+# 2026-11-25: unscoped, a manual refresh submitted three completely
+# unrelated devices at once, each installed weeks earlier, purely because
+# nothing had ever checked them before.
+FIRMWARE_SUBMISSION_RECENT_INSTALL_WINDOW = timedelta(days=7)
 
 # Several Zigbee2MQTT-backed update entities briefly report this literal
 # string as their own installed_version right after a restart, before the
@@ -404,6 +416,7 @@ class UpdateManagerCoordinator:
         whitelisted_entities: frozenset[str] = frozenset(),
         firmware_version_manager: FirmwareVersionManager | None = None,
         github_auth_manager: GitHubAuthManager | None = None,
+        recent_install_entity_ids_provider: Callable[[], set[str]] | None = None,
     ) -> None:
         self.hass = hass
         self.rules = rules
@@ -431,6 +444,18 @@ class UpdateManagerCoordinator:
         # as the other two.
         self._firmware_version_manager = firmware_version_manager
         self._github_auth_manager = github_auth_manager
+        # __init__.py's own closure over install_log.py's own
+        # entity_ids_installed_since, a plain callable, not a direct
+        # InstallLog reference, so this module never needs to know that
+        # type exists at all. Read by _async_periodic_recheck's own
+        # firmware-submission retry below; None-able the same way every
+        # other optional manager reference here is, for a future test.
+        self._recent_install_entity_ids_provider = recent_install_entity_ids_provider
+        # Only wireable once install_manager exists, same reverse-direction
+        # reasoning as rollout_manager.py's own set_recently_executed_setter
+        # (avoids an import cycle): set via set_retry_failed_ai_checks below,
+        # from __init__.py, right after InstallManager is constructed.
+        self._retry_failed_ai_checks: Callable[[], None] | None = None
         # Serializes every firmware-version submission this instance ever
         # attempts (see async_check_firmware_version_submission's own
         # comment for the cross-key, same-remote-file race this closes) --
@@ -515,6 +540,16 @@ class UpdateManagerCoordinator:
         self._force_ready_store: Store[dict[str, Any]] = Store(
             hass, _FORCE_READY_STORAGE_VERSION, _FORCE_READY_STORAGE_KEY
         )
+        # (owner, repo, tag) -> GitHub's own real "prerelease" flag, gained
+        # for free whenever websocket_api.py's own
+        # async_fetch_github_release_notes already fetches a repo's full
+        # releases list for an unrelated reason (release notes), never a
+        # fetch of its own; see remember_release_prerelease. Session-lived
+        # only, no Store: losing this on restart costs nothing, it only
+        # ever sharpens classify_version_size's own otherwise-numeric-only
+        # size classification (semver.py's own known_prerelease parameter)
+        # whenever this happens to already be in hand.
+        self._known_prereleases: dict[tuple[str, str, str], bool] = {}
         self._listeners: list[Callable[[], None]] = []
         self._install_listeners: list[InstallListener] = []
         self._unsub_state_changed: Callable[[], None] | None = None
@@ -1036,6 +1071,54 @@ class UpdateManagerCoordinator:
             await asyncio.sleep(_STARTUP_QUERY_STAGGER)
         self._recompute_all(now)
         self._fire_listeners()
+        # Firmware-version submission's own self-healing retry, direct user
+        # feedback, 2026-11-25: the install-completion listener's own
+        # one-shot grace window (_FIRMWARE_SUBMISSION_INTERVIEW_GRACE) can
+        # miss a device that hasn't re-interviewed yet, and the manual
+        # refresh button is the only other thing that ever retries it,
+        # easy to simply never get around to clicking. This piggybacks on
+        # the exact same self-healing spirit this method already has for
+        # the installed-baseline recompute above, scoped the identical
+        # "recent installs only" way the manual refresh button is (see
+        # FIRMWARE_SUBMISSION_RECENT_INSTALL_WINDOW's own comment for why
+        # that scope matters at all), not awaited inline: a slow GitHub
+        # round trip has no reason to hold up this recheck's own, more
+        # time-sensitive work above.
+        if self._recent_install_entity_ids_provider is not None:
+            self.hass.async_create_task(self._async_retry_recent_firmware_submissions())
+        # Same self-healing spirit, direct user feedback, 2026-11-27: an
+        # entity whose AI safety check never ran at all (not a genuine
+        # failure, see install_manager.py's own async_retry_missing_ai_checks
+        # docstring for why only this narrower case belongs on a timer,
+        # not every past failure too) could otherwise sit unchecked
+        # forever if nobody happens to click the manual refresh button.
+        # That method already schedules its own detached tasks and
+        # returns immediately, nothing to await here either.
+        if self._retry_failed_ai_checks is not None:
+            self._retry_failed_ai_checks()
+
+    def set_retry_failed_ai_checks(self, callback: Callable[[], None]) -> None:
+        """See self._retry_failed_ai_checks's own comment for why this is a
+        post-construction setter rather than a constructor argument."""
+        self._retry_failed_ai_checks = callback
+
+    async def _async_retry_recent_firmware_submissions(self) -> None:
+        """See _async_periodic_recheck's own call site for why this exists.
+        A plain per-entity loop, not async_force_refresh_firmware_versions
+        (which also force-refreshes display data for literally every
+        update entity, the right cost for a single manual click, not for
+        something that now also runs every _RECHECK_INTERVAL on its own)."""
+        if self._firmware_version_manager is None or self._recent_install_entity_ids_provider is None:
+            return
+        recent_entity_ids = self._recent_install_entity_ids_provider()
+        if not recent_entity_ids:
+            return
+        await asyncio.gather(
+            *(
+                self.async_check_firmware_version_submission_for_current_install(entity_id)
+                for entity_id in recent_entity_ids
+            )
+        )
 
     async def async_update_rules(
         self,
@@ -1162,6 +1245,28 @@ class UpdateManagerCoordinator:
         self._force_ready[self._stable_key(entity_id)] = {"version": to_version, "at": dt_util.utcnow().isoformat()}
         await self._force_ready_store.async_save(self._force_ready)
         await self.async_refresh_one(entity_id)
+
+    def remember_release_prerelease(self, owner: str, repo: str, tag_name: str, prerelease: bool) -> None:
+        """Called by websocket_api.py's own async_fetch_github_release_notes
+        as a side effect of a fetch it's already making for an unrelated
+        reason (release notes), never triggers one of its own. See
+        self._known_prereleases's own comment for why this is worth
+        remembering at all."""
+        if not tag_name:
+            return
+        self._known_prereleases[(owner, repo, strip_version_prefix(tag_name))] = prerelease
+
+    def _known_prerelease(self, release_url: str | None, version: str) -> bool:
+        """classify_version_size's own known_prerelease argument, from
+        whatever remember_release_prerelease has happened to learn so far
+        for this exact (repo, version). False (not "unknown", there's no
+        third state here) whenever release_url doesn't parse or nothing's
+        been learned about this version yet."""
+        parsed = parse_release_url(release_url)
+        if parsed is None:
+            return False
+        owner, repo, _ = parsed
+        return self._known_prereleases.get((owner, repo, strip_version_prefix(version)), False)
 
     async def async_rename_entity(self, old_entity_id: str, new_entity_id: str) -> None:
         """Relabels self.cache after a live HA entity registry rename --
@@ -1678,7 +1783,16 @@ class UpdateManagerCoordinator:
         return {**cached, **self.status_now(cached, now)}
 
     async def _async_cache_active(self, entity_id: str, state: State, current: str, latest: str) -> None:
-        size = classify_version_size(current, latest)
+        # Corrected, not the raw state attribute: _known_prerelease's own
+        # lookup must agree with whichever (owner, repo) remember_release_
+        # prerelease actually recorded under, which is itself built from
+        # this same corrected URL (the frontend/websocket_api.py's own
+        # release-notes fetch always works from release_url_for_entity's
+        # own output, never the raw attribute. Core's own native
+        # release_url isn't even a GitHub URL at all, so the raw attribute
+        # would never match anything remembered for it.
+        corrected_release_url = release_url_for_entity(self.hass, entity_id, state.attributes.get("release_url"), latest)
+        size = classify_version_size(current, latest, known_prerelease=self._known_prerelease(corrected_release_url, latest))
         now = dt_util.utcnow()
         # Uses this entry's actual configured rules (settings panel), not
         # always the hardcoded defaults -- a user may have given "large" a
@@ -1760,8 +1874,9 @@ class UpdateManagerCoordinator:
             # specific, useless for the GitHub release-notes fallback fetch
             # and actively wrong once a newer version comes out. A no-op for
             # every other entity (OS/Supervisor/anything else), returns
-            # whatever state already had.
-            "release_url": release_url_for_entity(self.hass, entity_id, state.attributes.get("release_url"), latest),
+            # whatever state already had. Computed once, above, and reused
+            # here rather than calling this twice.
+            "release_url": corrected_release_url,
             # Exposed mainly so the recorder lookup above can actually be
             # checked by hand (diagnostics download) instead of only being
             # inferable from status/remaining_seconds.
@@ -1937,24 +2052,42 @@ class UpdateManagerCoordinator:
             cached["latest_version_real"] = latest_version_real
             cached["version_size_real"] = _version_size_real(installed_version_real, latest_version_real)
 
-    async def async_force_refresh_firmware_versions(self) -> None:
+    async def async_force_refresh_firmware_versions(self, recent_entity_ids: set[str]) -> None:
         """Bypasses FirmwareVersionManager's own hour-long freshness window
         and immediately re-evaluates every update entity's own display data,
         not just currently-active ones (see
         _async_refresh_firmware_version_display's own docstring for why
         this can't be scoped to self.cache the way
-        async_force_refresh_community_verdicts is) -- same "a manual
+        async_force_refresh_community_verdicts is), same "a manual
         refresh should do both kinds of refresh, not just read whatever's
         already cached" intent as that method, direct user feedback.
-        Read-only, same as the method it calls -- never triggers a
-        submission, a manual refresh click is not an install completing.
-        Submission only ever happens from async_check_firmware_version_submission
-        above, reacting to a genuine install (see __init__.py's own install
-        listener) -- a temporary variant of this method that also ran that
-        check for every entity here, to test the full submit chain without
-        waiting for a real install, was removed once that live test
-        confirmed it works (direct user feedback, 2026-11-24: "tijd om de
-        productie variant te testen")."""
+
+        Also retries the submission check, reusing
+        async_check_firmware_version_submission_for_current_install
+        exactly as install_manager.py's own async_dispatch_install does,
+        direct user feedback, 2026-11-25: the install-completion listener's
+        own grace period (_FIRMWARE_SUBMISSION_INTERVIEW_GRACE) is a
+        bounded, one-shot wait, not a retry loop, by design, so a
+        Zigbee2MQTT device that hasn't re-interviewed by the time it
+        elapses never gets a second chance on its own. A manual refresh
+        click gives the user one, on demand, without waiting for another
+        install.
+
+        Scoped to recent_entity_ids (websocket_api.py's own caller, from
+        install_log.py's own entity_ids_installed_since), not every
+        entity found live, 2026-11-25: this used to retry the submission
+        check for literally every Zigbee update entity on every refresh
+        click, and a real refresh ended up submitting three completely
+        unrelated devices at once, each one installed weeks earlier,
+        purely because nothing had ever checked them before, the exact
+        "every pre-existing device submits at once" risk this feature was
+        always meant to stay away from (see
+        _async_refresh_firmware_version_display's own docstring below),
+        just reached by a different door than the one already guarded
+        against. A manual click being deliberate doesn't make submitting
+        on behalf of a device the user wasn't even looking at any less
+        surprising. Display refresh itself stays unscoped (read-only,
+        no external side effect either way)."""
         if self._firmware_version_manager is None:
             return
 
@@ -1968,6 +2101,8 @@ class UpdateManagerCoordinator:
                 state.attributes.get("latest_version"),
                 force=True,
             )
+            if entity_id in recent_entity_ids:
+                await self.async_check_firmware_version_submission_for_current_install(entity_id)
 
         await asyncio.gather(
             *(_refresh_one(entity_id) for entity_id in self.hass.states.async_entity_ids("update"))
@@ -2048,11 +2183,121 @@ class UpdateManagerCoordinator:
         )
         if submission_candidate is None:
             return
-        submission_manufacturer, submission_model_id, raw_version, real_version = submission_candidate
+        _, _, raw_version, real_version, _ = submission_candidate
         if same_value_for_different_raw(
             parse_zigbee_ota_version(old_version), old_version_real, raw_version, real_version
         ):
             return
+        await self._async_submit_firmware_candidate(entity_id, submission_candidate)
+
+    async def async_check_firmware_version_submission_for_current_install(self, entity_id: str) -> None:
+        """Called from install_manager.py's own async_dispatch_install,
+        right before the actual update.install service call for a genuine
+        install (manual, auto, or a queued rollout entry, every real
+        install path funnels through that one call), and from
+        async_force_refresh_firmware_versions above (a manual refresh
+        click's own retry), the counterpart to
+        async_check_firmware_version_submission above, but for the version
+        about to be left behind rather than the one an install just
+        produced.
+
+        Why this needs its own path: submission has normally only ever
+        reacted to a genuine install *completing*, learning
+        whatever version an install just produced. A device's starting
+        firmware, whatever it was already running before this feature
+        (or this entity) was ever observed completing an install here,
+        never gets that same reactive moment, and once the device actually
+        updates away from it, its live sw_version can never attest to that
+        raw integer again (see firmware_version_discovery.py's own module
+        docstring: a device's own sw_version only ever describes what it's
+        running *right now*). Dispatch time, right before the version
+        actually changes, is the last possible moment that pairing is still
+        observable at all.
+
+        No sleep, unlike the grace period above: this version has already
+        been settled on for a while (not just freshly flashed), so there's
+        no analogous "hasn't been re-interviewed yet" risk to wait out. No
+        old_version comparison either, that one exists purely to catch a
+        just-flashed, not-yet-settled sw_version repeating what it reported
+        for the version it just left; there's no such freshly-changed state
+        here at all, this reads the one that's about to become old.
+        "Already have it" is still covered for free, same as any other
+        candidate: real_versions_for_entity's own submission_candidate is
+        only ever set when the raw integer is genuinely missing from the
+        table (see that function's own docstring).
+
+        Safe to call from anywhere already awaited (both callers above),
+        since nothing races the state read below here. install_manager.py's
+        own async_dispatch_install is different: there, the state read
+        needs to happen synchronously before update.install, not from
+        inside a detached background task awaited later, so it calls
+        snapshot_firmware_version_submission_candidate and
+        async_submit_firmware_version_submission_candidate (both below)
+        directly instead of this combined method, split for exactly that
+        reason (found by code review: a detached task calling this combined
+        method could run its own state read at any point during or after
+        that same install, seeing the entity's already-updated
+        installed_version/latest_version instead of the ones this is
+        actually meant to capture)."""
+        snapshot = self.snapshot_firmware_version_submission_candidate(entity_id)
+        if snapshot is None:
+            return
+        await self.async_submit_firmware_version_submission_candidate(entity_id, snapshot)
+
+    def snapshot_firmware_version_submission_candidate(
+        self, entity_id: str
+    ) -> tuple[str, str, str | None, str | None] | None:
+        """The synchronous part of
+        async_check_firmware_version_submission_for_current_install above
+        (see its own docstring for why this is split out): (manufacturer,
+        model_id, installed_version, latest_version) for entity_id's own
+        current firmware pairing, or None when there's nothing to check at
+        all (not a Zigbee-identified entity, or firmware tracking isn't
+        configured). Must be captured synchronously, before anything else
+        changes entity_id's own live state."""
+        if self._firmware_version_manager is None:
+            return None
+        manufacturer_model_id = resolve_zigbee_manufacturer_model_for_entity(self.hass, entity_id)
+        if manufacturer_model_id is None:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None:
+            return None
+        manufacturer, model_id = manufacturer_model_id
+        return manufacturer, model_id, state.attributes.get("installed_version"), state.attributes.get("latest_version")
+
+    async def async_submit_firmware_version_submission_candidate(
+        self, entity_id: str, snapshot: tuple[str, str, str | None, str | None]
+    ) -> None:
+        """The async, network-bound part of
+        async_check_firmware_version_submission_for_current_install above
+        (see its own docstring for why this is split out): checks a
+        snapshot already captured by
+        snapshot_firmware_version_submission_candidate against the shared
+        firmware-versions table and submits it if it's genuinely new.
+        Nothing here reads entity_id's live state anymore, so this is the
+        one part that's actually safe to run from a detached background
+        task."""
+        manufacturer, model_id, installed_version, latest_version = snapshot
+        await self._firmware_version_manager.async_get_versions(manufacturer, model_id, force=True)
+        _, _, submission_candidate = real_versions_for_entity(
+            self.hass, entity_id, installed_version, latest_version, self._firmware_version_manager
+        )
+        if submission_candidate is None:
+            return
+        await self._async_submit_firmware_candidate(entity_id, submission_candidate)
+
+    async def _async_submit_firmware_candidate(
+        self, entity_id: str, submission_candidate: tuple[str, str, int, str, str | None]
+    ) -> None:
+        """The actual GitHub submission, shared by both
+        async_check_firmware_version_submission (reacting to a completed
+        install) and async_check_firmware_version_submission_for_current_install
+        (reacting to one about to start), found by /simplify-style review
+        while adding the second caller: identical auth/lock/authoritative-
+        check/submit sequence, only how submission_candidate itself gets
+        produced differs between the two."""
+        submission_manufacturer, submission_model_id, raw_version, real_version, submission_model_name = submission_candidate
         if self._github_auth_manager is None:
             return
         # Serializes every submission this one instance ever attempts,
@@ -2103,6 +2348,7 @@ class UpdateManagerCoordinator:
                     raw_version,
                     real_version,
                     self._integration_version or "unknown",
+                    model_name=submission_model_name,
                 )
             except Exception:
                 # Silent, debug-level only -- this fires automatically,
@@ -2153,11 +2399,15 @@ class UpdateManagerCoordinator:
         # Same already-accepted imprecision as before (neither checks
         # previous's own latest_version still matches).
         ready_since = previous.get("ready_since") if previous else None
+        # Corrected, same reasoning as _async_cache_active's own comment on
+        # this exact line: the raw state attribute can't ever match what
+        # remember_release_prerelease recorded for this entity.
+        corrected_release_url = release_url_for_entity(self.hass, entity_id, state.attributes.get("release_url"), latest)
         self.cache[entity_id] = {
             "entity_id": entity_id,
             "installed_version": current,
             "latest_version": latest,
-            "version_size": classify_version_size(current, latest),
+            "version_size": classify_version_size(current, latest, known_prerelease=self._known_prerelease(corrected_release_url, latest)),
             # Not fetched for a skipped entity, same "not this slice's
             # target" reasoning as community_verdict just below -- only
             # ever carried over from previous.
@@ -2171,7 +2421,9 @@ class UpdateManagerCoordinator:
             # Same correction as _async_cache_active's own -- see
             # release_url_for_entity's own docstring. Every cache entry gets
             # the same shape (see this method's own comment further down).
-            "release_url": release_url_for_entity(self.hass, entity_id, state.attributes.get("release_url"), latest),
+            # Computed once, above, and reused here rather than calling
+            # this twice.
+            "release_url": corrected_release_url,
             "available_since": available_since,
             "auto_install_excluded": _is_excluded_from_auto_install(entity_id, self.excluded_entities),
             "auto_install_whitelisted": _is_whitelisted_for_auto_install(entity_id, self.whitelisted_entities),

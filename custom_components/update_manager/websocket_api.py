@@ -30,6 +30,7 @@ from homeassistant.util import dt as dt_util
 _LOGGER = logging.getLogger(__name__)
 
 from .const import (
+    CONF_AI_SAFETY_CHECK_ENTITY_ID,
     CONF_ANNOUNCE_HOURS,
     CONF_ENABLED,
     CONF_EXCLUDED_ENTITIES,
@@ -56,6 +57,7 @@ from .community_verdict import (
 )
 from .community_vote import async_submit_vote
 from .coordinator import (
+    FIRMWARE_SUBMISSION_RECENT_INSTALL_WINDOW,
     excluded_entities_from_options,
     rules_from_options,
     schedule_from_options,
@@ -164,6 +166,7 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
     updates = []
     for entry in data.coordinator.cache.values():
         pending = install_manager.pending_for(entry["entity_id"])
+        ai_check_result = install_manager.ai_check_result(entry["entity_id"], entry["latest_version"])
         updates.append(
             {
                 # export_entry: entry's own cached facts, with status/
@@ -181,6 +184,35 @@ def _handle_updates(hass: HomeAssistant, connection: websocket_api.ActiveConnect
                 # this is what lets the panel's own projectedAutoInstallTime
                 # tell that apart from an untouched one.
                 "auto_install_cancelled": install_manager.is_cancelled(entry["entity_id"], entry["latest_version"]),
+                # None for a plain, manual cancel; the AI safety check's own
+                # short explanation when that's what cancelled it instead,
+                # see install_manager.py's own cancelled_reason docstring.
+                "auto_install_cancel_reason": install_manager.cancelled_reason(
+                    entry["entity_id"], entry["latest_version"]
+                ),
+                # The AI safety check's own non-cancelling outcome
+                # ("passed"/"failed") for this exact jump, or None if it
+                # never ran, see install_manager.py's own ai_check_result
+                # docstring. ai_check_reason_code picks one of a handful of
+                # known, already-translated "failed" sentences the
+                # timeline shows directly (direct user feedback,
+                # 2026-11-27); when it's None, ai_check_reason (an AI's own
+                # free text, or a raw provider error) is only surfaced
+                # through its own "why" info button instead, same as
+                # before.
+                "ai_check_result": ai_check_result[0] if ai_check_result else None,
+                "ai_check_reason": ai_check_result[1] if ai_check_result else None,
+                "ai_check_reason_code": ai_check_result[2] if ai_check_result else None,
+                # Whether a "passed" result's own reason is worth a "why"
+                # button at all, the AI's own call (see
+                # ai_safety_check.py's own AiSafetyCheckResult comment):
+                # its routine-pass reason usually just restates the
+                # timeline's own generic label, not genuinely new
+                # information. Defaults True (show it) when there's no
+                # result at all, matching ai_check_result's own real
+                # default, though the panel never reads this without also
+                # checking ai_check_result/ai_check_reason are set first.
+                "ai_check_notable": ai_check_result[3] if ai_check_result else True,
                 "pending_install": (
                     {
                         "to_version": pending.to_version,
@@ -267,7 +299,14 @@ async def _handle_refresh_community_verdicts(
     # community-verdicts call just above -- the shared firmware-version
     # table and an immediate re-check of whether anything newly-observed is
     # worth submitting, not waiting for the next natural coordinator cycle.
-    await data.coordinator.async_force_refresh_firmware_versions()
+    # Submission itself stays scoped to a recent install though, found live,
+    # 2026-11-25: unscoped, this submitted three unrelated devices at once,
+    # each installed weeks earlier, see
+    # coordinator.py's own async_force_refresh_firmware_versions docstring.
+    recent_entity_ids = data.install_log.entity_ids_installed_since(
+        dt_util.utcnow() - FIRMWARE_SUBMISSION_RECENT_INSTALL_WINDOW
+    )
+    await data.coordinator.async_force_refresh_firmware_versions(recent_entity_ids)
     # Catches up any already-logged History entry whose from/to real
     # version wasn't known yet at the time it was first logged, now that
     # the refresh above may have just learned it -- direct user feedback,
@@ -275,6 +314,13 @@ async def _handle_refresh_community_verdicts(
     await data.install_log.async_backfill_real_versions(data.firmware_version_manager)
     await _async_reconcile_my_votes(hass, data)
     await data.install_manager.async_force_reevaluate()
+    # Same "a manual refresh should also retry what's stale" intent as
+    # every other call above, see install_manager.py's own
+    # async_retry_missing_or_failed_ai_checks docstring (both an entity
+    # that never got a first check at all, and one that explicitly failed
+    # one). Not awaited: each retry is its own detached task, same
+    # reasoning the original check itself already runs by.
+    data.install_manager.async_retry_missing_or_failed_ai_checks()
     connection.send_result(msg["id"])
 
 
@@ -416,6 +462,19 @@ async def async_fetch_github_release_notes(
                     releases = await _async_ensure_releases_present(
                         hass, headers, owner, repo, releases, [v for v in (from_version, to_version) if v]
                     )
+                    # Opportunistic, free side effect of this listing fetch
+                    # we're already making for release notes: every release
+                    # here carries GitHub's own real "prerelease" flag,
+                    # which classify_version_size's own known_prerelease
+                    # parameter can use later, whenever this exact version
+                    # happens to come up again; see
+                    # remember_release_prerelease's own docstring.
+                    runtime_data = _get_data(hass)
+                    if runtime_data is not None:
+                        for release in releases:
+                            runtime_data.coordinator.remember_release_prerelease(
+                                owner, repo, release.get("tag_name", ""), bool(release.get("prerelease"))
+                            )
                     matched = find_release_by_version(releases, to_version) if to_version else None
                     corrected_url = matched.get("html_url") if matched is not None else None
                     if matched is not None:
@@ -1190,6 +1249,14 @@ def _handle_get_settings(hass: HomeAssistant, connection: websocket_api.ActiveCo
                 # install as soon as it's otherwise allowed (announcer.py's
                 # own decide_action).
                 vol.Required(CONF_ANNOUNCE_HOURS): vol.All(vol.Coerce(int), vol.Range(min=0, max=336)),
+                # None/"" = feature off entirely, the default. No schema-
+                # level domain check (no precedent for that anywhere in
+                # this file, see const.py's own comment); the panel's
+                # entity: {filter: {domain: "ai_task"}} selector is the
+                # first line of defense, a stale/removed entity otherwise
+                # just fails open the same way a missing ai_task result
+                # already does (ai_safety_check.py).
+                vol.Required(CONF_AI_SAFETY_CHECK_ENTITY_ID): vol.Any(None, str),
                 vol.Required(CONF_EXCLUDED_ENTITIES): [str],
                 vol.Required(CONF_WHITELISTED_ENTITIES): [str],
                 vol.Required(CONF_HIDE_POSTPONED): bool,
@@ -1264,6 +1331,19 @@ def _handle_github_link_status(hass: HomeAssistant, connection: websocket_api.Ac
     data = _get_data(hass)
     status = data.github_auth_manager.link_status() if data else {"status": "idle", "username": None}
     connection.send_result(msg["id"], status)
+
+
+@websocket_api.require_admin
+@websocket_api.async_response
+@websocket_api.websocket_command({vol.Required("type"): "update_manager/voter_stats"})
+async def _handle_voter_stats(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
+    """None whenever there's nothing to show (not linked, or genuinely
+    never voted, see community-votes' own analysis/README.md). The panel
+    treats both the same way, no voter stats section at all."""
+    data = _get_data(hass)
+    username = data.github_auth_manager.linked_username if data else None
+    stats = await data.voter_stats_manager.async_get_stats(username) if data and username else None
+    connection.send_result(msg["id"], stats)
 
 
 @websocket_api.require_admin
@@ -1640,6 +1720,7 @@ def async_setup_websocket_api(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, _handle_save_settings)
     websocket_api.async_register_command(hass, _handle_github_link_start)
     websocket_api.async_register_command(hass, _handle_github_link_status)
+    websocket_api.async_register_command(hass, _handle_voter_stats)
     websocket_api.async_register_command(hass, _handle_github_unlink)
     websocket_api.async_register_command(hass, _handle_vote)
     websocket_api.async_register_command(hass, _handle_verdict_for_version)
